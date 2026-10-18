@@ -1,0 +1,36 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "sharerepo-jobs",
+  "main": "./src/index.ts",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": { "enabled": true },
+  "upload_source_maps": true,
+  "triggers": { "crons": ["0 * * * *"] },
+  "vars": { "ENVIRONMENT": "development" },
+  // Shared database; see docs/decisions/0002. Replace the ID after `wrangler d1 create sharerepo-dev`.
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "sharerepo-dev",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "../../packages/db/migrations"
+    }
+  ],
+  "env": {
+    "production": {
+      "name": "sharerepo-jobs-production",
+      "triggers": { "crons": ["0 * * * *"] },
+      "vars": { "ENVIRONMENT": "production" },
+      // Replace the ID after `wrangler d1 create sharerepo-prod`.
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "sharerepo-prod",
+          "database_id": "00000000-0000-0000-0000-000000000001",
+          "migrations_dir": "../../packages/db/migrations"
+        }
+      ]
+    }
+  }
+}
