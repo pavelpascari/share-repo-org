@@ -182,7 +182,7 @@ export function createGitHubApp(options: GitHubAppOptions): GitHubAppClient {
     id: installationId,
   });
   const repoPath = (owner: string, repo: string) =>
-    `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`;
+    `/repos/${pathSegment("login", owner)}/${pathSegment("repo", repo)}`;
 
   async function paginate<T>(
     operation: string,
@@ -212,7 +212,7 @@ export function createGitHubApp(options: GitHubAppOptions): GitHubAppClient {
       const response = await request(
         operation,
         "GET",
-        `/app/installations/${encodeURIComponent(installationId)}`,
+        `/app/installations/${pathSegment("id", installationId)}`,
         { kind: "app" },
       );
       const body = parse(operation, installationResponse, await json(response));
@@ -286,7 +286,7 @@ export function createGitHubApp(options: GitHubAppOptions): GitHubAppClient {
       const response = await request(
         operation,
         "PUT",
-        `${repoPath(owner, repo)}/collaborators/${encodeURIComponent(username)}`,
+        `${repoPath(owner, repo)}/collaborators/${pathSegment("login", username)}`,
         installation(installationId),
         permission === undefined ? {} : { permission },
       );
@@ -308,7 +308,7 @@ export function createGitHubApp(options: GitHubAppOptions): GitHubAppClient {
       await request(
         "remove collaborator",
         "DELETE",
-        `${repoPath(owner, repo)}/collaborators/${encodeURIComponent(username)}`,
+        `${repoPath(owner, repo)}/collaborators/${pathSegment("login", username)}`,
         installation(installationId),
       );
       return 204;
@@ -318,7 +318,7 @@ export function createGitHubApp(options: GitHubAppOptions): GitHubAppClient {
       await request(
         "delete invitation",
         "DELETE",
-        `${repoPath(owner, repo)}/invitations/${encodeURIComponent(invitationId)}`,
+        `${repoPath(owner, repo)}/invitations/${pathSegment("id", invitationId)}`,
         installation(installationId),
       );
       return 204;
@@ -327,7 +327,7 @@ export function createGitHubApp(options: GitHubAppOptions): GitHubAppClient {
 }
 
 const tokenPath = (installationId: string) =>
-  `/app/installations/${encodeURIComponent(installationId)}/access_tokens`;
+  `/app/installations/${pathSegment("id", installationId)}/access_tokens`;
 
 function parse<T>(operation: string, schema: z.ZodType<T>, body: unknown): T {
   const result = schema.safeParse(body);
@@ -398,4 +398,21 @@ function retryAfterMs(headers: Headers, clock: Clock): number {
     return Math.max(0, reset * 1000 - clock.now());
   }
   return DEFAULT_RETRY_AFTER_MS;
+}
+
+// Every value placed in a URL path must match GitHub's own format. Percent-encoding alone is not
+// enough: `.` and `..` survive it and URL resolution collapses them, so a username of `..` would
+// turn `DELETE …/collaborators/..` into `DELETE /repos/{owner}/{repo}`, deleting the repository.
+const PATH_SEGMENT_FORMATS = {
+  login: /^[A-Za-z0-9-]{1,39}$/,
+  repo: /^(?!\.{1,2}$)[A-Za-z0-9._-]{1,100}$/,
+  id: /^[1-9][0-9]{0,19}$/,
+} as const;
+
+/** Validates a URL path segment against GitHub's format; never echoes the value. */
+export function pathSegment(kind: keyof typeof PATH_SEGMENT_FORMATS, value: string): string {
+  if (!PATH_SEGMENT_FORMATS[kind].test(value)) {
+    throw new GitHubApiError("rejected", `GitHub request refused: invalid ${kind} path segment`);
+  }
+  return value;
 }

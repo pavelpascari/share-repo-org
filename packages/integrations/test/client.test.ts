@@ -1,6 +1,6 @@
 import { createSecretCanaries, expectNoCanaryLeak, FakeClock } from "@sharerepo/testing";
 import { describe, expect, it } from "vitest";
-import { nextLink } from "../src/github/client.ts";
+import { nextLink, pathSegment } from "../src/github/client.ts";
 import { createGitHubApp, GitHubApiError } from "../src/index.ts";
 import installation from "./fixtures/installation.json";
 import { appKey } from "./support/keys.ts";
@@ -334,8 +334,42 @@ describe("collaborators and invitations", () => {
       204,
     );
     expect(await app.deleteInvitation("42", "octo-creator", "course-code", "77")).toBe(204);
-    await failure(app.removeCollaborator("42", "octo-creator", "course-code", "../../x"));
-    expect(calls.at(-1)?.url).toBe(`${API}${repoPath}/collaborators/..%2F..%2Fx`);
+    const sent = calls.length;
+    for (const username of ["..", ".", "../../x", "a/b", ""]) {
+      const error = await failure(
+        app.removeCollaborator("42", "octo-creator", "course-code", username),
+      );
+      expect(error.kind).toBe("rejected");
+    }
+    await failure(app.removeCollaborator("42", "octo-creator", "..", "subscriber"));
+    await failure(app.deleteInvitation("42", "octo-creator", "course-code", ".."));
+    await failure(app.getInstallation("../42"));
+    // Refused before any request: `DELETE /repos/o/r/collaborators/..` would resolve to
+    // `DELETE /repos/o/r` and delete the repository.
+    expect(calls.length).toBe(sent);
+  });
+});
+
+describe("pathSegment", () => {
+  it.each([
+    ["login", "octo-creator", true],
+    ["login", "a".repeat(39), true],
+    ["login", "a".repeat(40), false],
+    ["login", "..", false],
+    ["login", "octo_creator", false],
+    ["repo", "course-code.v2", true],
+    ["repo", ".github", true],
+    ["repo", ".", false],
+    ["repo", "..", false],
+    ["repo", "a/b", false],
+    ["repo", "a".repeat(101), false],
+    ["id", "77", true],
+    ["id", "077", false],
+    ["id", "-1", false],
+    ["id", "1".repeat(21), false],
+  ] as const)("%s %j → %s", (kind, value, valid) => {
+    if (valid) expect(pathSegment(kind, value)).toBe(value);
+    else expect(() => pathSegment(kind, value)).toThrow(`invalid ${kind} path segment`);
   });
 });
 
