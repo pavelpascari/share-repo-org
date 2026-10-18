@@ -68,22 +68,31 @@ To produce the one-line form: `awk 'NF {sub(/\r/, ""); printf "%s\\n",$0;}' shar
 
 ## 6. Run the feasibility spike
 
-Install the App on the test repository only (step 4, or directly on GitHub for the spike), then:
+Install the App on the test repository only (step 4, or directly on GitHub for the spike). The spike reads `GITHUB_APP_ID` and `GITHUB_APP_PRIVATE_KEY` from `apps/web/.dev.vars` (step 5), or from the environment if set there.
+
+First a dry run, which only reads and checks that it is safe to proceed:
 
 ```sh
 SPIKE_REPO=<your-login>/sharerepo-test SPIKE_SUBSCRIBER=<subscriber-login> pnpm spike:github
 ```
 
-The spike:
-- invites the subscriber, observes the result, cancels and removes the invitation;
-- writes the observations to `docs/research/github-live-results.md`;
-- leaves the repository as it found it.
+It refuses to continue if the repository is public, is not owned by your personal account, the installation is suspended or on another account, or the subscriber is the owner. Then run it for real:
 
-If it stops halfway, run it again: every step is idempotent.
+```sh
+SPIKE_REPO=<your-login>/sharerepo-test SPIKE_SUBSCRIBER=<subscriber-login> pnpm spike:github --yes
+```
 
-Then complete the manual checklist at the end of that file:
-- accept an invitation as the subscriber, and check whether a `member` webhook arrived (look at the App's **Advanced → Recent deliveries**);
-- check whether branch protection is available on the private repository on your plan.
+With `--yes`, the spike:
+
+- removes any existing invitation or access for the subscriber;
+- invites the subscriber with `permission=pull`, observes what GitHub recorded, removes them as a collaborator while the invitation is pending, observes again, and cancels the invitation;
+- invites again without a permission, observes, and cancels;
+- checks the repository is left with no invitation and no access for the subscriber;
+- writes the observations and conclusions to `docs/research/github-live-results.md`, keeping that file's manual checklist.
+
+It uses two of the repository's 50 invitations per 24 hours, and the subscriber gets two invitation emails. It never prints the private key, the App JWT or installation tokens. If it stops halfway, run it again: it cleans up first.
+
+Then complete the manual checklist at the end of that file (invitation email, `member` webhook after accepting an invitation by hand, push access after acceptance, branch protection on your plan, clean-up), and commit the file.
 
 ## 7. Deployed environments
 
