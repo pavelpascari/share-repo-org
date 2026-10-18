@@ -39,9 +39,12 @@ jobs:
           BASE_REF: ${{ github.base_ref }}
           COVERAGE_DECREASE_REASON: ${{ contains(github.event.pull_request.labels.*.name, 'coverage-decrease') && 'coverage-decrease label approved in review' || '' }}
         run: |
-          git show "origin/${BASE_REF}:coverage-thresholds.json" > "$RUNNER_TEMP/base-thresholds.json" 2>/dev/null \
-            || echo '{}' > "$RUNNER_TEMP/base-thresholds.json"
-          pnpm coverage:check --base "$RUNNER_TEMP/base-thresholds.json"
+          # A base without thresholds (before Phase 0 lands) has nothing to ratchet against.
+          if git show "origin/${BASE_REF}:coverage-thresholds.json" > "$RUNNER_TEMP/base-thresholds.json" 2>/dev/null; then
+            pnpm coverage:check --base "$RUNNER_TEMP/base-thresholds.json"
+          else
+            pnpm coverage:check
+          fi
       - name: Scenario catalog
         run: pnpm check:scenarios --phase "$CURRENT_PHASE"
       - name: Migrations apply from empty and match the schema
