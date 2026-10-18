@@ -1,7 +1,5 @@
 import * as repo from "@sharerepo/db";
 import {
-  type AUDIT_ACTIONS,
-  type AuditAction,
   type AuditDetails,
   type AuditEvent,
   type AuditEventInput,
@@ -25,7 +23,13 @@ import {
   verifyWebhookSignature,
 } from "@sharerepo/integrations";
 import { ConflictError } from "@sharerepo/platform";
-import { asAuditActor, atOneInstant, type ServiceContext, type UserActor } from "./context.ts";
+import {
+  asAuditActor,
+  atOneInstant,
+  type ServiceContext,
+  type UserActor,
+  type WorkspaceAuditAction,
+} from "./context.ts";
 import { openWorkspace } from "./workspaces.ts";
 
 // GitHub App connections (Phase 2 plan): an intent binds an installation to a workspace and user;
@@ -35,10 +39,6 @@ import { openWorkspace } from "./workspaces.ts";
 export const CONNECTION_INTENT_TTL_MS = 15 * 60 * 1000;
 
 const SYSTEM = { type: "system", id: null } as const;
-
-type WorkspaceAuditAction = {
-  [A in AuditAction]: (typeof AUDIT_ACTIONS)[A]["scope"] extends "workspace" ? A : never;
-}[AuditAction];
 
 /** 256 random bits, base64url: the `state` GitHub returns to the setup callback. */
 function newIntentToken(): string {

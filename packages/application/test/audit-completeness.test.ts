@@ -1,18 +1,49 @@
 import { env } from "cloudflare:workers";
-import { changedTables, snapshotTables } from "@sharerepo/testing";
+import {
+  changedTables,
+  expectAuditedChange,
+  expectNoChangeOnFailure,
+  snapshotTables,
+  UNAUDITED_TABLES,
+} from "@sharerepo/testing";
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 import {
   addWorkspaceMember,
+  archiveOffer,
+  createOffer,
+  createSimulatedSubscriber,
   createUserForSignIn,
   createWorkspace,
   type ProviderProfile,
+  queueDueEvaluations,
+  recomputeOffer,
   recordSignIn,
   recordSignOut,
+  refreshSubscription,
   renameWorkspace,
   type ServiceContext,
+  simulateSubscriptionAction,
+  updateOffer,
 } from "../src/index.ts";
-import { githubProfile, login, serviceContext, uniqueSlug } from "./support/context.ts";
+import {
+  act,
+  DAY,
+  drain,
+  entitlementsOf,
+  failingBatches,
+  githubUser,
+  live,
+  memberOf,
+  offer,
+  refresh,
+  refreshRef,
+  SIMULATION,
+  shop,
+  source,
+  subscribe,
+} from "./support/commerce.ts";
+import { clock, githubProfile, login, serviceContext, uniqueSlug } from "./support/context.ts";
 
 // Scenario audit/every-state-change-has-audit-event: random sequences of every state-changing
 // service, including invalid, conflicting and unauthorized calls. After each call, either an
@@ -126,4 +157,125 @@ describe("audit/every-state-change-has-audit-event", () => {
     );
     // Each run snapshots every table around every command; this is slow by design.
   }, 60_000);
+});
+
+// The entitlement services (Phase 3), one by one: each change carries an audit event with the
+// call's correlation ID, and each refusal leaves no trace.
+describe("audit/every-state-change-has-audit-event (entitlement services)", () => {
+  const audited = async <T>(run: (ctx: ServiceContext) => Promise<T>) => {
+    const ctx = serviceContext();
+    const { result, changedTables, auditEventCount } = await expectAuditedChange(
+      env.DB,
+      ctx.correlationId,
+      () => run(ctx),
+    );
+    expect(changedTables.length > 0 ? auditEventCount > 0 : true).toBe(true);
+    return { result, changedTables };
+  };
+
+  it("audits offer changes, the simulator and subscription refreshes", async () => {
+    const s = await shop(2);
+    const created = await audited((ctx) =>
+      createOffer(ctx, s, s.slug, {
+        name: "Pro",
+        items: [{ source: "simulated", externalItemId: "sim_audit" }],
+        accesses: [{ resourceId: s.resources[0]?.id, accessLevel: "write" }],
+      }),
+    );
+    expect(created.changedTables).toContain("offers");
+    if (!created.result.ok) throw new Error("setup");
+    const offerId = created.result.offer.id;
+
+    const subscriber = githubUser(s);
+    const simulated = await audited((ctx) =>
+      createSimulatedSubscriber(
+        ctx,
+        s,
+        s.slug,
+        { login: subscriber.login, items: ["sim_audit"], state: "active", periodDays: 30 },
+        { github: s.github, ...SIMULATION },
+      ),
+    );
+    expect(simulated.changedTables).toEqual(["simulated_subscriptions"]);
+    if (!simulated.result.ok) throw new Error("setup");
+    const id = simulated.result.subscription.id;
+
+    const first = await audited((ctx) => refresh(s, id, ctx));
+    expect(first.changedTables).toEqual(
+      expect.arrayContaining(["customers", "entitlements", "subjects", "subscriptions"]),
+    );
+    await audited((ctx) =>
+      simulateSubscriptionAction(ctx, s, s.slug, id, "mark_past_due", SIMULATION),
+    );
+    await audited((ctx) => refresh(s, id, ctx));
+    await audited((ctx) =>
+      updateOffer(ctx, s, s.slug, offerId, {
+        name: "Pro",
+        gracePeriodDays: 2,
+        items: [{ source: "simulated", externalItemId: "sim_audit" }],
+        accesses: s.resources.map((r) => ({ resourceId: r.id, accessLevel: "write" })),
+      }),
+    );
+    // Recomputing only queues work (outbox bookkeeping).
+    const recomputed = await audited((ctx) =>
+      recomputeOffer(ctx, { workspaceId: s.workspaceId, offerId }),
+    );
+    expect(recomputed.changedTables).toEqual([]);
+    await audited((ctx) => refresh(s, id, ctx));
+    await audited((ctx) => archiveOffer(ctx, s, s.slug, offerId));
+    await audited((ctx) => refresh(s, id, ctx));
+    expect(live(await entitlementsOf(s.workspaceId))).toEqual([]);
+  });
+
+  it("the due-evaluation sweep changes only its scheduling hint", async () => {
+    const s = await shop();
+    await offer(s, { items: ["sim_due"] });
+    const sub = await subscribe(s, { items: ["sim_due"] });
+    await act(s, sub.id, "cancel_at_period_end");
+    await drain(s.workspaceId);
+    clock.advance(31 * DAY);
+    const ignore = {
+      ...UNAUDITED_TABLES,
+      subscriptions:
+        "the sweep clears next_evaluation_at, a scheduling hint (claimDueEvaluations); the queued refresh is audited",
+    };
+    const ctx = serviceContext();
+    const { result, changedTables } = await expectAuditedChange(
+      env.DB,
+      ctx.correlationId,
+      () => queueDueEvaluations(ctx, { limit: 1000 }),
+      ignore,
+    );
+    expect(result).toBeGreaterThan(0);
+    expect(changedTables).toEqual([]);
+    const after = await audited((c) => refresh(s, sub.id, c));
+    expect(after.changedTables).toContain("entitlements");
+  });
+
+  it("refused and failed entitlement changes leave no trace", async () => {
+    const s = await shop();
+    const created = await offer(s, { items: ["sim_refused"] });
+    const sub = await subscribe(s, { items: ["sim_refused"] });
+    const member = await memberOf(s);
+    const off = { simulation: { enabled: false } };
+    for (const run of [
+      () => createOffer(serviceContext(), member, s.slug, created),
+      () => updateOffer(serviceContext(), member, s.slug, created.id, created),
+      () => archiveOffer(serviceContext(), member, s.slug, created.id),
+      () =>
+        simulateSubscriptionAction(serviceContext(), member, s.slug, sub.id, "pause", SIMULATION),
+      () => simulateSubscriptionAction(serviceContext(), s, s.slug, sub.id, "pause", off),
+      () =>
+        createSimulatedSubscriber(
+          serviceContext(),
+          s,
+          s.slug,
+          { login: sub.login, items: ["sim_refused"], state: "active", periodDays: 30 },
+          { github: s.github, ...off },
+        ),
+      () => refreshSubscription(failingBatches(), refreshRef(s, sub.id), source),
+    ]) {
+      await expectNoChangeOnFailure(env.DB, run);
+    }
+  });
 });
