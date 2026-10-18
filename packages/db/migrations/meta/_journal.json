@@ -22,6 +22,13 @@
       "when": 1792349613342,
       "tag": "0002_github_connections",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1792352712352,
+      "tag": "0003_resync_versions_and_outbox_failures",
+      "breakpoints": true
     }
   ]
 }

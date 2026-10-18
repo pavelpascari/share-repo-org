@@ -204,6 +204,14 @@ It cleans up after itself. A short manual checklist covers what a script can't: 
 
 - **Local runtime:** `pnpm dev` and E2E run the jobs Worker as an auxiliary Worker of the web dev server (`SHAREREPO_WITH_JOBS=1`). Two local processes sharing one persisted SQLite file failed under concurrent writes (`D1_ERROR: Failed to get session commit token`). In one runtime, both Workers share D1 and the `EVENTS` queue, and the webhook journey runs through the queue end to end. Cloudflare's hosted D1 does not have this limitation.
 - **Selection updates:** GitHub calls the setup URL with `setup_action=update` and no `state` after the owner changes the selection on GitHub. `refreshInstallationForMember` resyncs the installation for a member of its workspace and never attaches one without an intent.
+- **Concurrent resyncs:**
+  - `connections.sync_version` and `sync_token` make every resync write conditional on the version it read. A stale resync writes nothing, so an older GitHub reading never overwrites a newer one, and a deleted connection is never revived.
+  - A stale resync retries from fresh state up to three times, then raises a retryable `ConflictError`.
+  - A resync someone starts by hand records that user as the actor.
+- **Outbox limits:**
+  - Rows are claimed at most 10 times.
+  - A non-retryable failure, or the last attempt, marks the row `failed_at` with a classified `last_error_code` for the operator, instead of retrying every minute.
+  - The daily resync queues one `resync_connection` row per connection instead of calling GitHub for every connection in one cron run.
 - **Security review fixes during the phase:**
   - Consuming an intent is bound to its workspace and user.
   - GitHub URL path segments are validated, since `..` would otherwise collapse a collaborator DELETE into a repository DELETE.

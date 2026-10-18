@@ -207,6 +207,8 @@ export async function completeGitHubConnection(
         createdAt: now,
         updatedAt: now,
         lastSyncedAt: null,
+        syncVersion: 0,
+        syncToken: null,
       },
       outbox: [
         {
@@ -261,7 +263,13 @@ export async function refreshInstallationForMember(
   });
   // A resync changes state, so it needs the same permission as "Refresh from GitHub".
   if (membership === null || !roleAllows(membership.role, "workspace.manage")) return null;
-  await resyncConnection(context, connection, github, "selection changed on GitHub");
+  await resyncConnection(
+    context,
+    connection,
+    github,
+    "selection changed on GitHub",
+    asAuditActor(actor),
+  );
   return { workspaceSlug: membership.workspace.slug };
 }
 
@@ -392,7 +400,28 @@ export async function resyncConnection(
   connection: { readonly workspaceId: string; readonly id: string },
   github: GitHubAppPort,
   reason: string,
+  actor: AuditEvent["actor"] = SYSTEM,
 ): Promise<ResyncSummary> {
+  // Concurrent resyncs (webhook, outbox, daily, manual) each read, call GitHub, then write with a
+  // version check. A stale one writes nothing and starts again from fresh state.
+  for (let attempt = 1; ; attempt += 1) {
+    const result = await attemptResync(context, connection, github, reason, actor);
+    if (result !== "stale") return result;
+    if (attempt === MAX_RESYNC_ATTEMPTS) {
+      throw new ConflictError("connection kept changing during resync; retry later");
+    }
+  }
+}
+
+const MAX_RESYNC_ATTEMPTS = 3;
+
+async function attemptResync(
+  context: ServiceContext,
+  connection: { readonly workspaceId: string; readonly id: string },
+  github: GitHubAppPort,
+  reason: string,
+  actor: AuditEvent["actor"],
+): Promise<ResyncSummary | "stale"> {
   const ctx = atOneInstant(context);
   const now = ctx.clock.now();
   const stored = await repo.getConnection(ctx.db, {
@@ -450,7 +479,7 @@ export async function resyncConnection(
   );
 
   const workspaceId = connection.workspaceId;
-  // Every resync event is workspace-scoped, by the system, with the trigger as its reason.
+  // Every resync event is workspace-scoped, by the resync's actor, with the trigger as its reason.
   const event = <A extends WorkspaceAuditAction>(
     action: A,
     targetId: string,
@@ -459,7 +488,7 @@ export async function resyncConnection(
     auditEvent(
       action,
       // TypeScript cannot resolve WorkspaceField<A> for a generic A; A is workspace-scoped here.
-      { workspaceId, actor: SYSTEM, targetId, reason, details } as unknown as AuditEventInput<A>,
+      { workspaceId, actor, targetId, reason, details } as unknown as AuditEventInput<A>,
       ctx,
     );
   const audit: AuditEvent[] = [];
@@ -540,6 +569,8 @@ export async function resyncConnection(
       workspaceId,
       connectionId: connection.id,
       now,
+      expectedVersion: stored.syncVersion,
+      syncToken: ctx.ids.next(),
       inserts,
       updates: [...updates].map(([id, set]) => ({ id, set })),
       connection: {
@@ -554,8 +585,7 @@ export async function resyncConnection(
     },
     audit as [AuditEvent, ...AuditEvent[]],
   );
-  if (!result.ok) throw new ConflictError("a concurrent resync changed the same resources");
-  return summary;
+  return result.ok ? summary : "stale";
 }
 
 /** Where each planned change is stored on the resource row. */
@@ -634,7 +664,7 @@ export async function resyncWorkspaceConnections(
   const connections = await repo.listConnectionsForWorkspace(context.db, scope.workspaceId);
   for (const connection of connections) {
     if (connection.status !== "deleted") {
-      await resyncConnection(context, connection, github, `requested by ${actor.userId}`);
+      await resyncConnection(context, connection, github, "requested", asAuditActor(actor));
     }
   }
 }

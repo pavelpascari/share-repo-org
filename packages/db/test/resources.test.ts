@@ -13,6 +13,14 @@ import { T0 } from "./support/rows.ts";
 
 const NOW = T0 + 100;
 
+/** The optimistic-concurrency fields for a resync starting now: the current version, a new token. */
+async function guard(connectionId: string) {
+  const row = await env.DB.prepare("SELECT sync_version AS v FROM connections WHERE id = ?")
+    .bind(connectionId)
+    .first<{ v: number }>();
+  return { expectedVersion: Number(row?.v), syncToken: `sync-${crypto.randomUUID()}` };
+}
+
 async function synced(names: string[]) {
   const ws = await connectedWorkspace();
   const rows = names.map((nameSnapshot) =>
@@ -23,6 +31,7 @@ async function synced(names: string[]) {
     {
       workspaceId: ws.workspaceId,
       connectionId: ws.connection.id,
+      ...(await guard(ws.connection.id)),
       now: NOW,
       inserts: rows,
       updates: [],
@@ -45,6 +54,7 @@ describe("applyResourceSync", () => {
         {
           workspaceId: ws.workspaceId,
           connectionId: ws.connection.id,
+          ...(await guard(ws.connection.id)),
           now: NOW,
           inserts: [resource],
           updates: [],
@@ -71,6 +81,7 @@ describe("applyResourceSync", () => {
       {
         workspaceId,
         connectionId: connection.id,
+        ...(await guard(connection.id)),
         now: NOW + 1,
         inserts: [],
         updates: [
@@ -98,6 +109,7 @@ describe("applyResourceSync", () => {
       {
         workspaceId: mine.workspaceId,
         connectionId: mine.connection.id,
+        ...(await guard(mine.connection.id)),
         now: NOW + 1,
         inserts: [],
         updates: [{ id: target.id, set: { selection: "removed" } }],
@@ -111,29 +123,81 @@ describe("applyResourceSync", () => {
     ).toBe("selected");
   });
 
-  it("reports a concurrent insert of the same repository and writes nothing", async () => {
-    const { workspaceId, connection, rows } = await synced(["octocat/hello"]);
-    const [existing] = rows;
-    if (existing === undefined) throw new Error("setup");
-    const event = workspaceEvent(workspaceId);
+  it("writes nothing when another resync wrote since this one read (stale)", async () => {
+    const { workspaceId, connection } = await synced(["octocat/hello"]);
+    const stale = await guard(connection.id);
+    const fresh = await guard(connection.id);
+    const first = workspaceEvent(workspaceId);
     await expect(
       applyResourceSync(
         db,
         {
           workspaceId,
           connectionId: connection.id,
+          ...fresh,
           now: NOW + 1,
-          inserts: [resourceRow(workspaceId, connection.id, { externalId: existing.externalId })],
+          inserts: [],
           updates: [],
-          connection: { status: "suspended" },
+          connection: { status: "deleted" },
+        },
+        [first],
+      ),
+    ).resolves.toEqual({ ok: true });
+
+    const event = workspaceEvent(workspaceId);
+    const resource = resourceRow(workspaceId, connection.id);
+    await expect(
+      applyResourceSync(
+        db,
+        {
+          workspaceId,
+          connectionId: connection.id,
+          ...stale,
+          now: NOW + 2,
+          inserts: [resource],
+          updates: [],
+          connection: { status: "active" },
         },
         [event],
       ),
-    ).resolves.toEqual({ ok: false, reason: "resource_conflict" });
+    ).resolves.toEqual({ ok: false, reason: "stale" });
     expect(await auditCount(env.DB, event.correlationId)).toBe(0);
+    expect(await count("resources", "id = ?", resource.id)).toBe(0);
     expect((await getConnection(db, { workspaceId, connectionId: connection.id }))?.status).toBe(
-      "active",
+      "deleted",
     );
+  });
+
+  it("never revives a deleted connection, even with the current version", async () => {
+    const { workspaceId, connection } = await synced([]);
+    await applyResourceSync(
+      db,
+      {
+        workspaceId,
+        connectionId: connection.id,
+        ...(await guard(connection.id)),
+        now: NOW + 1,
+        inserts: [],
+        updates: [],
+        connection: { status: "deleted" },
+      },
+      [workspaceEvent(workspaceId)],
+    );
+    await expect(
+      applyResourceSync(
+        db,
+        {
+          workspaceId,
+          connectionId: connection.id,
+          ...(await guard(connection.id)),
+          now: NOW + 2,
+          inserts: [],
+          updates: [],
+          connection: { status: "active" },
+        },
+        [workspaceEvent(workspaceId)],
+      ),
+    ).resolves.toEqual({ ok: false, reason: "stale" });
   });
 
   it("propagates other failures, such as a resource in another workspace's connection", async () => {
@@ -146,6 +210,7 @@ describe("applyResourceSync", () => {
         {
           workspaceId: mine.workspaceId,
           connectionId: mine.connection.id,
+          ...(await guard(mine.connection.id)),
           now: NOW,
           inserts: [resourceRow(mine.workspaceId, theirs.connection.id)],
           updates: [],
@@ -172,6 +237,7 @@ describe("resource reads", () => {
         await listResourcesForConnection(db, {
           workspaceId: ws.workspaceId,
           connectionId: ws.connection.id,
+          ...(await guard(ws.connection.id)),
         }),
       ),
     ).toEqual(["alpha/repo", "zeta/repo"]);
@@ -179,6 +245,7 @@ describe("resource reads", () => {
       await listResourcesForConnection(db, {
         workspaceId: ws.workspaceId,
         connectionId: other.connection.id,
+        ...(await guard(other.connection.id)),
       }),
     ).toEqual([]);
     const [foreign] = other.rows;
@@ -202,6 +269,7 @@ describe("resource constraints", () => {
         {
           workspaceId: ws.workspaceId,
           connectionId: ws.connection.id,
+          ...(await guard(ws.connection.id)),
           now: NOW,
           inserts: [resourceRow(ws.workspaceId, ws.connection.id, overrides as object)],
           updates: [],

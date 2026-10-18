@@ -1,3 +1,4 @@
+import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import {
   claimOutbox,
@@ -5,6 +6,7 @@ import {
   getExternalEvent,
   listExternalEventsByState,
   markExternalEvent,
+  markOutboxFailed,
   markOutboxSent,
   type NewExternalEvent,
   type NewOutboxRow,
@@ -145,14 +147,33 @@ describe("outbox", () => {
     await enqueueOutbox(db, due);
     await db.batch([outboxInsert(db, later)]);
 
-    const first = await claimOutbox(db, { now: at, limit: 100, leaseMs: 30_000 });
+    const first = await claimOutbox(db, { now: at, limit: 100, leaseMs: 30_000, maxAttempts: 10 });
     const claimed = first.filter((row) => row.id === due.id || row.id === later.id);
-    expect(claimed).toEqual([{ ...due, attempts: 1, sentAt: null, availableAt: at + 30_000 }]);
+    expect(claimed).toEqual([
+      {
+        ...due,
+        attempts: 1,
+        sentAt: null,
+        failedAt: null,
+        lastErrorCode: null,
+        availableAt: at + 30_000,
+      },
+    ]);
 
-    const again = await claimOutbox(db, { now: at + 1, limit: 100, leaseMs: 30_000 });
+    const again = await claimOutbox(db, {
+      now: at + 1,
+      limit: 100,
+      leaseMs: 30_000,
+      maxAttempts: 10,
+    });
     expect(again.map((row) => row.id)).not.toContain(due.id);
 
-    const afterLease = await claimOutbox(db, { now: at + 30_000, limit: 100, leaseMs: 30_000 });
+    const afterLease = await claimOutbox(db, {
+      now: at + 30_000,
+      limit: 100,
+      leaseMs: 30_000,
+      maxAttempts: 10,
+    });
     expect(afterLease.find((row) => row.id === due.id)?.attempts).toBe(2);
   });
 
@@ -163,13 +184,57 @@ describe("outbox", () => {
     await markOutboxSent(db, [rows[0]?.id ?? ""], at);
     await markOutboxSent(db, [], at);
 
-    const claimed = await claimOutbox(db, { now: at + 1_000_000_000, limit: 1000, leaseMs: 1 });
+    const claimed = await claimOutbox(db, {
+      now: at + 1_000_000_000,
+      limit: 1000,
+      leaseMs: 1,
+      maxAttempts: 10,
+    });
     const ids = claimed.map((row) => row.id);
     expect(ids).not.toContain(rows[0]?.id);
     expect(ids).toContain(rows[1]?.id);
-    expect(await claimOutbox(db, { now: at + 2_000_000_000, limit: 1, leaseMs: 1 })).toHaveLength(
-      1,
-    );
+    expect(
+      await claimOutbox(db, { now: at + 2_000_000_000, limit: 1, leaseMs: 1, maxAttempts: 10 }),
+    ).toHaveLength(1);
+  });
+
+  it("stops claiming a row once it used every attempt", async () => {
+    const at = T0 + 3_000_000;
+    const row = work("exhausted", { availableAt: at });
+    await enqueueOutbox(db, row);
+    const claim = (now: number) =>
+      claimOutbox(db, { now, limit: 1000, leaseMs: 1, maxAttempts: 2 });
+    expect((await claim(at)).map((r) => r.id)).toContain(row.id);
+    expect((await claim(at + 10)).map((r) => r.id)).toContain(row.id);
+    expect((await claim(at + 20)).map((r) => r.id)).not.toContain(row.id);
+  });
+
+  it("never claims a row marked failed, and records why", async () => {
+    const at = T0 + 4_000_000;
+    const row = work("failed", { availableAt: at });
+    await enqueueOutbox(db, row);
+    await markOutboxFailed(db, { id: row.id, now: at, errorCode: "rejected" });
+    const claimed = await claimOutbox(db, {
+      now: at + 1,
+      limit: 1000,
+      leaseMs: 1,
+      maxAttempts: 10,
+    });
+    expect(claimed.map((r) => r.id)).not.toContain(row.id);
+    const stored = await env.DB.prepare(
+      "SELECT failed_at, last_error_code FROM outbox WHERE id = ?",
+    )
+      .bind(row.id)
+      .first();
+    expect(stored).toEqual({ failed_at: at, last_error_code: "rejected" });
+    // A row already sent is not marked failed afterwards.
+    const sent = work("sent", { availableAt: at });
+    await enqueueOutbox(db, sent);
+    await markOutboxSent(db, [sent.id], at);
+    await markOutboxFailed(db, { id: sent.id, now: at, errorCode: "late" });
+    expect(
+      await env.DB.prepare("SELECT failed_at FROM outbox WHERE id = ?").bind(sent.id).first(),
+    ).toEqual({ failed_at: null });
   });
 
   it("rejects an unknown kind", async () => {

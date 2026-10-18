@@ -83,6 +83,10 @@ export const connections = sqliteTable(
     createdAt: integer("created_at").$type<Instant>().notNull(),
     updatedAt: integer("updated_at").$type<Instant>().notNull(),
     lastSyncedAt: integer("last_synced_at").$type<Instant>(),
+    // Optimistic concurrency for resyncs: a resync writes only if the version it read is still
+    // current, and marks its write with a unique token so dependent statements can tell.
+    syncVersion: integer("sync_version").notNull().default(0),
+    syncToken: text("sync_token"),
   },
   (t) => [
     unique("connections_workspace_id_id_unique").on(t.workspaceId, t.id),

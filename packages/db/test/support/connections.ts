@@ -62,6 +62,8 @@ export function connectionRow(
     createdAt: T0 + 1,
     updatedAt: T0 + 1,
     lastSyncedAt: null,
+    syncVersion: 0,
+    syncToken: null,
     ...overrides,
   };
 }

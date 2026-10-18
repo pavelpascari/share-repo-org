@@ -460,26 +460,61 @@ describe("resyncConnection", () => {
     ]);
   });
 
-  it("refuses to apply a resync that raced another one, writing nothing", async () => {
-    const { github, connection } = await connected();
-    let raced = false;
-    const racing = {
+  /** A port whose repository listing lets `during` run between the resync's read and write. */
+  function racing(github: FakeGitHubApp, during: () => Promise<void>, times = 1) {
+    let remaining = times;
+    return {
       ...github,
-      // While this resync is between reading and writing, another one completes.
       listInstallationRepositories: async (id: string) => {
         const repositories = await github.listInstallationRepositories(id);
-        if (!raced) {
-          raced = true;
-          await resyncConnection(serviceContext(), connection, github, "concurrent");
+        if (remaining > 0) {
+          remaining -= 1;
+          await during();
         }
         return repositories;
       },
     };
-    const error = await resyncConnection(serviceContext(), connection, racing, "stale").catch(
+  }
+
+  it("retries from fresh state when another resync wrote in between", async () => {
+    const { github, connection } = await connected();
+    const port = racing(github, async () => {
+      await resyncConnection(serviceContext(), connection, github, "concurrent");
+    });
+    await expect(
+      resyncConnection(serviceContext(), connection, port, "slow"),
+    ).resolves.toMatchObject({ status: "active", discovered: 0 });
+    expect(await resources(connection)).toHaveLength(1);
+  });
+
+  it("never lets an older reading revive a connection deleted meanwhile", async () => {
+    const { github, owner, connection, installationId } = await connected();
+    await resyncConnection(serviceContext(), connection, github, "first");
+    // The slow resync read "active"; meanwhile the App is uninstalled and a webhook resync runs.
+    const port = racing(github, async () => {
+      github.deleteInstallation(installationId);
+      await resyncConnection(serviceContext(), connection, github, "uninstalled");
+    });
+    await expect(
+      resyncConnection(serviceContext(), connection, port, "slow"),
+    ).resolves.toMatchObject({ status: "deleted" });
+    const [listed] = await listGitHubConnections(serviceContext(), owner, owner.slug);
+    expect(listed).toMatchObject({ status: "deleted", repositories: [{ selection: "removed" }] });
+  });
+
+  it("gives up with a retryable conflict when the connection keeps changing", async () => {
+    const { github, connection } = await connected();
+    const port = racing(
+      github,
+      async () => {
+        await resyncConnection(serviceContext(), connection, github, "concurrent");
+      },
+      3,
+    );
+    const error = await resyncConnection(serviceContext(), connection, port, "slow").catch(
       (e: unknown) => e,
     );
     expect(error).toBeInstanceOf(ConflictError);
-    expect(await resources(connection)).toHaveLength(1);
   });
 
   it("resource/selection-removed-blocks-new-provisioning", async () => {
@@ -646,6 +681,12 @@ describe("webhooks", () => {
     await expect(processExternalEvent(serviceContext(), "no-such-event", github)).resolves.toBe(
       "already_done",
     );
+    // An installation event without an installation (malformed but signed) is ignored too.
+    const bare = await delivery({ action: "created" });
+    const bareResult = await ingestGitHubWebhook(serviceContext(), { secret: SECRET, ...bare });
+    await expect(
+      processExternalEvent(serviceContext(), (bareResult as { eventId: string }).eventId, github),
+    ).resolves.toBe("ignored");
   });
 
   it("records a failed attempt with a classification and rethrows for the queue to retry", async () => {
@@ -688,7 +729,13 @@ describe("webhooks", () => {
 describe("listGitHubConnections and resyncWorkspaceConnections", () => {
   it("lets members read and owners resync; strangers see nothing", async () => {
     const { github, owner, connection } = await connected();
-    await resyncWorkspaceConnections(serviceContext(), owner, owner.slug, github);
+    const ctx = serviceContext();
+    await resyncWorkspaceConnections(ctx, owner, owner.slug, github);
+    // A resync someone asked for is attributed to them.
+    const [synced] = (await listAuditEventsByCorrelationId(db, ctx.correlationId)).filter(
+      (event) => event.action === "connection.synced",
+    );
+    expect(synced?.actor).toEqual({ type: "user", id: owner.userId });
     const member = await signedUpUser();
     await addWorkspaceMember(serviceContext(), owner, owner.slug, {
       userId: member.userId,

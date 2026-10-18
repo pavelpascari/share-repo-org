@@ -1,15 +1,18 @@
-import { resyncConnection, type ServiceContext } from "@sharerepo/application";
+import type { ServiceContext } from "@sharerepo/application";
 import {
   claimOutbox,
   createDb,
   type Db,
+  enqueueOutbox,
   listActiveConnectionIds,
+  markOutboxFailed,
   markOutboxSent,
 } from "@sharerepo/db";
 import type { Clock, IdGenerator } from "@sharerepo/domain";
 import { GitHubApiError, type GitHubAppConfig, type GitHubAppPort } from "@sharerepo/integrations";
 import {
   AppError,
+  ConflictError,
   correlationIdFrom,
   createLogger,
   type Logger,
@@ -39,6 +42,8 @@ export const CRONS = {
 
 const OUTBOX_BATCH = 25;
 const OUTBOX_LEASE_MS = 60_000;
+/** After this many attempts a row is marked failed and left for the operator. */
+export const OUTBOX_MAX_ATTEMPTS = 10;
 
 class MethodNotAllowedError extends AppError {
   constructor() {
@@ -56,8 +61,22 @@ function classify(error: unknown) {
   return { errorName: error instanceof Error ? error.name : "unknown" };
 }
 
-const isRetryable = (error: unknown): error is GitHubApiError =>
-  error instanceof GitHubApiError && (error.kind === "transient" || error.kind === "rate_limited");
+/**
+ * Worth retrying: GitHub was unavailable or rate limited, or a resync kept losing to concurrent
+ * ones (ConflictError). Anything else (rejected, malformed, a bug) will not succeed by waiting.
+ */
+const isRetryable = (error: unknown): boolean =>
+  error instanceof ConflictError ||
+  (error instanceof GitHubApiError &&
+    (error.kind === "transient" || error.kind === "rate_limited"));
+
+/** A classified code for a failed outbox row, never a message. */
+const errorCode = (error: unknown): string =>
+  error instanceof GitHubApiError
+    ? error.kind
+    : error instanceof AppError
+      ? error.code
+      : "internal_error";
 
 export function createJobsWorker(deps: JobsWorkerDeps) {
   const logOptions = { now: () => deps.clock.now() };
@@ -82,7 +101,12 @@ export function createJobsWorker(deps: JobsWorkerDeps) {
   /** The outbox safety net (decision 0003): runs due work the queue did not complete. */
   async function drainOutbox(db: Db, github: GitHubAppPort, logger: Logger): Promise<void> {
     const now = deps.clock.now();
-    const rows = await claimOutbox(db, { now, limit: OUTBOX_BATCH, leaseMs: OUTBOX_LEASE_MS });
+    const rows = await claimOutbox(db, {
+      now,
+      limit: OUTBOX_BATCH,
+      leaseMs: OUTBOX_LEASE_MS,
+      maxAttempts: OUTBOX_MAX_ATTEMPTS,
+    });
     let sent = 0;
     for (const row of rows) {
       const ctx = services(db);
@@ -94,26 +118,40 @@ export function createJobsWorker(deps: JobsWorkerDeps) {
           logger.warn("job has no workspace scope", { outboxId: row.id, kind: row.kind });
         }
       } catch (error) {
-        // Left leased: the row becomes due again when the lease expires.
-        logger.warn("outbox job failed", { outboxId: row.id, kind: row.kind, ...classify(error) });
+        const final = !isRetryable(error) || row.attempts >= OUTBOX_MAX_ATTEMPTS;
+        if (final) {
+          // Will not succeed by waiting: record it once instead of retrying every minute.
+          await markOutboxFailed(db, { id: row.id, now, errorCode: errorCode(error) });
+        }
+        // Otherwise left leased: the row becomes due again when the lease expires.
+        logger.warn("outbox job failed", {
+          outboxId: row.id,
+          kind: row.kind,
+          final,
+          ...classify(error),
+        });
       }
     }
     logger.info("outbox drained", { claimed: rows.length, sent });
   }
 
-  /** The daily repair path: resync every connection that is not deleted, past failures. */
-  async function dailyResync(db: Db, github: GitHubAppPort, logger: Logger): Promise<void> {
+  /**
+   * The daily repair path: queue a resync of every connection that is not deleted. The outbox
+   * drain runs them a batch at a time, so one cron run never does every connection's GitHub calls.
+   */
+  async function dailyResync(db: Db, logger: Logger): Promise<void> {
     const connections = await listActiveConnectionIds(db);
-    let failed = 0;
+    const now = deps.clock.now();
     for (const connection of connections) {
-      try {
-        await resyncConnection(services(db), connection, github, "daily resync");
-      } catch (error) {
-        failed += 1;
-        logger.warn("daily resync failed", { connectionId: connection.id, ...classify(error) });
-      }
+      await enqueueOutbox(db, {
+        id: deps.ids.next(),
+        kind: "resync_connection",
+        subjectId: connection.id,
+        createdAt: now,
+        availableAt: now,
+      });
     }
-    logger.info("daily resync finished", { connections: connections.length, failed });
+    logger.info("daily resync queued", { connections: connections.length });
   }
 
   return {
@@ -160,7 +198,7 @@ export function createJobsWorker(deps: JobsWorkerDeps) {
       const db = createDb(config.db);
       const github = deps.github(config.github);
       if (controller.cron === CRONS.drainOutbox) await drainOutbox(db, github, logger);
-      else await dailyResync(db, github, logger);
+      else await dailyResync(db, logger);
     },
 
     /**
@@ -205,7 +243,8 @@ export function createJobsWorker(deps: JobsWorkerDeps) {
           message.ack();
         } catch (error) {
           if (isRetryable(error)) {
-            const delaySeconds = retryDelaySeconds(message.attempts, error.retryAfterMs);
+            const retryAfterMs = error instanceof GitHubApiError ? error.retryAfterMs : undefined;
+            const delaySeconds = retryDelaySeconds(message.attempts, retryAfterMs);
             logger.warn("job will be retried", {
               outboxId: job.outboxId,
               delaySeconds,
@@ -213,6 +252,12 @@ export function createJobsWorker(deps: JobsWorkerDeps) {
             });
             message.retry({ delaySeconds });
           } else {
+            // Final: record it on the outbox row too, so the drain does not pick it up again.
+            await markOutboxFailed(db, {
+              id: job.outboxId,
+              now: deps.clock.now(),
+              errorCode: errorCode(error),
+            });
             logger.error("job failed", { outboxId: job.outboxId, ...classify(error) });
             message.ack();
           }

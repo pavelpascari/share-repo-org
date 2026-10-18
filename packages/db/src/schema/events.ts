@@ -60,6 +60,9 @@ export const outbox = sqliteTable(
     availableAt: integer("available_at").$type<Instant>().notNull(),
     attempts: integer("attempts").notNull(),
     sentAt: integer("sent_at").$type<Instant>(),
+    // Set when the work failed permanently or ran out of attempts; such rows are never claimed.
+    failedAt: integer("failed_at").$type<Instant>(),
+    lastErrorCode: text("last_error_code"),
   },
   (t) => [
     index("outbox_pending_idx").on(t.sentAt, t.availableAt),

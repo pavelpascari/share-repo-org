@@ -42,6 +42,7 @@ export {
 export {
   claimOutbox,
   enqueueOutbox,
+  markOutboxFailed,
   markOutboxSent,
   type NewOutboxRow,
   type OutboxRow,

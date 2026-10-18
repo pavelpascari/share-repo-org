@@ -1,8 +1,7 @@
 import type { ConnectionStatus, Instant, ResourceSelection } from "@sharerepo/domain";
-import { and, asc, eq } from "drizzle-orm";
-import { type AuditEvents, auditInserts } from "./audit-repository.ts";
+import { and, asc, eq, getTableColumns, ne, sql } from "drizzle-orm";
+import { type AuditEvents, conditionalAuditInserts } from "./audit-repository.ts";
 import type { Db } from "./client.ts";
-import { isUniqueViolation } from "./errors.ts";
 import { connections, resources } from "./schema/index.ts";
 
 /** Domain `Resource`: keyed by the provider's immutable ID within its connection. */
@@ -19,6 +18,10 @@ export interface ResourceSync {
   workspaceId: string;
   connectionId: string;
   now: Instant;
+  /** The connection's `sync_version` when this resync read it; the write fails if it changed. */
+  expectedVersion: number;
+  /** Unique per resync: marks this resync's write so the batch's other statements can see it. */
+  syncToken: string;
   inserts: readonly Resource[];
   updates: readonly { id: string; set: ResourceChanges }[];
   /** Connection facts observed during the resync; `last_synced_at` is always set to `now`. */
@@ -27,8 +30,11 @@ export interface ResourceSync {
 
 export type ApplyResourceSyncResult =
   | { ok: true }
-  /** A concurrent resync inserted the same resource first. Nothing was written; resync again. */
-  | { ok: false; reason: "resource_conflict" };
+  /**
+   * Another resync wrote first (or the connection is deleted): nothing was written. Read again
+   * and resync with fresh provider state.
+   */
+  | { ok: false; reason: "stale" };
 
 export async function listResourcesForConnection(
   db: Db,
@@ -64,9 +70,11 @@ export async function getResource(
 }
 
 /**
- * Applies one resync of a connection in one atomic batch: new resources, changes to existing ones
- * (each scoped to this workspace and connection), the connection's observed facts with
- * `last_synced_at`, and the audit events describing them.
+ * Applies one resync of a connection in one atomic batch, with optimistic concurrency. The
+ * connection update succeeds only if its `sync_version` is still the one this resync read and it
+ * is not deleted; it then bumps the version and stamps `sync_token`. Every other statement (new
+ * resources, changes, audit events) runs only if the connection carries this resync's token, so a
+ * stale resync writes nothing and cannot overwrite newer state, nor revive a deleted connection.
  */
 export async function applyResourceSync(
   db: Db,
@@ -74,32 +82,48 @@ export async function applyResourceSync(
   audit: AuditEvents,
 ): Promise<ApplyResourceSyncResult> {
   const { workspaceId, connectionId, now } = sync;
+  const ours = sql`EXISTS (SELECT 1 FROM ${connections} WHERE ${connections.id} = ${connectionId} AND ${connections.syncToken} = ${sync.syncToken})`;
   const inConnection = (id: string) =>
     and(
       eq(resources.workspaceId, workspaceId),
       eq(resources.connectionId, connectionId),
       eq(resources.id, id),
+      ours,
     );
-  try {
-    await db.batch([
-      db
-        .update(connections)
-        .set({ ...sync.connection, lastSyncedAt: now, updatedAt: now })
-        .where(and(eq(connections.workspaceId, workspaceId), eq(connections.id, connectionId))),
-      ...sync.inserts.map((resource) => db.insert(resources).values(resource)),
-      ...sync.updates.map(({ id, set }) =>
-        db
-          .update(resources)
-          .set({ ...set, updatedAt: now })
-          .where(inConnection(id)),
+  const columns = Object.keys(getTableColumns(resources)) as (keyof Resource)[];
+  const [update] = await db.batch([
+    db
+      .update(connections)
+      .set({
+        ...sync.connection,
+        lastSyncedAt: now,
+        updatedAt: now,
+        syncVersion: sync.expectedVersion + 1,
+        syncToken: sync.syncToken,
+      })
+      .where(
+        and(
+          eq(connections.workspaceId, workspaceId),
+          eq(connections.id, connectionId),
+          eq(connections.syncVersion, sync.expectedVersion),
+          ne(connections.status, "deleted"),
+        ),
       ),
-      ...auditInserts(db, audit),
-    ]);
-  } catch (error) {
-    if (isUniqueViolation(error, ["resources.connection_id", "resources.external_id"])) {
-      return { ok: false, reason: "resource_conflict" };
-    }
-    throw error;
-  }
-  return { ok: true };
+    ...sync.inserts.map((resource) =>
+      db.insert(resources).select(
+        sql`SELECT ${sql.join(
+          columns.map((column) => sql`${resource[column]}`),
+          sql`, `,
+        )} WHERE ${ours}`,
+      ),
+    ),
+    ...sync.updates.map(({ id, set }) =>
+      db
+        .update(resources)
+        .set({ ...set, updatedAt: now })
+        .where(inConnection(id)),
+    ),
+    ...conditionalAuditInserts(db, audit, ours),
+  ]);
+  return update.meta.changes > 0 ? { ok: true } : { ok: false, reason: "stale" };
 }

@@ -111,6 +111,30 @@ describe("recordSignIn", () => {
     expect(error).toBeInstanceOf(ConflictError);
   });
 
+  it("refuses when the identity is reassigned between the read and the guarded update", async () => {
+    const user = await signedUpUser();
+    const { userId: other } = await createUserForSignIn(serviceContext());
+    const ctx = serviceContext();
+    // Interpose on the batch: just before the update runs, the identity moves to another user.
+    const racingDb = new Proxy(ctx.db, {
+      get(target, property, receiver) {
+        if (property !== "batch") return Reflect.get(target, property, receiver);
+        return async (statements: Parameters<typeof target.batch>[0]) => {
+          await env.DB.prepare(
+            "UPDATE external_identities SET user_id = ? WHERE external_user_id = ?",
+          )
+            .bind(other, user.profile.externalUserId)
+            .run();
+          return target.batch(statements);
+        };
+      },
+    });
+    await expect(
+      recordSignIn({ ...ctx, db: racingDb }, { userId: user.userId }, user.profile),
+    ).rejects.toBeInstanceOf(ConflictError);
+    expect(await actions(ctx.correlationId)).toEqual([]);
+  });
+
   it("links exactly once when the same first sign-in is recorded concurrently", async () => {
     const { userId } = await createUserForSignIn(serviceContext());
     const profile = githubProfile();

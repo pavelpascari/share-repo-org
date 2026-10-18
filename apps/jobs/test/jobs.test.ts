@@ -8,6 +8,7 @@ import { env } from "cloudflare:workers";
 import { claimOutbox, enqueueOutbox, getExternalEvent } from "@sharerepo/db";
 import { GitHubApiError, type GitHubAppPort } from "@sharerepo/integrations";
 import { createFakeGitHubApp, type FakeGitHubApp } from "@sharerepo/integrations/testing";
+import { ConflictError, NotFoundError } from "@sharerepo/platform";
 import {
   captureLogs,
   changedTables,
@@ -16,7 +17,7 @@ import {
   snapshotTables,
 } from "@sharerepo/testing";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { CRONS, createJobsWorker } from "../src/handlers.ts";
+import { CRONS, createJobsWorker, OUTBOX_MAX_ATTEMPTS } from "../src/handlers.ts";
 import worker from "../src/index.ts";
 import { retryDelaySeconds } from "../src/work.ts";
 import {
@@ -182,6 +183,21 @@ describe("queue()", () => {
     expect(retried()).toMatchObject({ delaySeconds: 91, errorKind: "rate_limited" });
   });
 
+  it("retries a resync that kept losing to concurrent ones", async () => {
+    const github = createFakeGitHubApp();
+    const { installationId } = await connectedCreator(github);
+    const { eventId, outboxId } = await receivedWebhook(installationId);
+    const contended: GitHubAppPort = {
+      ...github,
+      getInstallation: () => Promise.reject(new ConflictError("connection kept changing")),
+    };
+    const result = await deliver(jobsWorker(contended), [
+      { kind: "process_external_event", subjectId: eventId, outboxId },
+    ]);
+    expect(result.retryMessages).toHaveLength(1);
+    expect(retried()).toMatchObject({ delaySeconds: 30, errorName: "ConflictError" });
+  });
+
   it("acknowledges a failure a retry cannot fix, logging only its classification", async () => {
     const github = createFakeGitHubApp();
     const { installationId } = await connectedCreator(github);
@@ -258,7 +274,7 @@ describe("scheduled()", () => {
   it("does not run rows another drainer has leased", async () => {
     const github = createFakeGitHubApp();
     const { connection } = await pendingConnection(github);
-    await claimOutbox(db, { now: clock.now(), limit: 1000, leaseMs: 60_000 });
+    await claimOutbox(db, { now: clock.now(), limit: 1000, leaseMs: 60_000, maxAttempts: 10 });
     await runCron(jobsWorker(github), CRONS.drainOutbox);
     expect(await resourcesOf(connection.id)).toBe(0);
   });
@@ -295,32 +311,102 @@ describe("scheduled()", () => {
     expect(await sentAt(id)).toBe(clock.now());
   });
 
-  it("resyncs every connection daily and continues past a failure", async () => {
+  it("queues a resync of every connection daily for the outbox drain to run", async () => {
     const github = createFakeGitHubApp();
     const first = await connectedCreator(github);
     const second = await connectedCreator(github);
-    // Settle everything already due, then make the first resync of the run fail.
     await runCron(jobsWorker(github), CRONS.drainOutbox);
-    github.failNext("transient");
     await runCron(jobsWorker(github), CRONS.dailyResync);
-    const summary = logged().find((line) => line.msg === "daily resync finished");
-    expect(summary?.failed).toBe(1);
+    const summary = logged().find((line) => line.msg === "daily resync queued");
     expect(summary?.connections).toBeGreaterThanOrEqual(2);
+    for (const { connection } of [first, second]) {
+      const queued = await env.DB.prepare(
+        "SELECT count(*) AS n FROM outbox WHERE kind = 'resync_connection' AND subject_id = ? AND sent_at IS NULL",
+      )
+        .bind(connection.id)
+        .first<{ n: number }>();
+      expect(queued?.n).toBe(1);
+    }
+    await runCron(jobsWorker(github), CRONS.drainOutbox);
     expect(await resourcesOf(first.connection.id)).toBe(1);
     expect(await resourcesOf(second.connection.id)).toBe(1);
   });
 
-  it("classifies a thrown non-error value as unknown", async () => {
+  it("marks a job that cannot succeed as failed at once, and stops retrying it", async () => {
     const github = createFakeGitHubApp();
-    await connectedCreator(github);
-    const throwing: GitHubAppPort = {
-      ...github,
-      getInstallation: () => Promise.reject("plain string"),
-    };
-    await runCron(jobsWorker(throwing), CRONS.dailyResync);
-    expect(logged().find((line) => line.msg === "daily resync failed")).toMatchObject({
-      errorName: "unknown",
+    const { outboxId } = await pendingConnection(github);
+    await runCron(jobsWorker(github), CRONS.drainOutbox);
+    await env.DB.prepare("UPDATE outbox SET sent_at = NULL, available_at = 0 WHERE id = ?")
+      .bind(outboxId)
+      .run();
+    github.failNext("rejected");
+    await runCron(jobsWorker(github), CRONS.drainOutbox);
+    expect(
+      await env.DB.prepare("SELECT last_error_code AS code FROM outbox WHERE id = ?")
+        .bind(outboxId)
+        .first(),
+    ).toEqual({ code: "rejected" });
+    expect(logged().find((line) => line.msg === "outbox job failed")).toMatchObject({
+      final: true,
+      errorKind: "rejected",
     });
+    // Never claimed again.
+    clock.advance(10 * 60_000);
+    await runCron(jobsWorker(github), CRONS.drainOutbox);
+    expect(await sentAt(outboxId)).toBeNull();
+  });
+
+  it("marks a retryable job failed once it used every attempt", async () => {
+    const github = createFakeGitHubApp();
+    const { outboxId } = await pendingConnection(github);
+    await runCron(jobsWorker(github), CRONS.drainOutbox);
+    await env.DB.prepare(
+      "UPDATE outbox SET sent_at = NULL, available_at = 0, attempts = ? WHERE id = ?",
+    )
+      .bind(OUTBOX_MAX_ATTEMPTS - 1, outboxId)
+      .run();
+    github.failNext("transient");
+    await runCron(jobsWorker(github), CRONS.drainOutbox);
+    expect(
+      await env.DB.prepare("SELECT last_error_code AS code FROM outbox WHERE id = ?")
+        .bind(outboxId)
+        .first(),
+    ).toEqual({ code: "transient" });
+  });
+
+  it("classifies non-GitHub failures by error code, or as internal", async () => {
+    const github = createFakeGitHubApp();
+    const { outboxId } = await pendingConnection(github);
+    await runCron(jobsWorker(github), CRONS.drainOutbox);
+    const reset = () =>
+      env.DB.prepare(
+        "UPDATE outbox SET sent_at = NULL, failed_at = NULL, available_at = 0 WHERE id = ?",
+      )
+        .bind(outboxId)
+        .run();
+    const code = async () =>
+      (
+        await env.DB.prepare("SELECT last_error_code AS code FROM outbox WHERE id = ?")
+          .bind(outboxId)
+          .first<{ code: string }>()
+      )?.code;
+    await reset();
+    await runCron(
+      jobsWorker({ ...github, getInstallation: () => Promise.reject(new NotFoundError()) }),
+      CRONS.drainOutbox,
+    );
+    expect(await code()).toBe("not_found");
+    await reset();
+    await runCron(
+      jobsWorker({ ...github, getInstallation: () => Promise.reject("plain string") }),
+      CRONS.drainOutbox,
+    );
+    expect(await code()).toBe("internal_error");
+    expect(
+      logged()
+        .filter((line) => line.msg === "outbox job failed")
+        .map((line) => line.errorName),
+    ).toContain("unknown");
   });
 
   it("skips GitHub work while no App is configured, but keeps the heartbeat", async () => {
