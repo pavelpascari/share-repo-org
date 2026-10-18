@@ -1,4 +1,8 @@
-import type { ServiceContext } from "@sharerepo/application";
+import {
+  type EntitlementSourcePort,
+  queueDueEvaluations,
+  type ServiceContext,
+} from "@sharerepo/application";
 import {
   claimOutbox,
   createDb,
@@ -22,13 +26,15 @@ import {
 } from "@sharerepo/platform";
 import { type JobsConfig, parseJobsEnv } from "./env.ts";
 import { jobMessageSchema } from "./messages.ts";
-import { retryDelaySeconds, runJob } from "./work.ts";
+import { type JobDeps, retryDelaySeconds, runJob } from "./work.ts";
 
 export interface JobsWorkerDeps {
   readonly ids: IdGenerator;
   readonly clock: Clock;
   /** Builds the GitHub App from validated configuration; tests inject the fake. */
   readonly github: (config: GitHubAppConfig) => GitHubAppPort;
+  /** The simulated entitlement source; used outside production only. */
+  readonly simulatedSource: (db: Db) => EntitlementSourcePort;
 }
 
 const HEALTH_PATH = "/healthz";
@@ -44,6 +50,8 @@ const OUTBOX_BATCH = 25;
 const OUTBOX_LEASE_MS = 60_000;
 /** After this many attempts a row is marked failed and left for the operator. */
 export const OUTBOX_MAX_ATTEMPTS = 10;
+/** Subscriptions whose next policy boundary passed, queued per minute (phase-3 plan § Time). */
+export const DUE_EVALUATION_BATCH = 100;
 
 class MethodNotAllowedError extends AppError {
   constructor() {
@@ -55,15 +63,20 @@ class MethodNotAllowedError extends AppError {
   }
 }
 
-/** Log fields for a failure: its class and, for GitHub, its classification. Never its message. */
+/**
+ * Log fields for a failure: its class and, for GitHub, its classification; for an AppError, its
+ * code. Never its message.
+ */
 function classify(error: unknown) {
   if (error instanceof GitHubApiError) return { errorName: error.name, errorKind: error.kind };
+  if (error instanceof AppError) return { errorName: error.name, errorCode: error.code };
   return { errorName: error instanceof Error ? error.name : "unknown" };
 }
 
 /**
- * Worth retrying: GitHub was unavailable or rate limited, or a resync kept losing to concurrent
- * ones (ConflictError). Anything else (rejected, malformed, a bug) will not succeed by waiting.
+ * Worth retrying: GitHub was unavailable or rate limited, or a resync or subscription refresh kept
+ * losing to concurrent writers (ConflictError). Anything else (rejected, malformed, a bug) will
+ * not succeed by waiting.
  */
 const isRetryable = (error: unknown): boolean =>
   error instanceof ConflictError ||
@@ -87,6 +100,12 @@ export function createJobsWorker(deps: JobsWorkerDeps) {
     correlationId: deps.ids.next(),
   });
 
+  const jobDeps = (config: JobsConfig, github: GitHubAppConfig): JobDeps => ({
+    github: deps.github(github),
+    environment: config.environment,
+    simulatedSource: deps.simulatedSource,
+  });
+
   /** Parses the env, logging a classified error and rethrowing so the runtime records it. */
   function configFrom(env: Env, logger: Logger): JobsConfig {
     try {
@@ -99,7 +118,7 @@ export function createJobsWorker(deps: JobsWorkerDeps) {
   }
 
   /** The outbox safety net (decision 0003): runs due work the queue did not complete. */
-  async function drainOutbox(db: Db, github: GitHubAppPort, logger: Logger): Promise<void> {
+  async function drainOutbox(db: Db, jobs: JobDeps, logger: Logger): Promise<void> {
     const now = deps.clock.now();
     const rows = await claimOutbox(db, {
       now,
@@ -111,7 +130,7 @@ export function createJobsWorker(deps: JobsWorkerDeps) {
     for (const row of rows) {
       const ctx = services(db);
       try {
-        const outcome = await runJob(ctx, row, github);
+        const outcome = await runJob(ctx, row, jobs);
         await markOutboxSent(db, [row.id], now);
         sent += 1;
         if (outcome === "out_of_scope") {
@@ -133,6 +152,15 @@ export function createJobsWorker(deps: JobsWorkerDeps) {
       }
     }
     logger.info("outbox drained", { claimed: rows.length, sent });
+  }
+
+  /**
+   * Time-based re-evaluation: queues a refresh of every subscription whose next policy boundary
+   * has passed, so the drain that follows in the same tick runs them.
+   */
+  async function sweepDueEvaluations(db: Db, logger: Logger): Promise<void> {
+    const queued = await queueDueEvaluations(services(db), { limit: DUE_EVALUATION_BATCH });
+    logger.info("due evaluations queued", { queued });
   }
 
   /**
@@ -173,7 +201,10 @@ export function createJobsWorker(deps: JobsWorkerDeps) {
       return withCorrelationId(response, correlationId);
     },
 
-    /** Crons: heartbeat, outbox drain, daily resync. Invalid configuration fails the run. */
+    /**
+     * Crons: heartbeat; every minute, the due-evaluation sweep then the outbox drain; daily
+     * resync. Invalid configuration fails the run.
+     */
     async scheduled(controller: ScheduledController, env: Env): Promise<void> {
       const logger = createLogger(
         { correlationId: deps.ids.next(), worker: "jobs", cron: controller.cron },
@@ -196,16 +227,20 @@ export function createJobsWorker(deps: JobsWorkerDeps) {
         return;
       }
       const db = createDb(config.db);
-      const github = deps.github(config.github);
-      if (controller.cron === CRONS.drainOutbox) await drainOutbox(db, github, logger);
-      else await dailyResync(db, logger);
+      if (controller.cron === CRONS.dailyResync) {
+        await dailyResync(db, logger);
+        return;
+      }
+      await sweepDueEvaluations(db, logger);
+      await drainOutbox(db, jobDeps(config, config.github), logger);
     },
 
     /**
      * The fast path for handed-off work. Each message is acknowledged unless a retry can help:
-     * poison messages and work without a workspace are dropped with a warning; GitHub outages
-     * and rate limits are retried with a delay; other failures are already recorded by the
-     * services and are acknowledged.
+     * poison messages and work without a workspace are dropped with a warning; GitHub outages,
+     * rate limits and concurrent writers are retried with a delay; other failures (including a
+     * key that does not decode, or an unavailable entitlement source) are marked failed on the
+     * outbox row with a classified code and acknowledged.
      */
     async queue(batch: MessageBatch<unknown>, env: Env): Promise<void> {
       const batchLogger = createLogger(
@@ -214,7 +249,7 @@ export function createJobsWorker(deps: JobsWorkerDeps) {
       );
       const config = configFrom(env, batchLogger);
       const db = createDb(config.db);
-      const github = config.github === null ? null : deps.github(config.github);
+      const jobs = config.github === null ? null : jobDeps(config, config.github);
 
       for (const message of batch.messages) {
         const parsed = jobMessageSchema.safeParse(message.body);
@@ -224,7 +259,7 @@ export function createJobsWorker(deps: JobsWorkerDeps) {
           continue;
         }
         const job = parsed.data;
-        if (github === null) {
+        if (jobs === null) {
           batchLogger.warn("GitHub App not configured; job dropped", { kind: job.kind });
           message.ack();
           continue;
@@ -235,7 +270,7 @@ export function createJobsWorker(deps: JobsWorkerDeps) {
           logOptions,
         );
         try {
-          const outcome = await runJob(ctx, job, github);
+          const outcome = await runJob(ctx, job, jobs);
           await markOutboxSent(db, [job.outboxId], deps.clock.now());
           if (outcome === "out_of_scope") {
             logger.warn("job has no workspace scope", { outboxId: job.outboxId });

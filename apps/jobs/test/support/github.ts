@@ -96,6 +96,7 @@ export async function connectedCreator(github: FakeGitHubApp) {
   if (!completed.ok) throw new Error(completed.reason);
   return {
     userId,
+    slug: workspace.workspace.slug,
     installationId,
     repositoryId,
     connection: { workspaceId: workspace.workspace.id, id: completed.connectionId },

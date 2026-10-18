@@ -1,23 +1,11 @@
-import {
-  createExecutionContext,
-  createMessageBatch,
-  createScheduledController,
-  getQueueResult,
-} from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { claimOutbox, enqueueOutbox, getExternalEvent } from "@sharerepo/db";
 import { GitHubApiError, type GitHubAppPort } from "@sharerepo/integrations";
 import { createFakeGitHubApp, type FakeGitHubApp } from "@sharerepo/integrations/testing";
 import { ConflictError, NotFoundError } from "@sharerepo/platform";
-import {
-  captureLogs,
-  changedTables,
-  type LogCapture,
-  SequentialIds,
-  snapshotTables,
-} from "@sharerepo/testing";
+import { captureLogs, changedTables, type LogCapture, snapshotTables } from "@sharerepo/testing";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { CRONS, createJobsWorker, OUTBOX_MAX_ATTEMPTS } from "../src/handlers.ts";
+import { CRONS, OUTBOX_MAX_ATTEMPTS } from "../src/handlers.ts";
 import worker from "../src/index.ts";
 import { retryDelaySeconds } from "../src/work.ts";
 import {
@@ -25,57 +13,13 @@ import {
   connectedCreator,
   count,
   db,
-  envWithGitHub,
   outboxIdFor,
   receivedWebhook,
 } from "./support/github.ts";
-
-const QUEUE = "sharerepo-events-dev";
-
-function jobsWorker(github: GitHubAppPort) {
-  return createJobsWorker({
-    ids: new SequentialIds({ prefix: `corr-${crypto.randomUUID()}-` }),
-    clock,
-    github: () => github,
-  });
-}
-
-let messageCounter = 0;
-async function deliver(
-  target: ExportedHandler<Env>,
-  bodies: unknown[],
-  options: { attempts?: number; bindings?: Env } = {},
-) {
-  const batch = createMessageBatch(
-    QUEUE,
-    bodies.map((body) => ({
-      id: `msg-${++messageCounter}`,
-      timestamp: clock.now(),
-      attempts: options.attempts ?? 1,
-      body,
-    })),
-  );
-  const ctx = createExecutionContext();
-  await target.queue?.(batch, options.bindings ?? envWithGitHub, ctx);
-  return getQueueResult(batch, ctx);
-}
-
-function runCron(target: ExportedHandler<Env>, cron: string, bindings: Env = envWithGitHub) {
-  return target.scheduled?.(
-    createScheduledController({ cron, scheduledTime: clock.now() }),
-    bindings,
-    createExecutionContext(),
-  );
-}
+import { deliver, jobsWorker, runCron, sentAt } from "./support/worker.ts";
 
 const resourcesOf = (connectionId: string) =>
   count("SELECT count(*) AS n FROM resources WHERE connection_id = ?", connectionId);
-const sentAt = async (outboxId: string) =>
-  (
-    await env.DB.prepare("SELECT sent_at FROM outbox WHERE id = ?")
-      .bind(outboxId)
-      .first<{ sent_at: number | null }>()
-  )?.sent_at;
 
 let logs: LogCapture;
 beforeEach(() => {

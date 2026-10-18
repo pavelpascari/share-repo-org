@@ -1,14 +1,51 @@
 import {
+  decodeOfferKey,
+  decodeRefreshKey,
+  type EntitlementSourcePort,
   processExternalEvent,
+  recomputeOffer,
+  refreshSubscription,
   resyncConnection,
   type ServiceContext,
 } from "@sharerepo/application";
-import { listActiveConnectionIds } from "@sharerepo/db";
+import { type Db, listActiveConnectionIds } from "@sharerepo/db";
+import type { CommercialSource } from "@sharerepo/domain";
 import type { GitHubAppPort } from "@sharerepo/integrations";
+import { AppError } from "@sharerepo/platform";
+import type { JobsEnvironment } from "./env.ts";
 import type { JobMessage } from "./messages.ts";
 
 /** `done`: the work ran (or was already done). `out_of_scope`: no workspace owns the subject. */
 export type JobOutcome = "done" | "out_of_scope";
+
+/** What a job may use beyond the service context. */
+export interface JobDeps {
+  readonly github: GitHubAppPort;
+  readonly environment: JobsEnvironment;
+  /** The simulated entitlement source over a database; tests inject a contended one. */
+  readonly simulatedSource: (db: Db) => EntitlementSourcePort;
+}
+
+/**
+ * A job that can never succeed as written: its key does not decode (so it names no workspace),
+ * or its entitlement source is not available here. Final, with a classified code only.
+ */
+export class JobRejectedError extends AppError {
+  constructor(code: "key_invalid" | "source_unavailable") {
+    super("job rejected", { httpStatus: 422, code });
+  }
+}
+
+/**
+ * The entitlement source for a refresh. The simulator never runs in production (decision 0009);
+ * Paddle arrives in Phase 5.
+ */
+function entitlementSource(source: CommercialSource, db: Db, deps: JobDeps): EntitlementSourcePort {
+  if (source === "simulated" && deps.environment !== "production") {
+    return deps.simulatedSource(db);
+  }
+  throw new JobRejectedError("source_unavailable");
+}
 
 /**
  * Runs one unit of handed-off work. Shared by the queue consumer (fast path) and the outbox drain
@@ -17,21 +54,37 @@ export type JobOutcome = "done" | "out_of_scope";
 export async function runJob(
   ctx: ServiceContext,
   job: Pick<JobMessage, "kind" | "subjectId">,
-  github: GitHubAppPort,
+  deps: JobDeps,
 ): Promise<JobOutcome> {
-  if (job.kind === "process_external_event") {
-    await processExternalEvent(ctx, job.subjectId, github);
-    return "done";
+  switch (job.kind) {
+    case "process_external_event":
+      await processExternalEvent(ctx, job.subjectId, deps.github);
+      return "done";
+    case "refresh_subscription": {
+      // The workspace comes from the key and scopes every read and write of the refresh.
+      const key = decodeRefreshKey(job.subjectId);
+      if (!key.ok) throw new JobRejectedError("key_invalid");
+      await refreshSubscription(ctx, key.value, entitlementSource(key.value.source, ctx.db, deps));
+      return "done";
+    }
+    case "recompute_offer": {
+      const key = decodeOfferKey(job.subjectId);
+      if (!key.ok) throw new JobRejectedError("key_invalid");
+      await recomputeOffer(ctx, key.value);
+      return "done";
+    }
+    case "resync_connection": {
+      // A resync is always scoped to the connection's workspace as stored in the database, never
+      // to anything in the message. The active-connection list is small in v1; a keyed lookup
+      // can replace this scan when it is not.
+      const connection = (await listActiveConnectionIds(ctx.db)).find(
+        (candidate) => candidate.id === job.subjectId,
+      );
+      if (connection === undefined) return "out_of_scope";
+      await resyncConnection(ctx, connection, deps.github, "outbox: resync_connection");
+      return "done";
+    }
   }
-  // A resync is always scoped to the connection's workspace as stored in the database, never to
-  // anything in the message. The active-connection list is small in v1; a keyed lookup can
-  // replace this scan when it is not.
-  const connection = (await listActiveConnectionIds(ctx.db)).find(
-    (candidate) => candidate.id === job.subjectId,
-  );
-  if (connection === undefined) return "out_of_scope";
-  await resyncConnection(ctx, connection, github, "outbox: resync_connection");
-  return "done";
 }
 
 const BASE_RETRY_DELAY_SECONDS = 30;
