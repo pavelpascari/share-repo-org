@@ -1,3 +1,9 @@
+import {
+  type GitHubLogin,
+  type GitHubUserId,
+  parseGitHubLogin,
+  parseGitHubUserId,
+} from "@sharerepo/domain";
 import { z } from "zod";
 
 // GitHub sign-in done by our own code (decision 0006): Better Auth's genericOAuth plugin calls
@@ -43,9 +49,9 @@ export class GitHubAuthError extends Error {
 
 export interface GitHubUser {
   /** GitHub's immutable numeric user ID, as a decimal string. */
-  readonly id: string;
+  readonly id: GitHubUserId;
   /** Mutable; a snapshot only. */
-  readonly login: string;
+  readonly login: GitHubLogin;
   readonly name: string | null;
   readonly avatarUrl: string | null;
 }
@@ -69,11 +75,20 @@ const tokenErrorResponse = z.object({ error: z.string().min(1) });
 const tokenResponse = z.object({ access_token: z.string().min(1) });
 
 const userResponse = z.object({
-  id: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
-  login: z.string().min(1).max(39),
+  id: z.number().transform((id, ctx) => parsedOrIssue(parseGitHubUserId(id), ctx)),
+  login: z.string().transform((login, ctx) => parsedOrIssue(parseGitHubLogin(login), ctx)),
   name: z.string().nullish(),
   avatar_url: z.url().nullish(),
 });
+
+function parsedOrIssue<T>(
+  result: { ok: true; value: T } | { ok: false; error: string },
+  ctx: z.RefinementCtx,
+): T {
+  if (result.ok) return result.value;
+  ctx.addIssue({ code: "custom", message: result.error });
+  return z.NEVER;
+}
 
 export function createGitHubClient(options: {
   endpoints: GitHubEndpoints;
@@ -133,7 +148,7 @@ export function createGitHubClient(options: {
         throw new GitHubAuthError("malformed_response", "GitHub user response is malformed");
       }
       return {
-        id: String(user.data.id),
+        id: user.data.id,
         login: user.data.login,
         name: user.data.name || null,
         avatarUrl: user.data.avatar_url ?? null,
