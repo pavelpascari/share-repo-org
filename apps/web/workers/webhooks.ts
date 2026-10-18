@@ -1,6 +1,6 @@
 import { ingestGitHubWebhook, type ServiceContext } from "@sharerepo/application";
 import { createDb } from "@sharerepo/db";
-import type { Clock, IdGenerator } from "@sharerepo/domain";
+import type { Clock, IdGenerator, OutboxKind } from "@sharerepo/domain";
 import type { Logger } from "@sharerepo/platform";
 import type { WebEnv } from "./env.ts";
 
@@ -9,7 +9,7 @@ export const MAX_WEBHOOK_BYTES = 1024 * 1024;
 
 /** The message the jobs Worker consumes (apps/jobs/src/messages.ts has the same shape). */
 export interface JobMessage {
-  readonly kind: "process_external_event";
+  readonly kind: OutboxKind;
   readonly subjectId: string;
   readonly outboxId: string;
 }
