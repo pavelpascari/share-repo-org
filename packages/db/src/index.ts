@@ -19,12 +19,15 @@ export {
 export * as schema from "./schema/index.ts";
 export { createUser, type User } from "./user-repository.ts";
 export {
+  type AddWorkspaceMemberResult,
+  addWorkspaceMember,
   type CreateWorkspaceInput,
   type CreateWorkspaceResult,
   createWorkspace,
   findWorkspaceForMemberBySlug,
   getWorkspaceForMember,
   listWorkspacesForUser,
+  renameWorkspace,
   type Workspace,
   type WorkspaceForMember,
 } from "./workspace-repository.ts";

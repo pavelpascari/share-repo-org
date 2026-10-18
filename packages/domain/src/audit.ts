@@ -70,6 +70,11 @@ export const AUDIT_ACTIONS = {
     targetType: "workspace",
     details: z.strictObject({ slug: text, name: text }),
   },
+  "workspace.renamed": {
+    scope: "workspace",
+    targetType: "workspace",
+    details: z.strictObject({ previousName: text, name: text }),
+  },
   "membership.added": {
     scope: "workspace",
     targetType: "user",

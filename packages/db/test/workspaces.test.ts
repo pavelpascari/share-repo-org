@@ -1,5 +1,6 @@
 import { env } from "cloudflare:workers";
 import {
+  authorizeMembership,
   parseWorkspaceName,
   parseWorkspaceSlug,
   type WorkspaceName,
@@ -7,6 +8,7 @@ import {
 } from "@sharerepo/domain";
 import { describe, expect, it } from "vitest";
 import {
+  addWorkspaceMember,
   createDb,
   createUser,
   createWorkspace,
@@ -15,6 +17,7 @@ import {
   listAuditEventsByCorrelationId,
   listWorkspacesForUser,
   ping,
+  renameWorkspace,
 } from "../src/index.ts";
 import { accountEvent, auditCount, workspaceEvent } from "./support/audit.ts";
 import { insertMembershipRow, T0, uniqueId, uniqueSlug } from "./support/rows.ts";
@@ -260,7 +263,7 @@ describe("findWorkspaceForMemberBySlug", () => {
       findWorkspaceForMemberBySlug(db, { slug: workspace.slug, userId: outsider }),
     ).resolves.toBeNull();
     await expect(
-      findWorkspaceForMemberBySlug(db, { slug: "no-such-workspace", userId: outsider }),
+      findWorkspaceForMemberBySlug(db, { slug: slug("no-such-workspace"), userId: outsider }),
     ).resolves.toBeNull();
   });
 });
@@ -327,5 +330,96 @@ describe("getWorkspaceForMember", () => {
       userId: ownerUserId,
     });
     expect(result?.workspace.status).toBe("suspended");
+  });
+});
+
+function ownerScope(workspaceId: string, userId: string) {
+  const scope = authorizeMembership({ workspaceId, userId, role: "owner" }, "workspace.manage");
+  if (scope === null) throw new Error("owner must be allowed to manage");
+  return scope;
+}
+
+describe("renameWorkspace", () => {
+  it("renames only the scoped workspace and writes the audit event in the same batch", async () => {
+    const owner = await newUser();
+    const target = await newWorkspace(owner);
+    const other = await newWorkspace(owner);
+    const event = workspaceEvent(target.id);
+    await renameWorkspace(
+      db,
+      ownerScope(target.id, owner),
+      { name: name("Renamed"), now: T0 + 5 },
+      [event],
+    );
+    expect(await getWorkspaceForMember(db, { workspaceId: target.id, userId: owner })).toEqual({
+      workspace: { ...target, name: "Renamed", updatedAt: T0 + 5 },
+      role: "owner",
+    });
+    const unchanged = await getWorkspaceForMember(db, { workspaceId: other.id, userId: owner });
+    expect(unchanged?.workspace.name).toBe(other.name);
+    expect(await auditCount(env.DB, event.correlationId)).toBe(1);
+  });
+
+  it("writes nothing when the audit insert fails", async () => {
+    const owner = await newUser();
+    const target = await newWorkspace(owner);
+    const invalid = workspaceEvent(target.id, { workspaceId: null });
+    await expect(
+      renameWorkspace(db, ownerScope(target.id, owner), { name: name("Nope"), now: T0 + 5 }, [
+        invalid,
+      ]),
+    ).rejects.toThrow();
+    const after = await getWorkspaceForMember(db, { workspaceId: target.id, userId: owner });
+    expect(after?.workspace.name).toBe(target.name);
+  });
+});
+
+describe("addWorkspaceMember", () => {
+  it("adds a member to the scoped workspace with its audit event", async () => {
+    const owner = await newUser();
+    const member = await newUser();
+    const workspace = await newWorkspace(owner);
+    const event = workspaceEvent(workspace.id);
+    await expect(
+      addWorkspaceMember(
+        db,
+        ownerScope(workspace.id, owner),
+        { userId: member, role: "member", now: T0 },
+        [event],
+      ),
+    ).resolves.toEqual({ ok: true });
+    expect(await getWorkspaceForMember(db, { workspaceId: workspace.id, userId: member })).toEqual({
+      workspace,
+      role: "member",
+    });
+    expect(await auditCount(env.DB, event.correlationId)).toBe(1);
+  });
+
+  it("reports an existing member as a typed result and writes no audit event", async () => {
+    const owner = await newUser();
+    const workspace = await newWorkspace(owner);
+    const event = workspaceEvent(workspace.id);
+    await expect(
+      addWorkspaceMember(
+        db,
+        ownerScope(workspace.id, owner),
+        { userId: owner, role: "member", now: T0 },
+        [event],
+      ),
+    ).resolves.toEqual({ ok: false, reason: "already_member" });
+    expect(await auditCount(env.DB, event.correlationId)).toBe(0);
+  });
+
+  it("propagates other constraint failures", async () => {
+    const owner = await newUser();
+    const workspace = await newWorkspace(owner);
+    await expect(
+      addWorkspaceMember(
+        db,
+        ownerScope(workspace.id, owner),
+        { userId: uniqueId("missing"), role: "member", now: T0 },
+        [workspaceEvent(workspace.id)],
+      ),
+    ).rejects.toThrow();
   });
 });

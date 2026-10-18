@@ -216,7 +216,7 @@ describe("updateExternalIdentitySnapshot", () => {
 
 describe("external_identities constraints", () => {
   function insertRaw(overrides: Record<string, unknown>) {
-    const r = {
+    const r: Record<string, unknown> = {
       id: uniqueId("idn"),
       provider: "github",
       external_user_id: githubUserId(),

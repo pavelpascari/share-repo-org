@@ -3,6 +3,7 @@ import {
   AUDIT_ACTIONS,
   type AuditAction,
   type AuditContext,
+  type AuditDetails,
   auditEvent,
   type Clock,
   type IdGenerator,
@@ -19,7 +20,7 @@ function context(correlationId = "corr-1"): AuditContext {
 const user = { type: "user", id: "u1" } as const;
 
 /** One valid details object per action; every field is required and non-empty. */
-const VALID_DETAILS: { [A in AuditAction]: Record<string, string> } = {
+const VALID_DETAILS = {
   "user.created": {},
   "identity.linked": { provider: "github", externalUserId: "583231", username: "octocat" },
   "identity.snapshot_updated": {
@@ -31,8 +32,9 @@ const VALID_DETAILS: { [A in AuditAction]: Record<string, string> } = {
   "auth.signed_in": { provider: "github" },
   "auth.signed_out": {},
   "workspace.created": { slug: "acme", name: "Acme" },
+  "workspace.renamed": { previousName: "Acme", name: "Acme Labs" },
   "membership.added": { role: "owner" },
-};
+} as const satisfies { [A in AuditAction]: AuditDetails<A> };
 
 const ACTIONS = Object.keys(VALID_DETAILS) as AuditAction[];
 
@@ -48,6 +50,7 @@ describe("audit action catalog", () => {
     ["auth.signed_in", "account", "user"],
     ["auth.signed_out", "account", "user"],
     ["workspace.created", "workspace", "workspace"],
+    ["workspace.renamed", "workspace", "workspace"],
     ["membership.added", "workspace", "user"],
   ] as const)("%s is %s-scoped and targets a %s", (action, scope, targetType) => {
     expect(AUDIT_ACTIONS[action].scope).toBe(scope);
@@ -56,7 +59,7 @@ describe("audit action catalog", () => {
 
   describe.each(ACTIONS)("%s details", (action) => {
     const schema = AUDIT_ACTIONS[action].details;
-    const valid = VALID_DETAILS[action];
+    const valid: Readonly<Record<string, string>> = VALID_DETAILS[action];
 
     it("accept the documented shape", () => {
       expect(schema.parse(valid)).toEqual(valid);
@@ -80,6 +83,8 @@ describe("audit action catalog", () => {
     ["identity.linked", "provider", "gitlab"],
     ["identity.snapshot_updated", "provider", "gitlab"],
     ["auth.signed_in", "provider", "gitlab"],
+    ["workspace.renamed", "previousName", ""],
+    ["workspace.renamed", "name", ""],
     ["membership.added", "role", "admin"],
   ] as const)("%s rejects %s %j", (action, key, value) => {
     const details = { ...VALID_DETAILS[action], [key]: value };

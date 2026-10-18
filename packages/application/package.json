@@ -17,6 +17,7 @@
   },
   "devDependencies": {
     "@cloudflare/workers-types": "5.20261018.1",
-    "@sharerepo/testing": "workspace:*"
+    "@sharerepo/testing": "workspace:*",
+    "fast-check": "4.10.2"
   }
 }

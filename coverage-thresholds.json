@@ -14,10 +14,10 @@
       "statements": 100
     },
     "packages/application/src/**": {
-      "lines": 90,
-      "branches": 90,
-      "functions": 90,
-      "statements": 90
+      "lines": 100,
+      "branches": 97.5,
+      "functions": 100,
+      "statements": 98.5
     },
     "packages/platform/src/**": {
       "lines": 100,
@@ -27,7 +27,7 @@
     },
     "packages/testing/src/**": {
       "lines": 100,
-      "branches": 99,
+      "branches": 99.1,
       "functions": 100,
       "statements": 100
     },

@@ -1,2 +1,18 @@
-// Application services: authorization, domain rules, repositories and audit, coordinated per use case.
-export {};
+export { asAuditActor, type ServiceContext, type UserActor } from "./context.ts";
+export {
+  createUserForSignIn,
+  type ProviderProfile,
+  recordSignIn,
+  recordSignOut,
+  type SignInOutcome,
+} from "./identity.ts";
+export {
+  addWorkspaceMember,
+  createWorkspace,
+  listMyWorkspaces,
+  openWorkspace,
+  renameWorkspace,
+  type WorkspaceFieldError,
+  type WorkspaceResult,
+  type WorkspaceSummary,
+} from "./workspaces.ts";

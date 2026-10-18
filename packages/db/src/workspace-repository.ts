@@ -1,4 +1,10 @@
-import type { Instant, WorkspaceName, WorkspaceRole, WorkspaceSlug } from "@sharerepo/domain";
+import type {
+  Instant,
+  WorkspaceName,
+  WorkspaceRole,
+  WorkspaceScope,
+  WorkspaceSlug,
+} from "@sharerepo/domain";
 import { and, asc, eq } from "drizzle-orm";
 import { type AuditEvents, auditInserts } from "./audit-repository.ts";
 import type { Db } from "./client.ts";
@@ -88,7 +94,7 @@ export async function getWorkspaceForMember(
 /** Same as `getWorkspaceForMember`, by slug: null for a non-member and for an unknown slug alike. */
 export async function findWorkspaceForMemberBySlug(
   db: Db,
-  input: { slug: string; userId: string },
+  input: { slug: WorkspaceSlug; userId: string },
 ): Promise<WorkspaceForMember | null> {
   const rows = await memberWorkspace(db)
     .where(and(eq(workspaces.slug, input.slug), eq(workspaceMemberships.userId, input.userId)))
@@ -101,4 +107,56 @@ export async function listWorkspacesForUser(db: Db, userId: string): Promise<Wor
   return memberWorkspace(db)
     .where(eq(workspaceMemberships.userId, userId))
     .orderBy(asc(workspaces.name), asc(workspaces.slug));
+}
+
+/**
+ * Renames the scoped workspace, with its audit events in the same batch. Taking a
+ * `WorkspaceScope` means the caller has already authorized the change for this workspace.
+ */
+export async function renameWorkspace(
+  db: Db,
+  scope: WorkspaceScope,
+  input: { name: WorkspaceName; now: Instant },
+  audit: AuditEvents,
+): Promise<void> {
+  await db.batch([
+    db
+      .update(workspaces)
+      .set({ name: input.name, updatedAt: input.now })
+      .where(eq(workspaces.id, scope.workspaceId)),
+    ...auditInserts(db, audit),
+  ]);
+}
+
+export type AddWorkspaceMemberResult = { ok: true } | { ok: false; reason: "already_member" };
+
+/** Adds a member to the scoped workspace, with its audit events in the same batch. */
+export async function addWorkspaceMember(
+  db: Db,
+  scope: WorkspaceScope,
+  input: { userId: string; role: WorkspaceRole; now: Instant },
+  audit: AuditEvents,
+): Promise<AddWorkspaceMemberResult> {
+  try {
+    await db.batch([
+      db.insert(workspaceMemberships).values({
+        workspaceId: scope.workspaceId,
+        userId: input.userId,
+        role: input.role,
+        createdAt: input.now,
+      }),
+      ...auditInserts(db, audit),
+    ]);
+    return { ok: true };
+  } catch (error) {
+    if (
+      isUniqueViolation(error, [
+        "workspace_memberships.workspace_id",
+        "workspace_memberships.user_id",
+      ])
+    ) {
+      return { ok: false, reason: "already_member" };
+    }
+    throw error;
+  }
 }

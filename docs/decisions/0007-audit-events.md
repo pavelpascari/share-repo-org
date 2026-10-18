@@ -21,6 +21,7 @@
   - `auth.signed_in`
   - `auth.signed_out`
   - `workspace.created`
+  - `workspace.renamed`
   - `membership.added`
 - **Actors:** `user`, `system`, `operator` or `provider`, with an ID. Every row carries the request's correlation ID (`NOT NULL`).
 - **Completeness is tested generically.** A shared helper snapshots every non-audit table before and after an operation. If anything changed, it requires at least one new audit event with the operation's correlation ID. This backs the scenario `audit/every-state-change-has-audit-event` and runs for every service test.
