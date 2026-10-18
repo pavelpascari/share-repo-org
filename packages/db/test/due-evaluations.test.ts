@@ -136,3 +136,114 @@ describe("claimDueEvaluations", () => {
     ).resolves.toBe(0);
   });
 });
+
+describe("claimDueEvaluations: repairing lapsed entitlements", () => {
+  // Each test uses its own instant, since storage is shared within the file: after the earlier
+  // tests' schedules (up to NOW + 4_000) and before the one they leave due (NOW + 9_000).
+  const keyOf = (s: Subscription) => `${s.workspaceId}:${s.source}:${s.externalSubscriptionId}`;
+  const keyed = (s: Subscription) => outboxRow("refresh_subscription", keyOf(s));
+  const queuedFor = (s: Subscription, where = "1") =>
+    count("outbox", `kind = 'refresh_subscription' AND subject_id = ? AND ${where}`, keyOf(s));
+
+  /** A subscription that is not due, with a live entitlement valid until `validUntil`. */
+  async function lapsing(validUntil: number, nextEvaluationAt: number | null = null) {
+    const ws = await subscribedWorkspace({ subscription: { nextEvaluationAt } });
+    await env.DB.prepare("UPDATE entitlements SET valid_until = ? WHERE id = ?")
+      .bind(validUntil, ws.entitlement.id)
+      .run();
+    return ws.subscription;
+  }
+
+  it("queues a refresh for a live entitlement past its end, once while one is pending", async () => {
+    const at = NOW + 5_000;
+    const lapsed = await lapsing(at);
+    const live = await lapsing(at + 1);
+    await expect(
+      claimDueEvaluations(db, { now: at, limit: 10, makeOutboxRow: keyed }),
+    ).resolves.toBe(1);
+    expect(await queuedFor(lapsed)).toBe(1);
+    expect(await queuedFor(live)).toBe(0);
+
+    // Pending: the minutely sweep does not queue it again.
+    await expect(
+      claimDueEvaluations(db, { now: at, limit: 10, makeOutboxRow: keyed }),
+    ).resolves.toBe(0);
+    expect(await queuedFor(lapsed)).toBe(1);
+
+    // The refresh failed for good: the next sweep repairs it with a new row.
+    await env.DB.prepare(
+      "UPDATE outbox SET failed_at = ?, last_error_code = 'internal_error' WHERE kind = 'refresh_subscription' AND subject_id = ?",
+    )
+      .bind(at, keyOf(lapsed))
+      .run();
+    await expect(
+      claimDueEvaluations(db, { now: at, limit: 10, makeOutboxRow: keyed }),
+    ).resolves.toBe(1);
+    expect(await queuedFor(lapsed, "failed_at IS NULL")).toBe(1);
+  });
+
+  it("never repairs an ended entitlement, nor one without an end", async () => {
+    const at = NOW + 6_000;
+    const ended = await lapsing(at - 1);
+    await env.DB.prepare(
+      "UPDATE entitlements SET state = 'expired', ended_at = ? WHERE source_id = ?",
+    )
+      .bind(at - 1, ended.id)
+      .run();
+    const open = await scheduled(null);
+    await claimDueEvaluations(db, { now: at, limit: 10, makeOutboxRow: keyed });
+    expect(await queuedFor(ended)).toBe(0);
+    expect(await queuedFor(open)).toBe(0);
+  });
+
+  it("claims due subscriptions first and repairs within what is left of the limit", async () => {
+    const at = NOW + 7_000;
+    const due = await lapsing(at - 1, at - 1);
+    const first = await lapsing(at - 1);
+    const second = await lapsing(at - 1);
+    const { rows, makeOutboxRow } = recorder();
+    const keyedRecorder = (s: Subscription) => {
+      makeOutboxRow(s);
+      return keyed(s);
+    };
+    await expect(
+      claimDueEvaluations(db, { now: at, limit: 2, makeOutboxRow: keyedRecorder }),
+    ).resolves.toBe(2);
+    // The due one is cleared and queued once, not again as a repair.
+    expect(rows.has(due.id)).toBe(true);
+    expect(await nextEvaluation(due.id)).toBeNull();
+    expect(await queuedFor(due)).toBe(1);
+    const repaired = [first, second].filter((s) => rows.has(s.id));
+    expect(repaired).toHaveLength(1);
+    await expect(
+      claimDueEvaluations(db, { now: at, limit: 2, makeOutboxRow: keyed }),
+    ).resolves.toBe(1);
+    expect(await queuedFor(first)).toBe(1);
+    expect(await queuedFor(second)).toBe(1);
+  });
+
+  it("does not repair a subscription whose refresh was queued after this sweep read it", async () => {
+    const at = NOW + 8_000;
+    const lapsed = await lapsing(at - 1);
+    const races: Promise<unknown>[] = [];
+    const claimed = await claimDueEvaluations(db, {
+      now: at,
+      limit: 10,
+      makeOutboxRow: (row) => {
+        // Runs after the read and before the batch: another sweep queues it in between.
+        const work = keyed(row);
+        races.push(
+          env.DB.prepare(
+            "INSERT INTO outbox (id, kind, subject_id, created_at, available_at, attempts) VALUES (?, 'refresh_subscription', ?, 0, 0, 0)",
+          )
+            .bind(`${work.id}-race`, work.subjectId)
+            .run(),
+        );
+        return work;
+      },
+    });
+    await Promise.all(races);
+    expect(claimed).toBe(0);
+    expect(await queuedFor(lapsed)).toBe(1);
+  });
+});

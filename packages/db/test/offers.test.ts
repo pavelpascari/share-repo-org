@@ -7,7 +7,7 @@ import {
   getOfferVersion,
   listOffers,
   listOffersByIds,
-  listSubscriptionIdsForOffer,
+  listSubscriptionsForOffer,
   type NewOffer,
   type OfferUpdate,
   updateOffer,
@@ -77,6 +77,27 @@ describe("createOffer", () => {
       }),
     ).toEqual(offer.version);
     expect(await count("audit_events", "workspace_id = ?", ws.workspaceId)).toBeGreaterThan(0);
+  });
+
+  it("queues its outbox rows in the same batch", async () => {
+    const ws = await commerceWorkspace();
+    const offer = newOffer({ workspaceId: ws.workspaceId, userId: ws.userId, resourceIds: [] });
+    const work = outboxRow("recompute_offer", `${ws.workspaceId}:${offer.offer.id}`);
+    await createOffer(db, { ...offer, outbox: [work] }, [workspaceEvent(ws.workspaceId)]);
+    expect(await count("outbox", "id = ? AND kind = 'recompute_offer'", work.id)).toBe(1);
+
+    // A failed create queues nothing.
+    const duplicate = {
+      ...newOffer({
+        workspaceId: ws.workspaceId,
+        userId: ws.userId,
+        resourceIds: [],
+        itemIds: offer.items.map((i) => i.externalItemId),
+      }),
+      outbox: [outboxRow("recompute_offer", "x")],
+    };
+    await expect(createOffer(db, duplicate, [workspaceEvent(ws.workspaceId)])).rejects.toThrow();
+    expect(await count("outbox", "id = ?", duplicate.outbox[0]?.id)).toBe(0);
   });
 
   it("writes nothing when one row fails, such as an item another offer already sells", async () => {
@@ -379,18 +400,89 @@ describe("offer reads", () => {
   });
 });
 
-describe("listSubscriptionIdsForOffer", () => {
+describe("parameter limits", () => {
+  // D1 binds at most 100 parameters per statement; these lists exceed it.
+  it("lists more offers by ID than one statement can bind, by name", async () => {
+    const ws = await commerceWorkspace();
+    const seeded = [];
+    for (let i = 0; i < 105; i += 1) {
+      seeded.push(
+        await seedOffer({
+          workspaceId: ws.workspaceId,
+          userId: ws.userId,
+          resourceIds: [],
+          // Two share a name, so the merge also orders by ID.
+          name: i < 2 ? "Same" : `Offer ${String(200 - i).padStart(3, "0")}`,
+        }),
+      );
+    }
+    const ids = seeded.map((o) => o.offer.id);
+    const expected = [...seeded]
+      .sort((a, b) => (`${a.offer.name} ${a.offer.id}` < `${b.offer.name} ${b.offer.id}` ? -1 : 1))
+      .map((o) => o.offer.id);
+    const listed = await listOffersByIds(db, { workspaceId: ws.workspaceId, offerIds: ids });
+    expect(listed.map((o) => o.id)).toEqual(expected);
+    // Every offer has its own item, loaded through chunked lookups too.
+    expect(listed.every((o) => o.items.length === 1)).toBe(true);
+    // Listing the whole workspace loads every offer's configuration.
+    expect((await listOffers(db, ws.workspaceId)).map((o) => o.items.length)).toEqual(
+      Array(105).fill(1),
+    );
+  });
+
+  it("finds offers for more items than one statement can bind", async () => {
+    const ws = await commerceWorkspace();
+    const many = Array.from({ length: 100 }, (_, i) => `sim_${String(i).padStart(3, "0")}`);
+    const big = await seedOffer({
+      workspaceId: ws.workspaceId,
+      userId: ws.userId,
+      resourceIds: [],
+      itemIds: many,
+      name: "Big",
+    });
+    const small = await seedOffer({
+      workspaceId: ws.workspaceId,
+      userId: ws.userId,
+      resourceIds: [],
+      itemIds: ["sim_small"],
+      name: "Small",
+    });
+    const found = await findOffersForItems(db, {
+      workspaceId: ws.workspaceId,
+      source: "simulated",
+      externalItemIds: [...many, "sim_small", "sim_unknown"],
+    });
+    // The big offer's items span two chunks, and it is listed once.
+    expect(found.map((o) => o.id)).toEqual([big.offer.id, small.offer.id]);
+    expect(found[0]?.items).toHaveLength(100);
+  });
+});
+
+describe("listSubscriptionsForOffer", () => {
   const ended = (id: string) =>
     env.DB.prepare("UPDATE entitlements SET state = 'revoked', ended_at = ? WHERE id = ?")
       .bind(NOW, id)
       .run();
-  const ids = (ws: { workspaceId: string }, offerId: string) =>
-    listSubscriptionIdsForOffer(db, { workspaceId: ws.workspaceId, offerId });
+  const ids = async (ws: { workspaceId: string }, offerId: string) =>
+    (await listSubscriptionsForOffer(db, { workspaceId: ws.workspaceId, offerId })).map(
+      (row) => row.id,
+    );
 
-  it("finds a subscription carrying one of the offer's current items", async () => {
+  it("finds a subscription carrying one of the offer's current items, with its refresh key", async () => {
     const ws = await subscribedWorkspace();
     await ended(ws.entitlement.id);
-    expect(await ids(ws, ws.offer.offer.id)).toEqual([ws.subscription.id]);
+    expect(
+      await listSubscriptionsForOffer(db, {
+        workspaceId: ws.workspaceId,
+        offerId: ws.offer.offer.id,
+      }),
+    ).toEqual([
+      {
+        id: ws.subscription.id,
+        source: "simulated",
+        externalSubscriptionId: ws.subscription.externalSubscriptionId,
+      },
+    ]);
 
     // The offer stops selling the item, and no live entitlement links them.
     await updateOffer(

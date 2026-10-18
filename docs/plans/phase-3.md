@@ -99,11 +99,12 @@ Commercial events are hints. Processing always refreshes from the source.
   - the `offer_id` and `offer_version`, and `policy_version`;
   - `valid_from` and `valid_until`;
   - `decision_reason`.
-- **Offer changes:** editing or archiving an offer queues a `recompute_offer` outbox row. Its job recomputes every subscription carrying the offer's items, one subscription per outbox row.
+- **Offer changes:** creating an offer that sells items, editing it or archiving it queues a `recompute_offer` outbox row in the same batch. Its job recomputes every subscription carrying the offer's items or holding a live entitlement from it, one `refresh_subscription` outbox row per subscription. Archiving releases the offer's commercial items, so another offer can sell them.
 - **Time:** the jobs cron runs every minute.
   - It claims subscriptions whose `next_evaluation_at` is at or before now, and queues `refresh_subscription`.
   - Re-evaluation re-reads the source, so a renewal that arrived while waiting wins (`timing/renewal-during-scheduled-revocation` is the Phase 5–6 scenario; the mechanism is here).
   - Between sweeps, the planner treats `valid_until <= now` as not desired, so access never outlives policy because a sweep is late.
+  - The same sweep is the repair path: it also queues a refresh for any subscription with a live entitlement whose `valid_until` has passed and no refresh already queued (see Implementation notes).
 
 ### Grants and the reconciliation planner
 
@@ -140,7 +141,7 @@ Commercial events are hints. Processing always refreshes from the source.
 ### Audit actions (new)
 
 - `offer.created`, `offer.updated` (with the new version), `offer.archived`
-- `subject.created`, `customer.created`, `customer.linked`
+- `subject.created`, `subject.login_updated` (the linked account was renamed; with the previous and new login), `customer.created`, `customer.linked`
 - `subscription.recorded`, `subscription.updated` (with state from and to)
 - `entitlement.created`, `entitlement.updated`, `entitlement.ended` (`expired` or `revoked`, with reason)
 - `simulation.subscription_changed`
@@ -271,8 +272,37 @@ T1 schema + migration + env ──┬─ T2 domain: policy, entitlement diff, pl
 | Every entitlement points to its source and policy version | NOT NULL columns and foreign keys (T1), model-test invariant (T8) |
 | UI language remains repository-centric | T6 copy, E2E assertions |
 
+## Implementation notes
+
+- **Conditional batches guard on the version read, and bump last.** Every optimistic write (`updateOffer`, `applySubscriptionRefresh`, `updateSubjectLogin`) guards each dependent statement on "still at the expected version" and runs the version bump (or the guarded update) as the batch's last statement. D1 runs a batch as one transaction, so either every statement writes or none does. Guarding the dependents on "`EXISTS` … `version = expected + 1`" after the bump is unsafe: two writers that read the same version both produce `expected + 1`, so the loser's dependents would pass on the winner's bump.
+- **Offer-version guard on refreshes.** `applySubscriptionRefresh` takes the `{ offerId, version }` pairs the plan used: the offers carrying the subscription's items and those its live entitlements refer to. Every statement is also guarded on each offer still being at that version and on no other offer carrying any of the subscription's items (from its source). Otherwise an offer archived, edited or created between a refresh's read and its write could be missed for good: its recompute may run before a new subscription row exists. A mismatch is `stale`, and the existing retry re-reads. The pairs and items are bound as one JSON parameter each (`json_each`), so the guard's parameter count does not grow with them.
+- **The due sweep is also the repair path.** After claiming due subscriptions, the per-minute sweep queues `refresh_subscription` for subscriptions with a live (`state = 'active'`) entitlement whose `valid_until <= now`. This covers a refresh that failed for good after the sweep cleared `next_evaluation_at`; without it, such an entitlement would stay live past its end. A subscription that already has an unsent, unfailed outbox row with the same key is skipped, both in the query and again at insert time, so the sweep cannot pile up work behind a refresh that keeps failing. Once that row fails, the next sweep queues another. Due subscriptions come first, and the total stays within the sweep's limit of 100. The repair query matches outbox keys with the SQL form of `encodeRefreshKey`, and an application test checks that the two agree.
+- **Lapsed live entitlements.** The planner treats a live row whose `valid_until <= now` as already ended. It ends the row as `expired`, with the reason its own boundary implies: `cancel_scheduled` becomes `cancellation_effective`, `past_due_in_grace` becomes `grace_expired`, and `canceled_until_end` becomes `canceled`. If access is granted again, the planner creates a new row rather than reopening the old one, so a late sweep's gap stays visible (decision 0009). A grace period cut short by a scheduled cancellation still reads `grace_expired`, because the row only records that its grace-period access ran out. The refresh batch runs entitlement ends before creates, so the replacement fits the live-row unique index.
+- **Parameter lists are chunked.** D1 binds at most 100 parameters per statement, and a subscription may carry 100 items. The `inArray` lists of `findOffersForItems`, `listOffersByIds`, `withConfig` (all offer IDs of a listing) and `listSubjects` are bound in chunks of at most 90 (`packages/db/src/chunks.ts`). Results are merged and re-sorted in code-unit order.
+- **Recompute fan-out and outbox drain.**
+  - `recomputeOffer` finds the affected subscriptions' `(source, external_subscription_id)` in one workspace-scoped query, then inserts their refresh rows in `db.batch` calls of at most 50.
+  - The minute cron's drain claims batches of 25 and keeps going while a claim comes back full, for up to about 20 s. Each claim uses the current time, so rows queued during the drain, such as a recompute's refreshes, are picked up. Rows claimed but not completed stay leased for a minute.
+  - A failing sweep is logged by its classification only, and the drain still runs.
+- **Archiving releases items.** Archiving deletes the offer's current items in the same batch, because `offer_items_item_unique` would otherwise block the items from ever being sold again. The archived version's snapshot sells nothing, and earlier `offer_versions` snapshots keep the items. The archive's recompute still revokes, because it finds subscriptions with live entitlements from the offer.
+- **Outbox keys.** `refresh_subscription` uses `<workspaceId>:<source>:<externalSubscriptionId>`, and `recompute_offer` uses `<workspaceId>:<offerId>`. Workspace and offer IDs never contain `:`, so an external subscription ID may contain any character. A key that does not decode is final (`key_invalid`).
+- **Customer links.**
+  - A source that reports no customer link (`customerLink: null`, as Paddle will) leaves an existing link unchanged.
+  - A link that reports a different login for the same immutable GitHub ID updates the subject's `login_snapshot`, audited as `subject.login_updated`.
+  - Clearing a link, and the `customer_unlinked` path that would follow from it, are reserved for Phase 5's claim and unlink flow. In Phase 3, `customer_unlinked` arises only when a customer is relinked to another subject.
+- **Commercial items are saved with source `simulated`** until Phase 5. The offer form has no source field, and Paddle price IDs arrive with the Paddle source.
+- **Simulator transitions** (`applySimulationAction`). Each action keeps the stored invariants: `pastDueSince` is set exactly when the subscription is past due, `endedAt` exactly when it is canceled or expired, and the period is positive.
+  - `start_trial` and `reactivate` apply to canceled or expired subscriptions and start a fresh period from now, as trialing or active.
+  - `activate` applies to trialing subscriptions and starts the first paid period now.
+  - `renew` applies to active subscriptions with no cancellation scheduled and advances the period by its own length.
+  - `mark_past_due` applies to active subscriptions; `recover` returns a past-due one to active.
+  - `pause` applies to active subscriptions; `resume` applies to paused ones and starts a fresh period.
+  - `cancel_at_period_end` applies to trialing or active subscriptions with none scheduled and sets `cancelAt` to the period end.
+  - `cancel_now` applies to any running state and ends the subscription now.
+  - `expire` applies to anything not already expired and keeps an earlier `endedAt`.
+- **E2E gap.** The journeys cannot add workspace members, so "a member cannot edit offers" is covered below the browser instead: application tests (`createOffer`, `updateOffer` and `archiveOffer` refuse members) and route tests (a member's POST gets 403 and changes nothing).
+
 ## Risks and open points
 
 - **Grace start time.** Paddle may not report when a subscription became past due. Phase 5 will either derive it from the first observed `past_due` refresh or use Paddle's transaction data. Policy only needs `past_due_since`.
-- **Per-minute sweep.** This is sufficient at private-beta scale, and Phase 6 may replace it with Workflows.
+- **Per-minute sweep.** This is sufficient at private-beta scale, and Phase 6 may replace it with Workflows. The repair query scans live entitlements with an end date across workspaces; add an index on `valid_until` if that grows.
 - **Subject from a login.** A GitHub login is resolved to an immutable ID once, at link time. A later rename only updates the snapshot.

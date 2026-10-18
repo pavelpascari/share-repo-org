@@ -96,8 +96,6 @@ describe("offers route", () => {
     );
     expect(result).toMatchObject({ ok: true, notice: "Created “Course”." });
     await h.settle();
-    // Creating queues nothing: no subscription can carry a brand-new offer's items yet.
-    expect(h.sent).toEqual([]);
     const loaded = await offers.loader(args(get(`/w/${s.slug}/offers`, s.owner), s, h.context));
     expect(loaded.offers[0]).toMatchObject({
       name: "Course",
@@ -108,6 +106,19 @@ describe("offers route", () => {
         { source: "simulated", externalItemId: "sim_c" },
       ],
       accesses: [{ resourceId, accessLevel: "write" }],
+    });
+    // Subscriptions recorded with these items before the offer existed are recomputed.
+    expect(h.sent).toEqual([
+      {
+        kind: "recompute_offer",
+        subjectId: expect.any(String),
+        outboxId: expect.any(String),
+      },
+    ]);
+    const [message] = h.sent as { subjectId: string }[];
+    expect(decodeOfferKey(message?.subjectId ?? "")).toEqual({
+      ok: true,
+      value: { workspaceId: s.workspaceId, offerId: loaded.offers[0]?.id },
     });
   });
 
@@ -128,6 +139,9 @@ describe("offers route", () => {
       ),
     );
     expect(result.ok).toBe(true);
+    await h.settle();
+    // No items yet: nothing to recompute.
+    expect(h.sent).toEqual([]);
     const loaded = await offers.loader(args(get(`/w/${s.slug}/offers`, s.owner), s, h.context));
     expect(loaded.offers[0]?.gracePeriodDays).toBe(7);
   });

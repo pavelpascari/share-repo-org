@@ -1,5 +1,7 @@
 import type { Instant } from "@sharerepo/domain";
 import { and, asc, eq, inArray, isNull, lt, lte, sql } from "drizzle-orm";
+import { runBatch } from "./batch.ts";
+import { chunked } from "./chunks.ts";
 import type { Db } from "./client.ts";
 import { outbox } from "./schema/index.ts";
 
@@ -43,6 +45,23 @@ export function conditionalOutboxInsert(
 /** Adds work on its own, outside any other change. */
 export async function enqueueOutbox(db: Db, row: NewOutboxRow): Promise<void> {
   await outboxInsert(db, row);
+}
+
+/** Outbox inserts per batch when queueing many rows at once. */
+export const OUTBOX_INSERT_BATCH = 50;
+
+/**
+ * Adds many rows of work on their own, in batches of at most {@link OUTBOX_INSERT_BATCH} inserts,
+ * so a fan-out costs a few D1 calls instead of one per row. A failure part-way leaves the earlier
+ * batches queued; the caller's work is idempotent and is retried as a whole.
+ */
+export async function enqueueOutboxRows(db: Db, rows: readonly NewOutboxRow[]): Promise<void> {
+  for (const batch of chunked(rows, OUTBOX_INSERT_BATCH)) {
+    await runBatch(
+      db,
+      batch.map((row) => outboxInsert(db, row)),
+    );
+  }
 }
 
 /**

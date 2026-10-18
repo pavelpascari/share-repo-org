@@ -15,6 +15,7 @@ import {
   customerRow,
   entitlementRow,
   outboxRow,
+  seedOffer,
   seedSubject,
   subscribedWorkspace,
   subscriptionRow,
@@ -34,6 +35,7 @@ function refresh(ws: Ws, overrides: Partial<SubscriptionRefresh> = {}): Subscrip
     expectedVersion: 1,
     subscription: { ...ws.subscription, version: 2, updatedAt: NOW, lastObservedAt: NOW },
     items: [ws.item],
+    offers: [{ offerId: ws.offer.offer.id, version: 1 }],
     entitlements: { create: [], update: [], end: [] },
     ...overrides,
   };
@@ -80,6 +82,7 @@ describe("applySubscriptionRefresh: new subscription", () => {
           expectedVersion: 0,
           subscription,
           items: ["sim_a", "sim_b"],
+          offers: [],
           entitlements: { create: [], update: [], end: [] },
           outbox: [outbox],
         },
@@ -111,6 +114,7 @@ describe("applySubscriptionRefresh: new subscription", () => {
           customer,
           subscription: duplicate,
           items: ["sim_z"],
+          offers: [],
           entitlements: { create: [], update: [], end: [] },
           outbox: [outboxRow("refresh_subscription", duplicate.id)],
         },
@@ -142,6 +146,7 @@ describe("applySubscriptionRefresh: new subscription", () => {
           customerLink: { customerId: ws.customer.id, subjectId: null },
           subscription,
           items: ["sim_a"],
+          offers: [],
           entitlements: { create: [], update: [], end: [] },
           outbox: [outbox],
         },
@@ -173,6 +178,7 @@ describe("applySubscriptionRefresh: new subscription", () => {
           expectedVersion: 0,
           subscription,
           items: [],
+          offers: [],
           entitlements: {
             create: [
               entitlementRow({
@@ -423,6 +429,7 @@ describe("applySubscriptionRefresh: existing subscription", () => {
         customer: existing,
         subscription: subscriptionRow(ws.workspaceId, existing.id),
         items: [],
+        offers: [],
         entitlements: { create: [], update: [], end: [] },
       },
       [workspaceEvent(ws.workspaceId)],
@@ -473,6 +480,7 @@ describe("applySubscriptionRefresh: existing subscription", () => {
         expectedVersion: 0,
         subscription: sibling,
         items: [],
+        offers: [],
         entitlements: { create: [siblingEntitlement], update: [], end: [] },
       },
       [workspaceEvent(ws.workspaceId)],
@@ -554,6 +562,150 @@ describe("applySubscriptionRefresh: existing subscription", () => {
       ),
     ).rejects.toThrow();
     expect(await auditCount(env.DB, event.correlationId)).toBe(0);
+  });
+});
+
+describe("applySubscriptionRefresh: offers changed since the read", () => {
+  const bumpOffer = (offerId: string) =>
+    env.DB.prepare("UPDATE offers SET version = version + 1 WHERE id = ?").bind(offerId).run();
+
+  it("is stale, writing nothing, when an offer the plan used moved to another version", async () => {
+    const ws = await subscribedWorkspace();
+    await bumpOffer(ws.offer.offer.id);
+    const customer = customerRow(ws.workspaceId);
+    const outbox = outboxRow("refresh_subscription", ws.subscription.id);
+    const event = workspaceEvent(ws.workspaceId);
+    await expect(
+      applySubscriptionRefresh(
+        db,
+        refresh(ws, {
+          customer,
+          subscription: { ...ws.subscription, customerId: customer.id, version: 2 },
+          entitlements: {
+            create: [],
+            update: [],
+            end: [{ id: ws.entitlement.id, state: "revoked", reason: "paused" }],
+          },
+          outbox: [outbox],
+        }),
+        [event],
+      ),
+    ).resolves.toEqual({ ok: false, reason: "stale" });
+    expect((await getSubscription(db, ws.subscriptionKey))?.version).toBe(1);
+    expect(await count("customers", "id = ?", customer.id)).toBe(0);
+    expect((await entitlementState(ws.entitlement.id))?.state).toBe("active");
+    expect(await count("outbox", "id = ?", outbox.id)).toBe(0);
+    expect(await auditCount(env.DB, event.correlationId)).toBe(0);
+
+    // At the version it now has, the same write goes through.
+    await expect(
+      applySubscriptionRefresh(
+        db,
+        refresh(ws, { offers: [{ offerId: ws.offer.offer.id, version: 2 }] }),
+        [workspaceEvent(ws.workspaceId)],
+      ),
+    ).resolves.toEqual({ ok: true });
+  });
+
+  it("is stale when another offer started carrying one of the items", async () => {
+    const ws = await subscribedWorkspace();
+    const other = await seedOffer({
+      workspaceId: ws.workspaceId,
+      userId: ws.userId,
+      resourceIds: [],
+      itemIds: ["sim_new_offer"],
+    });
+    const items = [ws.item, "sim_new_offer"];
+    await expect(
+      applySubscriptionRefresh(db, refresh(ws, { items }), [workspaceEvent(ws.workspaceId)]),
+    ).resolves.toEqual({ ok: false, reason: "stale" });
+    // The same item from another source is not the same commercial item.
+    await env.DB.prepare("UPDATE offer_items SET source = 'paddle' WHERE offer_id = ?")
+      .bind(other.offer.id)
+      .run();
+    await expect(
+      applySubscriptionRefresh(db, refresh(ws, { items }), [workspaceEvent(ws.workspaceId)]),
+    ).resolves.toEqual({ ok: true });
+  });
+
+  it("is stale for a new subscription, recording neither it nor its customer", async () => {
+    const ws = await subscribedWorkspace();
+    await bumpOffer(ws.offer.offer.id);
+    const customer = customerRow(ws.workspaceId);
+    const subscription = subscriptionRow(ws.workspaceId, customer.id);
+    const event = workspaceEvent(ws.workspaceId);
+    await expect(
+      applySubscriptionRefresh(
+        db,
+        {
+          workspaceId: ws.workspaceId,
+          now: NOW,
+          expectedVersion: 0,
+          customer,
+          subscription,
+          items: [ws.item],
+          offers: [{ offerId: ws.offer.offer.id, version: 1 }],
+          entitlements: { create: [], update: [], end: [] },
+        },
+        [event],
+      ),
+    ).resolves.toEqual({ ok: false, reason: "stale" });
+    expect(await count("subscriptions", "id = ?", subscription.id)).toBe(0);
+    expect(await count("customers", "id = ?", customer.id)).toBe(0);
+    expect(await auditCount(env.DB, event.correlationId)).toBe(0);
+  });
+
+  it("binds a fixed number of parameters however many items and offers the guard covers", async () => {
+    const ws = await subscribedWorkspace();
+    const items = [ws.item, ...Array.from({ length: 99 }, (_, i) => `sim_bulk_${i}`)];
+    const extra = [];
+    for (let i = 0; i < 3; i += 1) {
+      extra.push(
+        await seedOffer({ workspaceId: ws.workspaceId, userId: ws.userId, resourceIds: [] }),
+      );
+    }
+    await expect(
+      applySubscriptionRefresh(
+        db,
+        refresh(ws, {
+          items,
+          offers: [ws.offer, ...extra].map((o) => ({ offerId: o.offer.id, version: 1 })),
+        }),
+        [workspaceEvent(ws.workspaceId)],
+      ),
+    ).resolves.toEqual({ ok: true });
+    expect((await getSubscription(db, ws.subscriptionKey))?.items).toHaveLength(100);
+  });
+
+  it("ends a live entitlement before creating its replacement under the same key", async () => {
+    const ws = await subscribedWorkspace();
+    const replacement = entitlementRow(
+      {
+        workspaceId: ws.workspaceId,
+        subjectId: ws.subject.id,
+        resourceId: ws.resource.id,
+        subscriptionId: ws.subscription.id,
+        offerId: ws.offer.offer.id,
+      },
+      { validFrom: NOW, createdAt: NOW, updatedAt: NOW },
+    );
+    await expect(
+      applySubscriptionRefresh(
+        db,
+        refresh(ws, {
+          entitlements: {
+            create: [replacement],
+            update: [],
+            end: [{ id: ws.entitlement.id, state: "expired", reason: "cancellation_effective" }],
+          },
+        }),
+        [workspaceEvent(ws.workspaceId)],
+      ),
+    ).resolves.toEqual({ ok: true });
+    expect((await entitlementState(ws.entitlement.id))?.state).toBe("expired");
+    expect(
+      (await listLiveEntitlementsForSubscription(db, ws.subscriptionKey)).map((e) => e.id),
+    ).toEqual([replacement.id]);
   });
 });
 

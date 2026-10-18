@@ -1,6 +1,7 @@
 import { env } from "cloudflare:workers";
 import {
   claimOutbox,
+  findSubjectByExternalId,
   getSimulatedSubscription,
   getSubscriptionByExternal,
   listAuditEventsByCorrelationId,
@@ -11,12 +12,15 @@ import { describe, expect, it } from "vitest";
 import { simulatedSnapshot } from "../src/entitlement-source.ts";
 import {
   archiveOffer,
+  createOffer,
   decodeRefreshKey,
   type EntitlementSourcePort,
+  encodeRefreshKey,
   listAccess,
   queueDueEvaluations,
   recomputeOffer,
   refreshSubscription,
+  type ServiceContext,
   type SourceSubscription,
   updateOffer,
 } from "../src/index.ts";
@@ -244,6 +248,47 @@ describe("refreshSubscription", () => {
     expect(await entitlementsOf(s.workspaceId)).toEqual([]);
   });
 
+  it("updates the subject's login snapshot when the source reports a renamed account", async () => {
+    const { shop: s, sub } = await subscribed();
+    const answer = await captured(s, sub.id);
+    if (!answer.found || answer.customerLink === null) throw new Error("setup");
+    const renamed: SourceSubscription = {
+      ...answer,
+      snapshot: { ...answer.snapshot, sourceUpdatedAt: answer.snapshot.sourceUpdatedAt + 1 },
+      customerLink: { ...answer.customerLink, login: "renamed-login" },
+    };
+    const ctx = serviceContext();
+    await refreshSubscription(ctx, refreshRef(s, sub.id), replaying(renamed));
+    const events = await listAuditEventsByCorrelationId(db, ctx.correlationId);
+    expect(events.map((e) => e.action)).toEqual(["subject.login_updated", "subscription.updated"]);
+    expect(events[0]?.details).toEqual({
+      provider: "github",
+      externalSubjectId: answer.customerLink.externalSubjectId,
+      previousLogin: answer.customerLink.login,
+      login: "renamed-login",
+    });
+    const subject = await findSubjectByExternalId(db, {
+      workspaceId: s.workspaceId,
+      provider: "github",
+      externalSubjectId: answer.customerLink.externalSubjectId,
+    });
+    expect(subject?.loginSnapshot).toBe("renamed-login");
+    // The same subject keeps its access; a repeat reports nothing new.
+    expect(live(await entitlementsOf(s.workspaceId))).toMatchObject([{ subjectId: subject?.id }]);
+    const again = serviceContext();
+    await refreshSubscription(again, refreshRef(s, sub.id), replaying(renamed));
+    expect(await actions(again.correlationId)).toEqual([]);
+  });
+
+  it("refreshes a subscription carrying more items than D1 binds in one statement", async () => {
+    const s = await shop();
+    await offer(s, { items: ["sim_099"] });
+    const items = Array.from({ length: 100 }, (_, i) => `sim_${String(i).padStart(3, "0")}`);
+    const sub = await subscribe(s, { items });
+    await expect(refresh(s, sub.id)).resolves.toMatchObject({ outcome: "written", created: 1 });
+    expect(live(await entitlementsOf(s.workspaceId))).toHaveLength(1);
+  });
+
   /** A port that lets `during` run between the refresh's read of the source and its write. */
   function racing(during: () => Promise<unknown>): EntitlementSourcePort {
     let remaining = 1;
@@ -325,6 +370,114 @@ describe("refreshSubscription", () => {
       .first<{ n: number }>();
     expect(subjects?.n).toBe(1);
     expect(live(await entitlementsOf(s.workspaceId))).toHaveLength(1);
+  });
+});
+
+describe("offer changes racing a refresh", () => {
+  /**
+   * A service context whose refresh write (the batch that replaces the subscription's items)
+   * first lets `during` run, once: after the refresh read the offers, before it writes.
+   */
+  function racingWrite(during: () => Promise<unknown>): ServiceContext {
+    let pending = true;
+    const racing = new Proxy(db, {
+      get: (target, property, receiver) => {
+        if (property !== "batch") return Reflect.get(target, property, receiver);
+        return async (statements: { toSQL(): { sql: string } }[]) => {
+          if (pending && statements.some((st) => st.toSQL().sql.includes('"subscription_items"'))) {
+            pending = false;
+            await during();
+          }
+          return target.batch(statements as never);
+        };
+      },
+    });
+    return { ...serviceContext(), db: racing };
+  }
+
+  it("does not record access under an offer archived (and recomputed) between read and write", async () => {
+    const s = await shop();
+    const sold = await offer(s, { items: ["sim_pro"] });
+    // A new subscription: the recompute below cannot find it, since it is not recorded yet.
+    const sub = await subscribe(s, { items: ["sim_pro"] });
+    let recomputed = -1;
+    const ctx = racingWrite(async () => {
+      await archiveOffer(serviceContext(), s, s.slug, sold.id);
+      recomputed = await recomputeOffer(serviceContext(), {
+        workspaceId: s.workspaceId,
+        offerId: sold.id,
+      });
+    });
+    await expect(refresh(s, sub.id, ctx)).resolves.toMatchObject({
+      outcome: "written",
+      created: 0,
+    });
+    expect(recomputed).toBe(0);
+    expect(await entitlementsOf(s.workspaceId)).toEqual([]);
+  });
+
+  it("grants access under an offer created (and recomputed) between read and write", async () => {
+    const s = await shop();
+    const sub = await subscribe(s, { items: ["sim_late"] });
+    const ctx = racingWrite(async () => {
+      const created = await offer(s, { items: ["sim_late"] });
+      await recomputeOffer(serviceContext(), { workspaceId: s.workspaceId, offerId: created.id });
+    });
+    await expect(refresh(s, sub.id, ctx)).resolves.toMatchObject({
+      outcome: "written",
+      created: 1,
+    });
+    expect(live(await entitlementsOf(s.workspaceId))).toHaveLength(1);
+  });
+
+  it("applies an edit to an existing subscription's offer made between read and write", async () => {
+    const { shop: s, offer: sold, sub } = await subscribed({ gracePeriodDays: 7 });
+    await act(s, sub.id, "mark_past_due");
+    const ctx = racingWrite(() =>
+      updateOffer(serviceContext(), s, s.slug, sold.id, {
+        name: "Pro",
+        gracePeriodDays: 3,
+        items: [{ source: "simulated", externalItemId: "sim_pro" }],
+        accesses: [{ resourceId: s.resources[0]?.id, accessLevel: "write" }],
+      }),
+    );
+    await refresh(s, sub.id, ctx);
+    expect(live(await entitlementsOf(s.workspaceId))).toMatchObject([
+      { offerVersion: 2, decisionReason: "past_due_in_grace" },
+    ]);
+  });
+});
+
+describe("a subscription recorded before its offer existed", () => {
+  it("gains access once an offer selling its item is created", async () => {
+    const s = await shop();
+    const sub = await subscribe(s, { items: ["sim_early"] });
+    await drain(s.workspaceId);
+    expect(await entitlementsOf(s.workspaceId)).toEqual([]);
+    // Open-ended and active: nothing is scheduled to look at it again.
+    expect((await stored(s, sub.id))?.nextEvaluationAt).toBeNull();
+
+    await offer(s, { items: ["sim_early"] });
+    await drain(s.workspaceId);
+    expect(live(await entitlementsOf(s.workspaceId, sub.id))).toMatchObject([
+      { decisionReason: "active", validUntil: null },
+    ]);
+  });
+
+  it("gains access from a new offer reusing an archived offer's item", async () => {
+    const { shop: s, offer: sold, sub } = await subscribed();
+    await archiveOffer(serviceContext(), s, s.slug, sold.id);
+    await drain(s.workspaceId);
+    expect(live(await entitlementsOf(s.workspaceId))).toEqual([]);
+    const result = await createOffer(serviceContext(), s, s.slug, {
+      name: "Pro 2",
+      gracePeriodDays: 7,
+      items: [{ source: "simulated", externalItemId: "sim_pro" }],
+      accesses: [{ resourceId: s.resources[0]?.id, accessLevel: "write" }],
+    });
+    expect(result.ok).toBe(true);
+    await drain(s.workspaceId);
+    expect(live(await entitlementsOf(s.workspaceId, sub.id))).toHaveLength(1);
   });
 });
 
@@ -415,10 +568,10 @@ describe("entitlement lifecycle", () => {
     expect(await entitlementsOf(s.workspaceId, sub.id)).toMatchObject([
       { state: "revoked", decisionReason: "offer_archived" },
     ]);
-    // Later recomputes still find the subscription by its item, and change nothing.
+    // The archive released the item and no entitlement is live: later recomputes find nothing.
     await expect(
       recomputeOffer(serviceContext(), { workspaceId: s.workspaceId, offerId: sold.id }),
-    ).resolves.toBe(1);
+    ).resolves.toBe(0);
     await drain(s.workspaceId);
     expect(live(await entitlementsOf(s.workspaceId))).toEqual([]);
   });
@@ -499,6 +652,30 @@ describe("time-based evaluation", () => {
     ]);
     const [row] = await listAccess(serviceContext(), s, s.slug);
     expect(row?.planned).toEqual({ action: "provision", reason: "grant_missing" });
+  });
+
+  it("repairs a lapsed entitlement whose scheduled evaluation was lost, queueing it once", async () => {
+    const { shop: s, sub } = await subscribed({ periodDays: 30 });
+    const scheduled = await act(s, sub.id, "cancel_at_period_end");
+    await drain(s.workspaceId);
+    const effective = scheduled.cancelAt as number;
+    // A sweep claimed the evaluation and its refresh then failed for good.
+    await env.DB.prepare(
+      "UPDATE subscriptions SET next_evaluation_at = NULL WHERE workspace_id = ?",
+    )
+      .bind(s.workspaceId)
+      .run();
+    clock.set(effective + 60_000);
+    await queueDueEvaluations(serviceContext(), { limit: 1000 });
+    const work = await pendingWork(s.workspaceId);
+    expect(work.map((row) => row.subject_id)).toEqual([encodeRefreshKey(refreshRef(s, sub.id))]);
+    // Already queued, under the key the application encodes: not queued again.
+    await queueDueEvaluations(serviceContext(), { limit: 1000 });
+    expect(await pendingWork(s.workspaceId)).toHaveLength(1);
+    await drain(s.workspaceId);
+    expect(await entitlementsOf(s.workspaceId)).toMatchObject([
+      { state: "expired", decisionReason: "cancellation_effective" },
+    ]);
   });
 
   it("timing/grace-expiry-revokes", async () => {

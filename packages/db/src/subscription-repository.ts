@@ -6,7 +6,13 @@ import type { Db } from "./client.ts";
 import type { Customer } from "./customer-repository.ts";
 import { isUniqueViolation } from "./errors.ts";
 import { conditionalOutboxInsert, type NewOutboxRow } from "./outbox-repository.ts";
-import { customers, entitlements, subscriptionItems, subscriptions } from "./schema/index.ts";
+import {
+  customers,
+  entitlements,
+  outbox,
+  subscriptionItems,
+  subscriptions,
+} from "./schema/index.ts";
 
 /** Domain `Subscription`: normalized commercial facts observed from a source. Not access. */
 export type Subscription = typeof subscriptions.$inferSelect;
@@ -30,6 +36,12 @@ export interface EntitlementPlanWrite {
   end: readonly { id: string; state: "expired" | "revoked"; reason: string }[];
 }
 
+/** An offer at the version a refresh read it. */
+export interface OfferVersionRef {
+  offerId: string;
+  version: number;
+}
+
 export interface SubscriptionRefresh {
   workspaceId: string;
   now: Instant;
@@ -43,6 +55,12 @@ export interface SubscriptionRefresh {
   subscription: Subscription;
   /** The external IDs of the items the subscription now carries; they replace the current ones. */
   items: readonly string[];
+  /**
+   * Every offer the entitlement plan was decided from, at the version the refresh read: the
+   * offers carrying `items` and those the live entitlements refer to. The write is stale unless
+   * each is still at that version and no other offer carries any of `items`.
+   */
+  offers: readonly OfferVersionRef[];
   entitlements: EntitlementPlanWrite;
   outbox?: readonly NewOutboxRow[];
 }
@@ -50,8 +68,8 @@ export interface SubscriptionRefresh {
 export type ApplySubscriptionRefreshResult =
   | { ok: true }
   /**
-   * Another writer recorded this subscription (or its customer) first: nothing was written. Read
-   * again and refresh from fresh state.
+   * Another writer recorded this subscription (or its customer) first, or an offer the plan used
+   * changed: nothing was written. Read again and refresh from fresh state.
    */
   | { ok: false; reason: "stale" };
 
@@ -176,6 +194,22 @@ function assertRefreshScoped(input: SubscriptionRefresh): void {
 }
 
 /**
+ * "Each offer the plan used is still at the version read, and no other offer of the workspace
+ * carries one of the subscription's items from its source." The offer pairs and the items are
+ * bound as one JSON parameter each, so the guard binds a fixed number of parameters however many
+ * offers and items there are (D1 binds at most 100 per statement). Aliased raw SQL, because
+ * `json_each` has columns (`id`, `value`) that would clash with unqualified names.
+ */
+function offersUnchanged(input: SubscriptionRefresh): SQL {
+  const { workspaceId, subscription } = input;
+  const expected = JSON.stringify(input.offers.map((offer) => [offer.offerId, offer.version]));
+  const items = JSON.stringify(input.items);
+  const atVersion = sql`(SELECT count(*) FROM offers AS o INNER JOIN json_each(${expected}) AS e ON o.id = json_extract(e.value, '$[0]') AND o.version = json_extract(e.value, '$[1]') WHERE o.workspace_id = ${workspaceId}) = ${input.offers.length}`;
+  const noOtherOffer = sql`NOT EXISTS (SELECT 1 FROM offer_items AS oi INNER JOIN json_each(${items}) AS i ON oi.external_item_id = i.value WHERE oi.workspace_id = ${workspaceId} AND oi.source = ${subscription.source} AND oi.offer_id NOT IN (SELECT json_extract(value, '$[0]') FROM json_each(${expected})))`;
+  return sql`(${atVersion} AND ${noOtherOffer})`;
+}
+
+/**
  * Writes one refresh decision in one atomic batch (decision 0003): the customer (created or
  * linked), the subscription and its items, the entitlement plan, outbox rows and audit events.
  *
@@ -196,7 +230,15 @@ function assertRefreshScoped(input: SubscriptionRefresh): void {
  * In both cases a new customer is inserted only if no customer with its source and external ID
  * exists; if a concurrent writer created that customer under another ID, the subscription write
  * is skipped (its customer does not exist) and the result is `stale`, never a foreign key error.
- * Entitlement updates and ends touch only live rows of this subscription in this workspace.
+ * Entitlement ends run before creates, so a lapsed live row can be replaced by a new one under
+ * the live-row unique index. Entitlement updates and ends touch only live rows of this
+ * subscription in this workspace.
+ *
+ * Offers. Every statement is also guarded by "each of `offers` is still at its version, and no
+ * other offer carries any of `items`" (`offersUnchanged`). An offer edit, archive or creation
+ * that commits between the refresh's read and this write would otherwise be lost: its recompute
+ * may run before this subscription row exists or before this write lands, and then nothing
+ * revisits the subscription. A changed offer makes the write `stale`, and the refresh re-reads.
  */
 export async function applySubscriptionRefresh(
   db: Db,
@@ -215,19 +257,33 @@ export async function applySubscriptionRefresh(
   );
   const atExpected = sql`EXISTS (SELECT 1 FROM ${subscriptions} WHERE ${current})`;
   const created = sql`EXISTS (SELECT 1 FROM ${subscriptions} WHERE ${subscriptions.workspaceId} = ${workspaceId} AND ${subscriptions.id} = ${subscription.id})`;
+  const offersCurrent = offersUnchanged(input);
 
   const statements: Statement[] = [];
   if (input.customer !== undefined) {
     const { customer } = input;
     const absent = sql`NOT EXISTS (SELECT 1 FROM ${customers} WHERE ${customers.workspaceId} = ${workspaceId} AND ${customers.source} = ${customer.source} AND ${customers.externalCustomerId} = ${customer.externalCustomerId})`;
     statements.push(
-      insertWhere(db, customers, customer, creating ? absent : sql`${absent} AND ${atExpected}`),
+      insertWhere(
+        db,
+        customers,
+        customer,
+        creating
+          ? sql`${absent} AND ${offersCurrent}`
+          : sql`${absent} AND ${atExpected} AND ${offersCurrent}`,
+      ),
     );
   }
-  if (creating) statements.push(insertWhere(db, subscriptions, subscription, customerExists));
+  if (creating) {
+    statements.push(
+      insertWhere(db, subscriptions, subscription, sql`${customerExists} AND ${offersCurrent}`),
+    );
+  }
   const decisive = creating ? statements.length - 1 : null;
 
-  const guard = creating ? created : sql`${atExpected} AND ${customerExists}`;
+  // A new subscription row exists only if the offers were unchanged; nothing in the batch
+  // changes an offer, so the subscription's existence carries that guard to the dependents.
+  const guard = creating ? created : sql`${atExpected} AND ${customerExists} AND ${offersCurrent}`;
   if (input.customerLink !== undefined) {
     const link = input.customerLink;
     statements.push(
@@ -257,7 +313,6 @@ export async function applySubscriptionRefresh(
         guard,
       ),
     ),
-    ...input.entitlements.create.map((row) => insertWhere(db, entitlements, row, guard)),
   );
   const liveOfSubscription = (id: string) =>
     and(
@@ -268,25 +323,32 @@ export async function applySubscriptionRefresh(
       guard,
     );
   statements.push(
-    ...input.entitlements.update.map(({ id, set }) =>
-      db
-        .update(entitlements)
-        .set({ ...set, updatedAt: now })
-        .where(liveOfSubscription(id)),
-    ),
+    // Ends first: a replacement for an ended row is created below under the live-row index.
     ...input.entitlements.end.map(({ id, state, reason }) =>
       db
         .update(entitlements)
         .set({ state, decisionReason: reason, endedAt: now, updatedAt: now })
         .where(liveOfSubscription(id)),
     ),
+    ...input.entitlements.update.map(({ id, set }) =>
+      db
+        .update(entitlements)
+        .set({ ...set, updatedAt: now })
+        .where(liveOfSubscription(id)),
+    ),
+    ...input.entitlements.create.map((row) => insertWhere(db, entitlements, row, guard)),
     ...(input.outbox ?? []).map((row) => conditionalOutboxInsert(db, row, guard)),
     ...conditionalAuditInserts(db, audit, guard),
   );
   if (!creating) {
     const { id: _id, workspaceId: _ws, createdAt: _createdAt, ...fields } = subscription;
     // Last: once it runs, `atExpected` no longer holds.
-    statements.push(db.update(subscriptions).set(fields).where(and(current, customerExists)));
+    statements.push(
+      db
+        .update(subscriptions)
+        .set(fields)
+        .where(and(current, customerExists, offersCurrent)),
+    );
   }
 
   let changes: number[];
@@ -300,11 +362,31 @@ export async function applySubscriptionRefresh(
 }
 
 /**
+ * The `refresh_subscription` outbox key of the subscription row in scope, in SQL. Must match the
+ * application's `encodeRefreshKey` (`<workspaceId>:<source>:<externalSubscriptionId>`); the
+ * application's sweep tests queue rows with that encoder and check this lookup finds them.
+ */
+const refreshKeyOfRow = sql`${subscriptions.workspaceId} || ':' || ${subscriptions.source} || ':' || ${subscriptions.externalSubscriptionId}`;
+
+/** An unsent, unfailed outbox row of this kind and key: the work is already queued. */
+const pending = (kind: NewOutboxRow["kind"], subjectId: SQL) =>
+  sql`EXISTS (SELECT 1 FROM ${outbox} WHERE ${outbox.kind} = ${kind} AND ${outbox.subjectId} = ${subjectId} AND ${outbox.sentAt} IS NULL AND ${outbox.failedAt} IS NULL)`;
+
+/**
  * Queues a `refresh_subscription` (built by `makeOutboxRow`) for up to `limit` subscriptions, in
- * any workspace, whose `next_evaluation_at` is at or before `now`, and clears their
- * `next_evaluation_at`. Returns how many it queued. For the per-minute cron sweep.
+ * any workspace, and returns how many it queued. For the per-minute cron sweep. Two kinds, due
+ * ones first:
  *
- * Race safety. Each subscription gets a pair of statements in one batch (one transaction):
+ * - **Due:** `next_evaluation_at` is at or before `now`. The sweep clears it.
+ * - **Repair:** a live entitlement's `valid_until` is at or before `now` (and the subscription is
+ *   not due). This is the scheduled repair path: a refresh that failed for good after the sweep
+ *   had cleared `next_evaluation_at` would otherwise leave the entitlement live past its end
+ *   forever. A subscription whose refresh is already queued (an unsent, unfailed row with the
+ *   same key) is skipped, in the query and again when inserting, so a minutely sweep cannot pile
+ *   up work for a refresh that keeps failing; once that row fails, the next sweep queues another.
+ *
+ * Race safety of a due claim. Each due subscription gets a pair of statements in one batch (one
+ * transaction):
  *
  * 1. `UPDATE … SET next_evaluation_at = NULL WHERE workspace, id AND next_evaluation_at = <the
  *    value this sweep read>`;
@@ -317,7 +399,8 @@ export async function applySubscriptionRefresh(
  * nor queued early (a later sweep picks it up when it is due). The claim does not bump the
  * subscription's version: it changes only a scheduling hint, and the queued refresh re-reads the
  * source and recomputes the boundary anyway. Clearing the hint is bookkeeping like the outbox,
- * so it carries no audit event.
+ * so it carries no audit event. A repair claim is one outbox insert guarded by "not already
+ * queued", so concurrent sweeps queue it at most once.
  */
 export async function claimDueEvaluations(
   db: Db,
@@ -327,21 +410,35 @@ export async function claimDueEvaluations(
     makeOutboxRow: (subscription: Subscription) => NewOutboxRow;
   },
 ): Promise<number> {
+  const isDue = and(
+    isNotNull(subscriptions.nextEvaluationAt),
+    lte(subscriptions.nextEvaluationAt, input.now),
+  ) as SQL;
   const due = await db
     .select()
     .from(subscriptions)
-    .where(
-      and(
-        isNotNull(subscriptions.nextEvaluationAt),
-        lte(subscriptions.nextEvaluationAt, input.now),
-      ),
-    )
+    .where(isDue)
     .orderBy(asc(subscriptions.nextEvaluationAt), asc(subscriptions.id))
     .limit(input.limit);
-  if (due.length === 0) return 0;
-  const changes = await runBatch(
-    db,
-    due.flatMap((subscription) => [
+  const lapsed = sql`EXISTS (SELECT 1 FROM ${entitlements} WHERE ${entitlements.workspaceId} = ${subscriptions.workspaceId} AND ${entitlements.sourceId} = ${subscriptions.id} AND ${entitlements.state} = 'active' AND ${entitlements.validUntil} <= ${input.now})`;
+  const repair =
+    due.length < input.limit
+      ? await db
+          .select()
+          .from(subscriptions)
+          .where(
+            and(
+              lapsed,
+              sql`NOT (${isDue})`,
+              sql`NOT ${pending("refresh_subscription", refreshKeyOfRow)}`,
+            ),
+          )
+          .orderBy(asc(subscriptions.id))
+          .limit(input.limit - due.length)
+      : [];
+  if (due.length + repair.length === 0) return 0;
+  const changes = await runBatch(db, [
+    ...due.flatMap((subscription) => [
       db
         .update(subscriptions)
         .set({ nextEvaluationAt: null })
@@ -354,6 +451,11 @@ export async function claimDueEvaluations(
         ),
       conditionalOutboxInsert(db, input.makeOutboxRow(subscription), sql`changes() = 1`),
     ]),
-  );
-  return changes.filter((_, index) => index % 2 === 1).reduce((sum, n) => sum + n, 0);
+    ...repair.map((subscription) => {
+      const row = input.makeOutboxRow(subscription);
+      return conditionalOutboxInsert(db, row, sql`NOT ${pending(row.kind, sql`${row.subjectId}`)}`);
+    }),
+  ]);
+  const queuedDue = changes.slice(0, 2 * due.length).filter((_, index) => index % 2 === 1);
+  return [...queuedDue, ...changes.slice(2 * due.length)].reduce((sum, n) => sum + n, 0);
 }

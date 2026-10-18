@@ -11,6 +11,7 @@ import {
   listActiveConnectionIds,
   markOutboxFailed,
   markOutboxSent,
+  type OutboxRow,
 } from "@sharerepo/db";
 import type { Clock, IdGenerator } from "@sharerepo/domain";
 import { GitHubApiError, type GitHubAppConfig, type GitHubAppPort } from "@sharerepo/integrations";
@@ -46,8 +47,13 @@ export const CRONS = {
   dailyResync: "17 3 * * *",
 } as const;
 
-const OUTBOX_BATCH = 25;
+export const OUTBOX_BATCH = 25;
 const OUTBOX_LEASE_MS = 60_000;
+/**
+ * How long one drain keeps claiming batches. The cron runs every minute and each claimed row is
+ * leased for a minute, so a drain stops well within both.
+ */
+export const OUTBOX_DRAIN_BUDGET_MS = 20_000;
 /** After this many attempts a row is marked failed and left for the operator. */
 export const OUTBOX_MAX_ATTEMPTS = 10;
 /** Subscriptions whose next policy boundary passed, queued per minute (phase-3 plan § Time). */
@@ -117,50 +123,79 @@ export function createJobsWorker(deps: JobsWorkerDeps) {
     }
   }
 
-  /** The outbox safety net (decision 0003): runs due work the queue did not complete. */
+  /**
+   * The outbox safety net (decision 0003): runs due work the queue did not complete. Claims a
+   * batch at a time and keeps going while batches come back full (a sweep or a recompute can
+   * queue far more than one batch a minute), until about {@link OUTBOX_DRAIN_BUDGET_MS} has
+   * passed. Work queued during the drain is claimed by it too.
+   */
   async function drainOutbox(db: Db, jobs: JobDeps, logger: Logger): Promise<void> {
-    const now = deps.clock.now();
-    const rows = await claimOutbox(db, {
-      now,
-      limit: OUTBOX_BATCH,
-      leaseMs: OUTBOX_LEASE_MS,
-      maxAttempts: OUTBOX_MAX_ATTEMPTS,
-    });
+    const started = deps.clock.now();
+    let claimed = 0;
     let sent = 0;
-    for (const row of rows) {
-      const ctx = services(db);
-      try {
-        const outcome = await runJob(ctx, row, jobs);
-        await markOutboxSent(db, [row.id], now);
-        sent += 1;
-        if (outcome === "out_of_scope") {
-          logger.warn("job has no workspace scope", { outboxId: row.id, kind: row.kind });
-        }
-      } catch (error) {
-        const final = !isRetryable(error) || row.attempts >= OUTBOX_MAX_ATTEMPTS;
-        if (final) {
-          // Will not succeed by waiting: record it once instead of retrying every minute.
-          await markOutboxFailed(db, { id: row.id, now, errorCode: errorCode(error) });
-        }
-        // Otherwise left leased: the row becomes due again when the lease expires.
-        logger.warn("outbox job failed", {
-          outboxId: row.id,
-          kind: row.kind,
-          final,
-          ...classify(error),
-        });
+    for (;;) {
+      const now = deps.clock.now();
+      const rows = await claimOutbox(db, {
+        now,
+        limit: OUTBOX_BATCH,
+        leaseMs: OUTBOX_LEASE_MS,
+        maxAttempts: OUTBOX_MAX_ATTEMPTS,
+      });
+      claimed += rows.length;
+      for (const row of rows) {
+        if (await runOutboxRow(db, row, jobs, logger, now)) sent += 1;
+      }
+      if (rows.length < OUTBOX_BATCH || deps.clock.now() - started >= OUTBOX_DRAIN_BUDGET_MS) {
+        break;
       }
     }
-    logger.info("outbox drained", { claimed: rows.length, sent });
+    logger.info("outbox drained", { claimed, sent });
+  }
+
+  /** Runs one claimed row; returns whether it was sent. A failure is logged, never thrown. */
+  async function runOutboxRow(
+    db: Db,
+    row: OutboxRow,
+    jobs: JobDeps,
+    logger: Logger,
+    now: number,
+  ): Promise<boolean> {
+    try {
+      const outcome = await runJob(services(db), row, jobs);
+      await markOutboxSent(db, [row.id], now);
+      if (outcome === "out_of_scope") {
+        logger.warn("job has no workspace scope", { outboxId: row.id, kind: row.kind });
+      }
+      return true;
+    } catch (error) {
+      const final = !isRetryable(error) || row.attempts >= OUTBOX_MAX_ATTEMPTS;
+      if (final) {
+        // Will not succeed by waiting: record it once instead of retrying every minute.
+        await markOutboxFailed(db, { id: row.id, now, errorCode: errorCode(error) });
+      }
+      // Otherwise left leased: the row becomes due again when the lease expires.
+      logger.warn("outbox job failed", {
+        outboxId: row.id,
+        kind: row.kind,
+        final,
+        ...classify(error),
+      });
+      return false;
+    }
   }
 
   /**
    * Time-based re-evaluation: queues a refresh of every subscription whose next policy boundary
-   * has passed, so the drain that follows in the same tick runs them.
+   * has passed (and repairs lapsed entitlements), so the drain that follows in the same tick runs
+   * them. A failing sweep is logged by its classification only and never stops that drain.
    */
   async function sweepDueEvaluations(db: Db, logger: Logger): Promise<void> {
-    const queued = await queueDueEvaluations(services(db), { limit: DUE_EVALUATION_BATCH });
-    logger.info("due evaluations queued", { queued });
+    try {
+      const queued = await queueDueEvaluations(services(db), { limit: DUE_EVALUATION_BATCH });
+      logger.info("due evaluations queued", { queued });
+    } catch (error) {
+      logger.error("due evaluation sweep failed", classify(error));
+    }
   }
 
   /**
@@ -202,8 +237,8 @@ export function createJobsWorker(deps: JobsWorkerDeps) {
     },
 
     /**
-     * Crons: heartbeat; every minute, the due-evaluation sweep then the outbox drain; daily
-     * resync. Invalid configuration fails the run.
+     * Crons: heartbeat; every minute, the due-evaluation sweep then the outbox drain (which runs
+     * even when the sweep fails); daily resync. Invalid configuration fails the run.
      */
     async scheduled(controller: ScheduledController, env: Env): Promise<void> {
       const logger = createLogger(

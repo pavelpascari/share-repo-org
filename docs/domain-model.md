@@ -280,6 +280,7 @@ active -> revoked    (the source stopped mapping it: paused, offer access remove
 Stored states are only `active`, `expired` and `revoked` ([decision 0009](decisions/0009-entitlement-policy-v1.md)):
 
 - An ended entitlement is never reopened; a reactivation creates a new entitlement.
+- An active entitlement whose `validUntil` has passed has already ended, even if no sweep has recorded it yet. The next plan ends it as `expired` and never extends it.
 - "Expiring" is an active entitlement with `validUntil` set.
 - "Pending" and "blocked" are reconciliation planner decisions about a subject and resource, not entitlement states.
 

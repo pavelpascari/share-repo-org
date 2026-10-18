@@ -3,9 +3,20 @@ import { claimOutbox, enqueueOutbox, getExternalEvent } from "@sharerepo/db";
 import { GitHubApiError, type GitHubAppPort } from "@sharerepo/integrations";
 import { createFakeGitHubApp, type FakeGitHubApp } from "@sharerepo/integrations/testing";
 import { ConflictError, NotFoundError } from "@sharerepo/platform";
-import { captureLogs, changedTables, type LogCapture, snapshotTables } from "@sharerepo/testing";
+import {
+  captureLogs,
+  changedTables,
+  type LogCapture,
+  SequentialIds,
+  snapshotTables,
+} from "@sharerepo/testing";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { CRONS, OUTBOX_MAX_ATTEMPTS } from "../src/handlers.ts";
+import {
+  CRONS,
+  OUTBOX_BATCH,
+  OUTBOX_DRAIN_BUDGET_MS,
+  OUTBOX_MAX_ATTEMPTS,
+} from "../src/handlers.ts";
 import worker from "../src/index.ts";
 import { retryDelaySeconds } from "../src/work.ts";
 import {
@@ -13,6 +24,7 @@ import {
   connectedCreator,
   count,
   db,
+  envWithGitHub,
   outboxIdFor,
   receivedWebhook,
 } from "./support/github.ts";
@@ -351,6 +363,77 @@ describe("scheduled()", () => {
         .filter((line) => line.msg === "outbox job failed")
         .map((line) => line.errorName),
     ).toContain("unknown");
+  });
+
+  /** Queues `n` out-of-scope jobs (cheap to run), due before anything else. */
+  async function queuedJobs(n: number) {
+    const prefix = `bulk-${crypto.randomUUID()}`;
+    for (let i = 0; i < n; i += 1) {
+      await enqueueOutbox(db, {
+        id: `${prefix}-${i}`,
+        kind: "resync_connection",
+        subjectId: "no-such-connection",
+        createdAt: 0,
+        availableAt: 0,
+      });
+    }
+    return () =>
+      count("SELECT count(*) AS n FROM outbox WHERE id LIKE ? AND sent_at IS NULL", `${prefix}-%`);
+  }
+
+  it("keeps draining while batches come back full, in one tick", async () => {
+    const unsent = await queuedJobs(OUTBOX_BATCH * 2 + 10);
+    await runCron(jobsWorker(createFakeGitHubApp()), CRONS.drainOutbox);
+    expect(await unsent()).toBe(0);
+    const drained = logged().find((line) => line.msg === "outbox drained");
+    expect(drained?.claimed).toBeGreaterThanOrEqual(OUTBOX_BATCH * 2 + 10);
+  });
+
+  it("stops claiming new batches once its time budget is spent", async () => {
+    await runCron(jobsWorker(createFakeGitHubApp()), CRONS.drainOutbox);
+    const unsent = await queuedJobs(OUTBOX_BATCH * 2);
+    // Every job takes a second: the first batch spends more than the budget.
+    const slow = new SequentialIds({ prefix: `slow-${crypto.randomUUID()}-` });
+    const ids = {
+      next: () => {
+        clock.advance(Math.ceil(OUTBOX_DRAIN_BUDGET_MS / OUTBOX_BATCH) + 1);
+        return slow.next();
+      },
+    };
+    await runCron(jobsWorker(createFakeGitHubApp(), { ids }), CRONS.drainOutbox);
+    expect(await unsent()).toBe(OUTBOX_BATCH);
+    await runCron(jobsWorker(createFakeGitHubApp()), CRONS.drainOutbox);
+    expect(await unsent()).toBe(0);
+  });
+
+  it("still drains the outbox when the due-evaluation sweep fails", async () => {
+    const unsent = await queuedJobs(1);
+    // The sweep's query is the tick's first statement; it fails as during a D1 outage.
+    let failures = 1;
+    const flaky = new Proxy(env.DB, {
+      get: (target, property, receiver) => {
+        const value = Reflect.get(target, property, receiver);
+        if (typeof value !== "function") return value;
+        return (...args: unknown[]) => {
+          if (property === "prepare" && failures > 0) {
+            failures -= 1;
+            throw new Error("d1 unavailable: secret-ish detail");
+          }
+          return value.apply(target, args);
+        };
+      },
+    });
+    await runCron(jobsWorker(createFakeGitHubApp()), CRONS.drainOutbox, {
+      ...envWithGitHub,
+      DB: flaky,
+    } as Env);
+    expect(logged().find((line) => line.msg === "due evaluation sweep failed")).toMatchObject({
+      level: "error",
+      errorName: "Error",
+    });
+    expect(logs.text()).not.toContain("secret-ish detail");
+    expect(logged().some((line) => line.msg === "outbox drained")).toBe(true);
+    expect(await unsent()).toBe(0);
   });
 
   it("skips GitHub work while no App is configured, but keeps the heartbeat", async () => {

@@ -194,6 +194,13 @@ export const AUDIT_ACTIONS = {
     targetType: "subject",
     details: z.strictObject({ provider, externalSubjectId: text, login: text }),
   },
+  "subject.login_updated": {
+    scope: "workspace",
+    targetType: "subject",
+    details: z
+      .strictObject({ provider, externalSubjectId: text, previousLogin: text, login: text })
+      .refine((d) => d.previousLogin !== d.login, { path: ["login"] }),
+  },
   "customer.created": {
     scope: "workspace",
     targetType: "customer",

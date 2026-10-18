@@ -72,7 +72,10 @@ const SUBJECT_KEY = [
 
 /**
  * The workspace's subject for a linked GitHub account, created (and audited) on first sight in a
- * write of its own. Another refresh may create it first; then it is read again.
+ * write of its own. Another refresh may create it first; then it is read again. A link reporting
+ * another login for the same immutable ID (the account was renamed) updates the login snapshot,
+ * audited as `subject.login_updated`; a concurrent update of the same snapshot wins and this one
+ * writes nothing.
  */
 async function subjectFor(
   ctx: ServiceContext,
@@ -81,7 +84,38 @@ async function subjectFor(
 ): Promise<repo.Subject> {
   const key = { workspaceId, provider: link.provider, externalSubjectId: link.externalSubjectId };
   const existing = await repo.findSubjectByExternalId(ctx.db, key);
-  if (existing !== null) return existing;
+  if (existing !== null) {
+    if (existing.loginSnapshot === link.login) return existing;
+    const now = ctx.clock.now();
+    await repo.updateSubjectLogin(
+      ctx.db,
+      {
+        workspaceId,
+        subjectId: existing.id,
+        previousLogin: existing.loginSnapshot,
+        login: link.login,
+        now,
+      },
+      [
+        auditEvent(
+          "subject.login_updated",
+          {
+            workspaceId,
+            actor: SYSTEM,
+            targetId: existing.id,
+            details: {
+              provider: link.provider,
+              externalSubjectId: link.externalSubjectId,
+              previousLogin: existing.loginSnapshot,
+              login: link.login,
+            },
+          },
+          ctx,
+        ),
+      ],
+    );
+    return existing;
+  }
   const now = ctx.clock.now();
   const subject: repo.Subject = {
     id: ctx.ids.next(),
@@ -159,7 +193,10 @@ const liveEntitlement = (row: repo.Entitlement): LiveEntitlement => ({
   policyVersion: row.policyVersion,
 });
 
-/** Every offer the plan needs: those carrying the items, and those live entitlements refer to. */
+/**
+ * Every offer the plan needs, at its current version: those carrying the items, and those live
+ * entitlements refer to. The write is conditional on each staying at that version.
+ */
 async function offersFor(
   ctx: ServiceContext,
   ref: SubscriptionRef,
@@ -285,11 +322,12 @@ async function attemptRefresh(
         pastDueSince: facts.pastDueSince,
       }
     : null;
+  const offers = await offersFor(ctx, ref, facts.items, live);
   const plan = planEntitlements({
     now,
     subscription: planned,
     subjectId,
-    offers: await offersFor(ctx, ref, facts.items, live),
+    offers,
     live: live.map(liveEntitlement),
   });
 
@@ -381,6 +419,9 @@ async function attemptRefresh(
       ...(customerLink === undefined ? {} : { customerLink }),
       subscription,
       items: facts.items,
+      // An offer edited, archived or created since it was read makes the write stale, so the
+      // retry plans from the new configuration: its recompute may already have run.
+      offers: offers.map(({ offerId, version }) => ({ offerId, version })),
       entitlements: { create: created, update: plan.update, end: plan.end },
     },
     audit as [AuditEvent, ...AuditEvent[]],
@@ -407,33 +448,28 @@ function refreshOutboxRow(ctx: ServiceContext, ref: SubscriptionRef): repo.NewOu
 
 /**
  * Queues a `refresh_subscription` for every subscription an offer change affects: those carrying
- * the offer's items and those with a live entitlement from it. Duplicates are harmless because a
- * refresh is idempotent. Returns how many it queued.
+ * the offer's items and those with a live entitlement from it. One query finds them and the rows
+ * are inserted in bounded batches, so a large fan-out costs a few D1 calls. Duplicates are
+ * harmless because a refresh is idempotent. Returns how many it queued.
  */
 export async function recomputeOffer(context: ServiceContext, ref: OfferRef): Promise<number> {
   const ctx = atOneInstant(context);
-  const ids = await repo.listSubscriptionIdsForOffer(ctx.db, ref);
-  const rows: repo.NewOutboxRow[] = [];
-  for (const subscriptionId of ids) {
-    const subscription = (await repo.getSubscription(ctx.db, {
+  const subscriptions = await repo.listSubscriptionsForOffer(ctx.db, ref);
+  const rows = subscriptions.map((subscription) =>
+    refreshOutboxRow(ctx, {
       workspaceId: ref.workspaceId,
-      subscriptionId,
-    })) as repo.SubscriptionWithItems;
-    rows.push(
-      refreshOutboxRow(ctx, {
-        workspaceId: ref.workspaceId,
-        source: subscription.source,
-        externalSubscriptionId: subscription.externalSubscriptionId,
-      }),
-    );
-  }
-  for (const row of rows) await repo.enqueueOutbox(ctx.db, row);
+      source: subscription.source,
+      externalSubscriptionId: subscription.externalSubscriptionId,
+    }),
+  );
+  await repo.enqueueOutboxRows(ctx.db, rows);
   return rows.length;
 }
 
 /**
  * The per-minute sweep: queues a `refresh_subscription` for up to `limit` subscriptions, in any
- * workspace, whose next policy boundary has passed. Returns how many it queued.
+ * workspace, whose next policy boundary has passed, then (the repair path) for those with a live
+ * entitlement past its end and no refresh already queued. Returns how many it queued.
  */
 export async function queueDueEvaluations(
   context: ServiceContext,

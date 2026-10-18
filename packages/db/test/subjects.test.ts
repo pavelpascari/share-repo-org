@@ -9,6 +9,7 @@ import {
   listGrantsForWorkspace,
   listSubjects,
   schema,
+  updateSubjectLogin,
 } from "../src/index.ts";
 import { auditCount, workspaceEvent } from "./support/audit.ts";
 import { subjectRow, subscribedWorkspace } from "./support/commerce.ts";
@@ -67,6 +68,61 @@ describe("subjects", () => {
       await listSubjects(db, { workspaceId, ids: [zed.id, amy.id, theirs.id, uniqueId("sub")] }),
     ).toEqual([amy, zed]);
     expect(await listSubjects(db, { workspaceId, ids: [] })).toEqual([]);
+  });
+
+  it("lists more subjects than D1 binds parameters in one statement, merged by login", async () => {
+    const { workspaceId } = await workspaceWithOwner();
+    // Logins in reverse ID order, so merging the chunks must sort; two share a login.
+    const rows = Array.from({ length: 205 }, (_, i) =>
+      subjectRow(workspaceId, {
+        id: `sub-${String(i).padStart(3, "0")}-${uniqueId("x")}`,
+        loginSnapshot: i < 2 ? "same" : `login-${String(999 - i).padStart(3, "0")}`,
+      }),
+    );
+    for (const row of rows) await db.insert(schema.subjects).values(row);
+    const listed = await listSubjects(db, { workspaceId, ids: rows.map((r) => r.id) });
+    expect(listed).toHaveLength(205);
+    expect(listed.map((r) => r.id)).toEqual(
+      [...rows]
+        .sort((a, b) => (`${a.loginSnapshot} ${a.id}` < `${b.loginSnapshot} ${b.id}` ? -1 : 1))
+        .map((r) => r.id),
+    );
+  });
+
+  it("updates the login snapshot with audit, only while it is still the one read", async () => {
+    const { workspaceId } = await workspaceWithOwner();
+    const subject = subjectRow(workspaceId, { loginSnapshot: "old-login" });
+    await insertSubject(db, subject, [workspaceEvent(workspaceId)]);
+    const update = { workspaceId, subjectId: subject.id, previousLogin: "old-login", now: T0 + 5 };
+    const event = workspaceEvent(workspaceId);
+    await expect(
+      updateSubjectLogin(db, { ...update, login: "new-login" }, [event]),
+    ).resolves.toEqual({ ok: true });
+    expect(await findSubjectByExternalId(db, { ...subject, workspaceId })).toMatchObject({
+      loginSnapshot: "new-login",
+      updatedAt: T0 + 5,
+    });
+    expect(await auditCount(env.DB, event.correlationId)).toBe(1);
+
+    // A concurrent writer that read the old login writes nothing, audit included.
+    const stale = workspaceEvent(workspaceId);
+    await expect(
+      updateSubjectLogin(db, { ...update, login: "other-login" }, [stale]),
+    ).resolves.toEqual({ ok: false, reason: "stale" });
+    expect((await findSubjectByExternalId(db, { ...subject, workspaceId }))?.loginSnapshot).toBe(
+      "new-login",
+    );
+    expect(await auditCount(env.DB, stale.correlationId)).toBe(0);
+
+    // Another workspace's subject is never matched.
+    const other = await workspaceWithOwner();
+    await expect(
+      updateSubjectLogin(
+        db,
+        { ...update, workspaceId: other.workspaceId, previousLogin: "new-login", login: "x" },
+        [workspaceEvent(other.workspaceId)],
+      ),
+    ).resolves.toEqual({ ok: false, reason: "stale" });
   });
 });
 

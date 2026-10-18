@@ -248,6 +248,35 @@ describe("refresh_subscription and recompute_offer in the outbox drain", () => {
   });
 });
 
+describe("an offer with many subscriptions", () => {
+  // Over a hundred subscribers set up one by one, which is slow under coverage.
+  const SLOW_TIMEOUT = 60_000;
+
+  it(
+    "archives and revokes every subscription's entitlement, beyond one batch and 100 rows",
+    async () => {
+      const s = await shop(createFakeGitHubApp());
+      const subscriptions = 105;
+      for (let i = 0; i < subscriptions; i += 1) await subscribe(s);
+      // One tick records them all: the drain keeps claiming while batches come back full.
+      await runCron(jobsWorker(s.github), CRONS.drainOutbox);
+      expect(live(await entitlementsOf(s))).toHaveLength(subscriptions);
+
+      const archived = await archiveOffer(serviceContext(), s, s.slug, s.offerId);
+      expect(archived.ok).toBe(true);
+      // The recompute queues one refresh per subscription; the next tick runs them all.
+      await runCron(jobsWorker(s.github), CRONS.drainOutbox);
+      await runCron(jobsWorker(s.github), CRONS.drainOutbox);
+      const rows = await entitlementsOf(s);
+      expect(rows).toHaveLength(subscriptions);
+      expect(
+        rows.every((e) => e.state === "revoked" && e.decisionReason === "offer_archived"),
+      ).toBe(true);
+    },
+    SLOW_TIMEOUT,
+  );
+});
+
 describe("the per-minute due-evaluation sweep", () => {
   it("queues and runs a past-due subscription's grace expiry in the same tick", async () => {
     const s = await shop(createFakeGitHubApp(), { gracePeriodDays: 7 });
@@ -284,5 +313,39 @@ describe("the per-minute due-evaluation sweep", () => {
         refreshKey(s, sub.id),
       ),
     ).toBe(0);
+  });
+
+  it("repairs, on a later sweep, an expiry whose refresh failed for good", async () => {
+    const s = await shop(createFakeGitHubApp());
+    const sub = await subscribe(s);
+    await runCron(jobsWorker(s.github), CRONS.drainOutbox);
+    const scheduled = await act(s, sub.id, "cancel_at_period_end");
+    await runCron(jobsWorker(s.github), CRONS.drainOutbox);
+    const effective = scheduled.subscription.cancelAt as number;
+    expect(live(await entitlementsOf(s))).toMatchObject([{ validUntil: effective }]);
+
+    // At the effective time the sweep claims the evaluation, and the source fails for good.
+    clock.set(effective + 30_000);
+    const broken = jobsWorker(s.github, {
+      simulatedSource: () => ({
+        source: "simulated",
+        refreshSubscription: () => Promise.reject(new Error("source bug")),
+      }),
+    });
+    await runCron(broken, CRONS.drainOutbox);
+    expect(
+      await count(
+        "SELECT count(*) AS n FROM outbox WHERE subject_id = ? AND failed_at IS NOT NULL",
+        refreshKey(s, sub.id),
+      ),
+    ).toBe(1);
+    expect(live(await entitlementsOf(s))).toHaveLength(1);
+
+    // The cause is gone: the next minute's sweep repairs the lapsed entitlement.
+    clock.advance(60_000);
+    await runCron(jobsWorker(s.github), CRONS.drainOutbox);
+    expect(await entitlementsOf(s)).toMatchObject([
+      { state: "expired", decisionReason: "cancellation_effective" },
+    ]);
   });
 });

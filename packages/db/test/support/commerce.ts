@@ -98,6 +98,7 @@ export function newOffer(input: {
     },
     items,
     accesses,
+    outbox: [],
   };
 }
 
@@ -239,12 +240,24 @@ export async function subscribedWorkspace(
       customer,
       subscription,
       items: [item],
+      offers: [{ offerId: offer.offer.id, version: 1 }],
       entitlements: { create: [entitlement], update: [], end: [] },
     },
     [workspaceEvent(ws.workspaceId)],
   );
   if (!result.ok) throw new Error(result.reason);
-  return { ...ws, resource, offer, subject, customer, subscription, item, entitlement };
+  const subscriptionKey = { workspaceId: ws.workspaceId, subscriptionId: subscription.id };
+  return {
+    ...ws,
+    resource,
+    offer,
+    subject,
+    customer,
+    subscription,
+    subscriptionKey,
+    item,
+    entitlement,
+  };
 }
 
 export function simulatedRow(

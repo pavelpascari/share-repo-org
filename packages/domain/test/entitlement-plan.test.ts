@@ -218,6 +218,72 @@ describe("planEntitlements", () => {
     expect(result.update).toEqual([]);
   });
 
+  describe("a live entitlement that lapsed before this plan (a late sweep)", () => {
+    it.each([
+      ["cancel_scheduled", "cancellation_effective"],
+      ["past_due_in_grace", "grace_expired"],
+      ["canceled_until_end", "canceled"],
+      ["active", "expired"],
+    ] as const)(
+      "ends a lapsed %s row as expired (%s) and grants again on a new row",
+      (granted, reason) => {
+        const lapsed = live("e1", { validUntil: NOW - DAY, decisionReason: granted });
+        expect(plan({ live: [lapsed] })).toEqual({
+          ...EMPTY,
+          create: [created("o1", "r1")],
+          end: [{ id: "e1", state: "expired", reason }],
+        });
+      },
+    );
+
+    it("treats an end exactly at now as passed, and one just after as live", () => {
+      const at = (validUntil: number) =>
+        plan({ live: [live("e1", { validUntil, decisionReason: "cancel_scheduled" })] });
+      expect(at(NOW).end).toEqual([
+        { id: "e1", state: "expired", reason: "cancellation_effective" },
+      ]);
+      expect(at(NOW + 1)).toEqual({
+        ...EMPTY,
+        update: [
+          {
+            id: "e1",
+            set: {
+              validUntil: null,
+              decisionReason: "active",
+              offerVersion: 1,
+              policyVersion: ACCESS_POLICY_VERSION,
+            },
+          },
+        ],
+      });
+    });
+
+    it.each([
+      ["no longer desired", { subscription: null }],
+      ["not granted now", { subscription: subscription({ state: "paused" }) }],
+    ] as const)("only ends it, as expired, when access is %s", (_, overrides) => {
+      const lapsed = live("e1", { validUntil: NOW - 1, decisionReason: "past_due_in_grace" });
+      expect(plan({ ...overrides, live: [lapsed] })).toEqual({
+        ...EMPTY,
+        end: [{ id: "e1", state: "expired", reason: "grace_expired" }],
+      });
+    });
+
+    it("replaces it at a changed access level with one end and one create", () => {
+      const lapsed = live("e1", { validUntil: NOW - 1, decisionReason: "cancel_scheduled" });
+      expect(
+        plan({
+          offers: [offer("o1", { accesses: [{ resourceId: "r1", accessLevel: "read" }] })],
+          live: [lapsed],
+        }),
+      ).toEqual({
+        ...EMPTY,
+        create: [created("o1", "r1", { accessLevel: "read" })],
+        end: [{ id: "e1", state: "expired", reason: "cancellation_effective" }],
+      });
+    });
+  });
+
   it("names the subscription first, then the subject, then the offer", () => {
     const archived = [offer("o1", { status: "archived", items: [] })];
     const reasonFor = (overrides: Partial<EntitlementPlanInput>) =>
@@ -373,11 +439,14 @@ const liveArb = (offers: readonly PlanOffer[], now: number): fc.Arbitrary<LiveEn
             subjectId: fc.constantFrom(...SUBJECTS),
             accessLevel: fc.constantFrom(...LEVELS),
             offerVersion: fc.integer({ min: 1, max: 3 }),
-            validUntil: fc.option(fc.integer({ min: now + 1, max: now + 20 * DAY })),
+            // Ends before, at and after `now`: a late sweep leaves lapsed rows live.
+            validUntil: fc.option(fc.integer({ min: now - 20 * DAY, max: now + 20 * DAY })),
             decisionReason: fc.constantFrom(
               "active" as const,
               "trialing" as const,
+              "cancel_scheduled" as const,
               "past_due_in_grace" as const,
+              "canceled_until_end" as const,
             ),
             policyVersion: fc.constant(ACCESS_POLICY_VERSION),
           }),
@@ -499,6 +568,27 @@ describe("planEntitlements properties", () => {
           }
           for (const e of result.end) {
             expect(input.live.some((l) => l.id === e.id)).toBe(true);
+          }
+        }),
+      );
+    },
+    PROPERTY_TIMEOUT,
+  );
+
+  it(
+    "ends every lapsed live entitlement once, as expired, and never extends it",
+    () => {
+      fc.assert(
+        fc.property(inputArb, (input) => {
+          const result = planEntitlements(input);
+          const ended = result.end.map((e) => e.id);
+          expect(new Set(ended).size).toBe(ended.length);
+          for (const e of input.live) {
+            if (e.validUntil === null || e.validUntil > input.now) continue;
+            expect(result.end).toContainEqual(
+              expect.objectContaining({ id: e.id, state: "expired" }),
+            );
+            expect(result.update.some((u) => u.id === e.id)).toBe(false);
           }
         }),
       );

@@ -24,7 +24,8 @@ export type Shop = Awaited<ReturnType<typeof shop>>;
 
 /**
  * A connected creator whose repository is synced and sold by one offer for the simulated item
- * `sim_pro`. The connection's own resync is done, so it leaves no due outbox work behind.
+ * `sim_pro`. The connection's own resync and the new offer's recompute (no subscription carries
+ * `sim_pro` yet) are done, so it leaves no due outbox work behind.
  */
 export async function shop(github: FakeGitHubApp, options: { gracePeriodDays?: number } = {}) {
   const creator = await connectedCreator(github);
@@ -40,7 +41,8 @@ export async function shop(github: FakeGitHubApp, options: { gracePeriodDays?: n
     items: [{ source: "simulated", externalItemId: "sim_pro" }],
     accesses: resources.map((resource) => ({ resourceId: resource.id, accessLevel: "write" })),
   });
-  if (!created.ok) throw new Error("offer setup failed");
+  if (!created.ok || created.outboxId === null) throw new Error("offer setup failed");
+  await markOutboxSent(db, [created.outboxId], clock.now());
   return {
     ...creator,
     github,

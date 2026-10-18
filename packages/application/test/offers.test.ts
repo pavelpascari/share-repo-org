@@ -15,7 +15,14 @@ import {
   type UserActor,
   updateOffer,
 } from "../src/index.ts";
-import { failingBatches, memberOf, offer, type Shop, shop } from "./support/commerce.ts";
+import {
+  failingBatches,
+  memberOf,
+  offer,
+  pendingWork,
+  type Shop,
+  shop,
+} from "./support/commerce.ts";
 import { db, serviceContext, signedUpUser } from "./support/context.ts";
 
 const input = (s: Shop, overrides: Record<string, unknown> = {}) => ({
@@ -48,7 +55,15 @@ describe("createOffer", () => {
       items: config.items,
       accesses: config.accesses,
     });
-    expect(outboxId).toBeNull();
+    // It sells an item, so it queues a recompute of subscriptions that already carry it.
+    const work = await env.DB.prepare("SELECT kind, subject_id FROM outbox WHERE id = ?")
+      .bind(outboxId)
+      .first<{ kind: string; subject_id: string }>();
+    expect(work?.kind).toBe("recompute_offer");
+    expect(decodeOfferKey(work?.subject_id ?? "")).toEqual({
+      ok: true,
+      value: { workspaceId: s.workspaceId, offerId: created.id },
+    });
     const version = await getOfferVersion(db, {
       workspaceId: s.workspaceId,
       offerId: created.id,
@@ -65,6 +80,15 @@ describe("createOffer", () => {
         details: { name: "Pro", version: 1, gracePeriodDays: 5, items: 1, accesses: 1 },
       },
     ]);
+  });
+
+  it("queues nothing for an offer that sells no items yet", async () => {
+    const s = await shop();
+    const { outboxId } = ok(
+      await createOffer(serviceContext(), s, s.slug, input(s, { items: [] })),
+    );
+    expect(outboxId).toBeNull();
+    expect(await pendingWork(s.workspaceId)).toEqual([]);
   });
 
   it.each([
@@ -351,7 +375,17 @@ describe("archiveOffer", () => {
       archiveOffer(ctx, s, s.slug, created.id),
     );
     const archived = ok(result);
-    expect(archived.offer).toMatchObject({ status: "archived", version: 2, items: created.items });
+    // The items are released; the earlier version's snapshot keeps them.
+    expect(archived.offer).toMatchObject({ status: "archived", version: 2, items: [] });
+    const snapshot = async (version: number) =>
+      parseOfferSnapshot(
+        JSON.parse(
+          (await getOfferVersion(db, { workspaceId: s.workspaceId, offerId: created.id, version }))
+            ?.snapshot ?? "null",
+        ),
+      );
+    expect(await snapshot(1)).toMatchObject({ ok: true, value: { items: created.items } });
+    expect(await snapshot(2)).toMatchObject({ ok: true, value: { items: [] } });
     expect(archived.outboxId).not.toBeNull();
     expect(await listAuditEventsByCorrelationId(db, ctx.correlationId)).toMatchObject([
       { action: "offer.archived", details: { version: 2 } },
@@ -362,6 +396,24 @@ describe("archiveOffer", () => {
     );
     expect(repeat.result).toEqual({ ok: true, offer: archived.offer, outboxId: null });
     expect(repeat.changedTables).toEqual([]);
+  });
+
+  it("releases its items, so a new offer can sell them", async () => {
+    const s = await shop();
+    const created = await offer(s, { items: ["sim_reuse"] });
+    ok(await archiveOffer(serviceContext(), s, s.slug, created.id));
+    const again = ok(
+      await createOffer(serviceContext(), s, s.slug, {
+        ...input(s),
+        name: "Pro again",
+        items: created.items,
+      }),
+    );
+    expect(again.offer.items).toEqual(created.items);
+    expect((await listOffers(serviceContext(), s, s.slug)).map((o) => [o.name, o.items])).toEqual([
+      ["Pro", []],
+      ["Pro again", created.items],
+    ]);
   });
 
   it("is not found for another workspace's offer", async () => {

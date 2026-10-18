@@ -91,6 +91,17 @@ export interface EntitlementPlan {
   readonly nextEvaluationAt: Instant | null;
 }
 
+/**
+ * Why a live entitlement whose `validUntil` has passed ended, by the reason it was granted
+ * under: the boundary that reason set. A lapsed row with any other reason (policy never sets an
+ * end for one) is simply `expired`.
+ */
+const LAPSE_REASONS: ReadonlyMap<AccessDecisionReason, AccessDecisionReason> = new Map([
+  ["cancel_scheduled", "cancellation_effective"],
+  ["past_due_in_grace", "grace_expired"],
+  ["canceled_until_end", "canceled"],
+] as const);
+
 /** Decisions that end access because time ran out; any other ending is a revocation. */
 const EXPIRING_REASONS: ReadonlySet<AccessDecisionReason> = new Set([
   "grace_expired",
@@ -116,6 +127,13 @@ interface Desired {
  *   or policy version differ; a changed access level ends the live one and creates a new one.
  * - Not granted and live: end, `expired` for time-based reasons and `revoked` otherwise.
  * - Live but no longer desired: revoke, with the most specific reason.
+ * - Live but lapsed (`validUntil` at or before `now`, because the sweep that should have ended it
+ *   ran late): it has already ended, whatever is desired now. End it `expired`, with the reason
+ *   its own boundary implies (`cancel_scheduled` → `cancellation_effective`,
+ *   `past_due_in_grace` → `grace_expired`, `canceled_until_end` → `canceled`); when access is
+ *   granted again, create a new row, so the gap stays visible (decision 0009: a reactivation
+ *   creates a new row). A `past_due_in_grace` row cut short by a scheduled cancellation also
+ *   reads `grace_expired`: the row records only that its grace-period access ran out.
  *
  * Throws on duplicate offers, live entitlements or accesses, and when a live entitlement refers
  * to an offer missing from the input: those are caller defects, not facts to act on.
@@ -149,8 +167,13 @@ export function planEntitlements(input: EntitlementPlanInput): EntitlementPlan {
   const end: EntitlementEndPlan[] = [];
 
   for (const key of [...new Set([...live.keys(), ...desired.keys()])].sort()) {
-    const current = live.get(key);
+    let current = live.get(key);
     const wanted = desired.get(key);
+    if (current !== undefined && current.validUntil !== null && current.validUntil <= now) {
+      end.push({ id: current.id, state: "expired", reason: lapseReason(current.decisionReason) });
+      current = undefined;
+      if (wanted === undefined || !wanted.decision.granted) continue;
+    }
     if (wanted === undefined) {
       const entitlement = current as LiveEntitlement;
       end.push({ id: entitlement.id, state: "revoked", reason: lostMapping(entitlement, input) });
@@ -194,6 +217,10 @@ function lostMapping(
   if (offer.status === "archived") return "offer_archived";
   if (!intersects(offer.items, subscription.items)) return "item_removed";
   return "offer_access_removed";
+}
+
+function lapseReason(reason: AccessDecisionReason): AccessDecisionReason {
+  return LAPSE_REASONS.get(reason) ?? "expired";
 }
 
 function ended(id: string, reason: AccessDecisionReason): EntitlementEndPlan {

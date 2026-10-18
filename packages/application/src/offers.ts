@@ -26,7 +26,8 @@ import { encodeOfferKey } from "./entitlement-source.ts";
 import { openWorkspace } from "./workspaces.ts";
 
 // Offers (phase-3 plan § Commercial side): every configuration change is a new version with an
-// immutable snapshot, and edits queue a recompute of the subscriptions that carry the offer.
+// immutable snapshot, and creating, editing or archiving queues a recompute of the subscriptions
+// that carry the offer's items.
 
 /** What a member sees of an offer, at its current version. */
 export interface OfferSummary extends OfferInput {
@@ -230,7 +231,26 @@ export async function listOfferableResources(
   }));
 }
 
-/** Creates an offer at version 1. Needs `workspace.manage`. */
+function recomputeRow(
+  ctx: ServiceContext,
+  workspaceId: string,
+  offerId: string,
+  now: number,
+): repo.NewOutboxRow {
+  return {
+    id: ctx.ids.next(),
+    kind: "recompute_offer",
+    subjectId: encodeOfferKey({ workspaceId, offerId }),
+    createdAt: now,
+    availableAt: now,
+  };
+}
+
+/**
+ * Creates an offer at version 1. Needs `workspace.manage`. An offer that sells items queues a
+ * recompute in the same batch: subscriptions recorded with those items before the offer existed
+ * have no evaluation scheduled, and would otherwise never gain access.
+ */
 export async function createOffer(
   context: ServiceContext,
   actor: UserActor,
@@ -256,6 +276,7 @@ export async function createOffer(
     updatedAt: now,
   };
   const rows = configRows(ctx, workspaceId, offerId, config, now);
+  const outbox = config.items.length > 0 ? [recomputeRow(ctx, workspaceId, offerId, now)] : [];
   try {
     await repo.createOffer(
       ctx.db,
@@ -263,6 +284,7 @@ export async function createOffer(
         offer,
         version: versionRow(ctx, actor, workspaceId, offerId, 1, config, now),
         ...rows,
+        outbox,
       },
       [
         auditEvent(
@@ -290,7 +312,7 @@ export async function createOffer(
   return {
     ok: true,
     offer: summary({ ...offer, items: rows.items, accesses: rows.accesses }),
-    outboxId: null,
+    outboxId: outbox[0]?.id ?? null,
   };
 }
 
@@ -331,7 +353,7 @@ async function writeVersion(
   const { workspaceId, id: offerId } = offer;
   const version = offer.version + 1;
   const rows = configRows(ctx, workspaceId, offerId, next.config, now);
-  const outboxId = ctx.ids.next();
+  const recompute = recomputeRow(ctx, workspaceId, offerId, now);
   let result: repo.UpdateOfferResult;
   try {
     result = await repo.updateOffer(
@@ -348,15 +370,7 @@ async function writeVersion(
         },
         version: versionRow(ctx, actor, workspaceId, offerId, version, next.config, now),
         ...rows,
-        outbox: [
-          {
-            id: outboxId,
-            kind: "recompute_offer",
-            subjectId: encodeOfferKey({ workspaceId, offerId }),
-            createdAt: now,
-            availableAt: now,
-          },
-        ],
+        outbox: [recompute],
       },
       audit(version),
     );
@@ -376,7 +390,7 @@ async function writeVersion(
       updatedAt: now,
       ...rows,
     }),
-    outboxId,
+    outboxId: recompute.id,
   };
 }
 
@@ -423,8 +437,11 @@ export async function updateOffer(
 }
 
 /**
- * Archives an offer: it keeps its configuration and history but maps no access, so the queued
- * recompute ends its entitlements (`offer_archived`). Archiving an archived offer is a no-op.
+ * Archives an offer: it maps no access any more, so the queued recompute ends its entitlements
+ * (`offer_archived`; the recompute finds them by their live entitlements). Its commercial items
+ * are released in the same batch, so another offer can sell them; the archived version's
+ * snapshot sells nothing, and earlier versions keep the items. Archiving an archived offer is a
+ * no-op.
  */
 export async function archiveOffer(
   context: ServiceContext,
@@ -436,7 +453,8 @@ export async function archiveOffer(
   const { scope, offer } = await openOffer(ctx, actor, slug, offerId);
   const current = summary(offer);
   if (offer.status === "archived") return { ok: true, offer: current, outboxId: null };
-  return writeVersion(ctx, actor, offer, { config: current, status: "archived" }, (version) => [
+  const released: OfferInput = { ...current, items: [] };
+  return writeVersion(ctx, actor, offer, { config: released, status: "archived" }, (version) => [
     auditEvent(
       "offer.archived",
       {

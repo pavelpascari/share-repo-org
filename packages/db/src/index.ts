@@ -48,11 +48,12 @@ export {
   getOfferVersion,
   listOffers,
   listOffersByIds,
-  listSubscriptionIdsForOffer,
+  listSubscriptionsForOffer,
   type NewOffer,
   type Offer,
   type OfferAccess,
   type OfferItem,
+  type OfferSubscriptionRef,
   type OfferUpdate,
   type OfferVersion,
   type OfferWithConfig,
@@ -62,6 +63,7 @@ export {
 export {
   claimOutbox,
   enqueueOutbox,
+  enqueueOutboxRows,
   markOutboxFailed,
   markOutboxSent,
   type NewOutboxRow,
@@ -93,6 +95,7 @@ export {
   insertSubject,
   listSubjects,
   type Subject,
+  updateSubjectLogin,
 } from "./subject-repository.ts";
 export {
   type ApplySubscriptionRefreshResult,
@@ -107,6 +110,7 @@ export {
   listLiveEntitlementsForSubscription,
   listLiveEntitlementsForWorkspace,
   type NewEntitlement,
+  type OfferVersionRef,
   type Subscription,
   type SubscriptionItem,
   type SubscriptionRefresh,
