@@ -9,7 +9,7 @@
     "preview": "vite preview",
     "deploy": "wrangler deploy",
     "typegen": "wrangler types && react-router typegen",
-    "typecheck": "wrangler types --check && react-router typegen && tsc -p ."
+    "typecheck": "wrangler types --check && react-router typegen && tsc -p . && tsc -p e2e"
   },
   "dependencies": {
     "@sharerepo/db": "workspace:*",
