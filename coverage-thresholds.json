@@ -32,10 +32,10 @@
       "statements": 100
     },
     "apps/web/workers/**": {
-      "lines": 0,
-      "branches": 0,
-      "functions": 0,
-      "statements": 0
+      "lines": 98.1,
+      "branches": 100,
+      "functions": 91.6,
+      "statements": 98.2
     },
     "scripts/*.ts": {
       "lines": 100,
