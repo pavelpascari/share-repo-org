@@ -1,6 +1,6 @@
 // The GitHub App half of the E2E fake GitHub: the install page, the App and installation REST
-// endpoints ShareRepo calls, and control endpoints a test uses to change an installation or
-// send a signed webhook. Response shapes follow GitHub's (see packages/integrations fixtures).
+// endpoints ShareRepo calls, and control endpoints a test uses to register a user, or to change
+// an installation and send a signed webhook. Response shapes follow GitHub's (see packages/integrations fixtures).
 import { createHmac, randomInt } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { WEB_URL } from "./ports.ts";
@@ -24,6 +24,8 @@ interface Installation {
 export function createFakeGitHubApp(webhookSecret: string) {
   const installations = new Map<number, Installation>();
   const tokens = new Map<string, number>();
+  /** Accounts registered through `/_control/users`, keyed by lower-cased login. */
+  const users = new Map<string, Installation["account"]>();
 
   function installationJson(installation: Installation) {
     return {
@@ -127,6 +129,28 @@ export function createFakeGitHubApp(webhookSecret: string) {
           archived: repository.archived,
         })),
       });
+    }
+
+    const userPath = path.match(/^\/api\/users\/([\w-]+)$/);
+    if (userPath !== null && req.method === "GET") {
+      if (!tokens.has((req.headers.authorization ?? "").replace(/^Bearer /, ""))) {
+        return json(res, 401, { message: "Bad credentials" });
+      }
+      const login = (userPath[1] as string).toLowerCase();
+      const user =
+        users.get(login) ??
+        [...installations.values()].find((i) => i.account.login.toLowerCase() === login)?.account;
+      return user === undefined
+        ? json(res, 404, { message: "Not Found" })
+        : json(res, 200, { ...user, node_id: "U_fake", site_admin: false });
+    }
+
+    // Controls: make a GitHub account exist, so ShareRepo can resolve its login.
+    if (path === "/_control/users" && req.method === "POST") {
+      const form = new URLSearchParams(body);
+      const login = form.get("login") ?? "";
+      users.set(login.toLowerCase(), { id: Number(form.get("id")), login, type: "User" });
+      return json(res, 200, { ok: true });
     }
 
     // Controls: change an installation as its owner would on GitHub, then tell ShareRepo.

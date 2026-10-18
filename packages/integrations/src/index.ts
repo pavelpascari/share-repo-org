@@ -27,6 +27,8 @@ export type {
   GitHubAppPort,
   GitHubInstallation,
   GitHubRepository,
+  GitHubUser,
+  GitHubUserType,
 } from "./github/port.ts";
 export {
   parseWebhookEnvelope,

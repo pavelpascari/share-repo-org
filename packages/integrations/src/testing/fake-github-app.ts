@@ -1,16 +1,19 @@
-import type { Instant } from "@sharerepo/domain";
+import { type Instant, parseGitHubLogin } from "@sharerepo/domain";
 import { GitHubApiError, type GitHubApiErrorKind } from "../github/errors.ts";
 import type {
   GitHubAccount,
   GitHubAppPort,
   GitHubInstallation,
   GitHubRepository,
+  GitHubUser,
 } from "../github/port.ts";
 
 /**
  * In-memory stand-in for the GitHub App, for application and web tests. Behaves like the real
  * client where callers depend on it (checked by the shared contract suite): unknown or deleted
  * installations are `not_found`, and a suspended installation's repositories are `suspended`.
+ * `getUserByLogin` knows every user added with `addUser` and every User or Organization account
+ * that installed the App; like GitHub, it matches logins case-insensitively.
  */
 export interface FakeInstallationInput {
   readonly id: string;
@@ -23,6 +26,8 @@ export interface FakeInstallationInput {
 export interface FakeGitHubApp extends GitHubAppPort {
   readonly calls: readonly string[];
   addInstallation(input: FakeInstallationInput): void;
+  /** Makes a GitHub account resolvable by `getUserByLogin`. */
+  addUser(user: GitHubUser): void;
   setRepositories(installationId: string, repositories: readonly GitHubRepository[]): void;
   renameRepository(installationId: string, externalId: string, name: string): void;
   removeRepository(installationId: string, externalId: string): void;
@@ -42,6 +47,7 @@ export const FAKE_INSTALL_BASE = "https://github.test/apps/sharerepo-fake/instal
 
 export function createFakeGitHubApp(): FakeGitHubApp {
   const installations = new Map<string, State>();
+  const users = new Map<string, GitHubUser>();
   const calls: string[] = [];
   let failure: GitHubApiErrorKind | undefined;
 
@@ -86,6 +92,27 @@ export function createFakeGitHubApp(): FakeGitHubApp {
       return structuredClone(state.repositories);
     },
 
+    async getUserByLogin(installationId, login) {
+      if (!parseGitHubLogin(login).ok) {
+        throw new GitHubApiError("rejected", "GitHub request refused: invalid login");
+      }
+      const state = begin("getUserByLogin", installationId);
+      if (state.installation.suspendedAt !== null) {
+        throw new GitHubApiError(
+          "suspended",
+          "GitHub create installation token failed with status 403",
+          { status: 403 },
+        );
+      }
+      const user = users.get(login.toLowerCase());
+      if (user === undefined) {
+        throw new GitHubApiError("not_found", "GitHub get user failed with status 404", {
+          status: 404,
+        });
+      }
+      return { ...user };
+    },
+
     installUrl(state) {
       calls.push("installUrl");
       return `${FAKE_INSTALL_BASE}?state=${encodeURIComponent(state)}`;
@@ -102,6 +129,18 @@ export function createFakeGitHubApp(): FakeGitHubApp {
         },
         repositories: [...(input.repositories ?? [])],
       });
+      const { account } = input;
+      if (account.type !== "Enterprise") {
+        users.set(account.login.toLowerCase(), {
+          id: account.id,
+          login: account.login,
+          type: account.type,
+        });
+      }
+    },
+
+    addUser(user) {
+      users.set(user.login.toLowerCase(), { ...user });
     },
 
     setRepositories(installationId, repositories) {
