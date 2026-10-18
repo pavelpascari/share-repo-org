@@ -1,3 +1,5 @@
+import type { ResourceCapabilities } from "./resource.ts";
+
 /**
  * Stored entitlement states (decision 0009). Pending and blocked are planner decisions, and
  * "expiring" is an active entitlement with `validUntil` set.
@@ -15,3 +17,14 @@ export const ACCESS_POLICY_VERSION = 1;
 /** Access a grant gives to a resource. Personal repositories support only `write` (0008). */
 export const ACCESS_LEVELS = ["read", "write"] as const;
 export type AccessLevel = (typeof ACCESS_LEVELS)[number];
+
+/**
+ * Whether a resource with these capabilities can be granted the access level (domain invariant
+ * 12). Every provider can grant write access; a read-only grant needs explicit support.
+ */
+export function supportsAccessLevel(
+  capabilities: Pick<ResourceCapabilities, "readOnlyGrant">,
+  level: AccessLevel,
+): boolean {
+  return level === "write" || capabilities.readOnlyGrant;
+}

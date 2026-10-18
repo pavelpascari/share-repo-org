@@ -6,6 +6,7 @@ export type {
   AuditEvent,
   AuditEventInput,
   AuditScope,
+  OfferChange,
   SignInRefusalReason,
 } from "./audit.ts";
 export {
@@ -13,6 +14,7 @@ export {
   AUDIT_ACTOR_TYPES,
   AUDIT_SCOPES,
   auditEvent,
+  OFFER_CHANGES,
   SIGN_IN_REFUSAL_REASONS,
 } from "./audit.ts";
 export type { WorkspaceMembership, WorkspacePermission, WorkspaceScope } from "./authorization.ts";
@@ -33,7 +35,19 @@ export {
   ACCESS_POLICY_VERSION,
   ENTITLEMENT_SOURCE_TYPES,
   ENTITLEMENT_STATES,
+  supportsAccessLevel,
 } from "./entitlement.ts";
+export type {
+  EntitlementEndPlan,
+  EntitlementPlan,
+  EntitlementPlanInput,
+  EntitlementUpdatePlan,
+  LiveEntitlement,
+  NewEntitlementPlan,
+  PlanOffer,
+  PlanSubscription,
+} from "./entitlement-plan.ts";
+export { planEntitlements } from "./entitlement-plan.ts";
 export type { ExternalEventState, OutboxKind } from "./external-event.ts";
 export { EXTERNAL_EVENT_STATES, OUTBOX_KINDS } from "./external-event.ts";
 export type { GrantState, RetryClass, SubjectType } from "./grant.ts";
@@ -52,14 +66,46 @@ export {
 } from "./identity.ts";
 export type { IdGenerator } from "./ids.ts";
 export { randomIds } from "./ids.ts";
-export type { CommercialSource, OfferStatus } from "./offer.ts";
+export type {
+  CommercialSource,
+  OfferAccess,
+  OfferAccessError,
+  OfferInput,
+  OfferInputError,
+  OfferItem,
+  OfferResource,
+  OfferSnapshot,
+  OfferStatus,
+} from "./offer.ts";
 export {
   COMMERCIAL_SOURCES,
+  checkOfferAccesses,
   GRACE_PERIOD_DAYS_DEFAULT,
   GRACE_PERIOD_DAYS_MAX,
   GRACE_PERIOD_DAYS_MIN,
+  OFFER_ACCESSES_MAX,
+  OFFER_ITEMS_MAX,
+  OFFER_NAME_MAX_LENGTH,
   OFFER_STATUSES,
+  parseOfferInput,
+  parseOfferSnapshot,
 } from "./offer.ts";
+export type { AccessDecision, AccessDecisionReason, PolicySubscription } from "./policy.ts";
+export { ACCESS_DECISION_REASONS, decideAccess } from "./policy.ts";
+export type {
+  ReconciliationAction,
+  ReconciliationDecision,
+  ReconciliationEntitlement,
+  ReconciliationGrant,
+  ReconciliationInput,
+  ReconciliationReason,
+  ReconciliationResource,
+} from "./reconciliation.ts";
+export {
+  planReconciliation,
+  RECONCILIATION_ACTIONS,
+  RECONCILIATION_REASONS,
+} from "./reconciliation.ts";
 export type { ResourceCapabilities, ResourceSelection, ResourceType } from "./resource.ts";
 export {
   GITHUB_PERSONAL_REPOSITORY_CAPABILITIES,
@@ -76,8 +122,12 @@ export type {
   ResourceSyncPlan,
 } from "./resource-sync.ts";
 export { planResourceSync } from "./resource-sync.ts";
-export type { SubscriptionState } from "./subscription.ts";
-export { SUBSCRIPTION_STATES } from "./subscription.ts";
+export type { SubscriptionSnapshot, SubscriptionState } from "./subscription.ts";
+export {
+  isNewerSnapshot,
+  parseSubscriptionSnapshot,
+  SUBSCRIPTION_STATES,
+} from "./subscription.ts";
 export type { Clock, Instant } from "./time.ts";
 export { systemClock } from "./time.ts";
 export type {
