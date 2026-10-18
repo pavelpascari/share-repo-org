@@ -71,6 +71,10 @@ export async function createConnectionFromIntent(
     .where(
       and(
         eq(connectionIntents.id, input.intentId),
+        // The intent authorizes exactly this workspace and user: a connection for any other
+        // workspace or creator consumes nothing and is therefore not inserted.
+        eq(connectionIntents.workspaceId, connection.workspaceId),
+        eq(connectionIntents.userId, connection.createdByUserId),
         sql`${connectionIntents.consumedAt} IS NULL`,
         sql`${connectionIntents.expiresAt} > ${now}`,
       ),

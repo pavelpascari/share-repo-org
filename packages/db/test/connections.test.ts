@@ -128,6 +128,26 @@ describe("createConnectionFromIntent", () => {
     expect(await count("outbox", "id = ?", outboxId)).toBe(0);
   });
 
+  it.each([
+    ["another workspace", "workspace"],
+    ["another creator", "user"],
+  ])("refuses to attach the installation to %s and writes nothing", async (_, target) => {
+    const { workspaceId, intent } = await pendingIntent();
+    const other = await workspaceWithOwner();
+    const connection =
+      target === "workspace"
+        ? connectionRow(other.workspaceId, other.userId)
+        : connectionRow(workspaceId, other.userId);
+    const event = workspaceEvent(connection.workspaceId);
+    await expect(
+      createConnectionFromIntent(db, { intentId: intent.id, now: NOW, connection }, [event]),
+    ).resolves.toEqual({ ok: false, reason: "intent_unavailable" });
+    expect(await count("connections", "id = ?", connection.id)).toBe(0);
+    expect(await auditCount(env.DB, event.correlationId)).toBe(0);
+    // The intent is still usable by its own workspace and user.
+    expect((await findConnectionIntentByTokenHash(db, intent.tokenHash))?.consumedAt).toBeNull();
+  });
+
   it("lets exactly one of two concurrent completions win", async () => {
     const { workspaceId, userId, intent } = await pendingIntent();
     const attempts = [connectionRow(workspaceId, userId), connectionRow(workspaceId, userId)];
