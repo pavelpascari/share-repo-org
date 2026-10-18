@@ -119,12 +119,12 @@ Commercial events are hints. Processing always refreshes from the source.
 
 | Decision | When |
 |---|---|
-| `provision` | Desired, the grant is absent or unknown, the resource is sellable, the access level is supported |
-| `verify` | Desired and the grant is active (periodic check) |
+| `provision` | Desired, and the grant is absent or unknown, at a lower managed level, or an expired invitation (reissued). The resource must be sellable and the access level supported. |
+| `verify` | Desired and the grant is active (periodic check); or the grant is stuck in `provisioning` or `revoking` (re-observe) |
 | `wait` | Desired and an invitation is pending and not expired |
 | `retry` | Desired, the grant is in a retryable error |
-| `request_action` | Desired, the grant error needs a user or creator to act (for example an invitation expired, or the subscriber is not linked) |
-| `blocked` | Desired, but the resource is not sellable, the connection is not active, or the access level is unsupported by the capability |
+| `request_action` | Desired, and the grant error needs a user or the creator to act |
+| `blocked` | A provider change is needed, but the resource is missing or not sellable, the connection is not active, the access level is unsupported by the capability, or the last error was terminal |
 | `revoke` | Not desired and the grant is `managed` and active or pending |
 | `noop` | Not desired, and the grant is absent or not managed. Unmanaged access is never revoked and is reported as such. |
 
