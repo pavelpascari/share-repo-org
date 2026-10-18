@@ -67,6 +67,35 @@ describe("fake GitHub App controls", () => {
     expect(() => fake.suspend("9", 1)).toThrow("fake: unknown installation 9");
   });
 
+  it("resolves added users and installing accounts, but not enterprise accounts", async () => {
+    const fake = createFakeGitHubApp();
+    fake.addInstallation({ id: "1", account });
+    fake.addInstallation({ id: "2", account: { id: "8", login: "ent", type: "Enterprise" } });
+    const bot = { id: "9", login: "Octo-Bot", type: "Bot" } as const;
+    fake.addUser(bot);
+    expect(await fake.getUserByLogin("1", "OCTO")).toEqual(account);
+    const resolved = await fake.getUserByLogin("1", "octo-bot");
+    expect(resolved).toEqual(bot);
+    (resolved as { login: string }).login = "changed";
+    expect(await fake.getUserByLogin("2", "octo-bot")).toEqual(bot);
+    await expect(fake.getUserByLogin("1", "ent")).rejects.toMatchObject({ kind: "not_found" });
+    await expect(fake.getUserByLogin("404", "octo")).rejects.toMatchObject({ kind: "not_found" });
+    expect(fake.calls.filter((call) => call.startsWith("getUserByLogin"))).toEqual([
+      "getUserByLogin:1",
+      "getUserByLogin:1",
+      "getUserByLogin:2",
+      "getUserByLogin:1",
+      "getUserByLogin:404",
+    ]);
+  });
+
+  it("refuses an invalid login before recording a call", async () => {
+    const fake = createFakeGitHubApp();
+    fake.addInstallation({ id: "1", account });
+    await expect(fake.getUserByLogin("1", "..")).rejects.toMatchObject({ kind: "rejected" });
+    expect(fake.calls).toEqual([]);
+  });
+
   it("builds an install URL carrying the state", () => {
     expect(createFakeGitHubApp().installUrl("a b")).toBe(`${FAKE_INSTALL_BASE}?state=a%20b`);
   });
