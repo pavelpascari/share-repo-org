@@ -101,8 +101,7 @@ describe("scheduled()", () => {
         cron: "0 * * * *",
         error: {
           name: "ConfigurationError",
-          message:
-            "Invalid environment configuration: DB (invalid_type), ENVIRONMENT (invalid_value)",
+          message: "Invalid environment configuration: DB (custom), ENVIRONMENT (invalid_value)",
           code: "configuration_error",
         },
       },

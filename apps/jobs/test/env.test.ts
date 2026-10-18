@@ -31,15 +31,15 @@ describe("parseJobsEnv", () => {
     ["not a D1 binding", { name: "DB" }],
   ])("rejects a DB binding that is %s", (_label, db) => {
     const error = configurationError({ ...env, DB: db });
-    expect(error.issues).toEqual([{ path: "DB", code: "invalid_type" }]);
-    expect(error.message).toBe("Invalid environment configuration: DB (invalid_type)");
+    expect(error.issues).toEqual([{ path: "DB", code: "custom" }]);
+    expect(error.message).toBe("Invalid environment configuration: DB (custom)");
   });
 
   it("rejects an unknown ENVIRONMENT and reports every failing key", () => {
     const error = configurationError({ ENVIRONMENT: "staging" });
     expect(error.code).toBe("configuration_error");
     expect(error.issues).toEqual([
-      { path: "DB", code: "invalid_type" },
+      { path: "DB", code: "custom" },
       { path: "ENVIRONMENT", code: "invalid_value" },
     ]);
   });

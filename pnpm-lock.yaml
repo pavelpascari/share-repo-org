@@ -44,6 +44,9 @@ importers:
       '@sharerepo/platform':
         specifier: workspace:*
         version: link:../../packages/platform
+      zod:
+        specifier: 4.6.7
+        version: 4.6.7
     devDependencies:
       '@sharerepo/testing':
         specifier: workspace:*

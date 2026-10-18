@@ -1,4 +1,5 @@
-import { ConfigurationError, type ConfigurationIssue } from "@sharerepo/platform";
+import { parseEnv } from "@sharerepo/platform";
+import { z } from "zod";
 
 export const JOBS_ENVIRONMENTS = ["development", "production"] as const;
 export type JobsEnvironment = (typeof JOBS_ENVIRONMENTS)[number];
@@ -8,17 +9,16 @@ export interface JobsConfig {
   readonly environment: JobsEnvironment;
 }
 
-// Hand-written rather than a Zod schema through `parseEnv`: `zod` is not a dependency of this
-// app yet. Issues use the same `{ path, code }` shape and Zod codes, and never carry values.
-export function parseJobsEnv(env: object): JobsConfig {
-  const { DB: db, ENVIRONMENT: environment } = env as { DB?: unknown; ENVIRONMENT?: unknown };
-  if (isD1Binding(db) && isJobsEnvironment(environment)) return { db, environment };
+const jobsEnvSchema = z
+  .object({
+    DB: z.custom<D1Database>(isD1Binding),
+    ENVIRONMENT: z.enum(JOBS_ENVIRONMENTS),
+  })
+  .transform(({ DB, ENVIRONMENT }): JobsConfig => ({ db: DB, environment: ENVIRONMENT }));
 
-  const issues: ConfigurationIssue[] = [];
-  if (!isD1Binding(db)) issues.push({ path: "DB", code: "invalid_type" });
-  if (!isJobsEnvironment(environment)) issues.push({ path: "ENVIRONMENT", code: "invalid_value" });
-  const summary = issues.map((issue) => `${issue.path} (${issue.code})`).join(", ");
-  throw new ConfigurationError(`Invalid environment configuration: ${summary}`, issues);
+/** Validates the jobs Worker bindings; failures name keys and issue codes, never values. */
+export function parseJobsEnv(env: object): JobsConfig {
+  return parseEnv(jobsEnvSchema, env);
 }
 
 function isD1Binding(value: unknown): value is D1Database {
@@ -27,8 +27,4 @@ function isD1Binding(value: unknown): value is D1Database {
     value !== null &&
     typeof (value as { prepare?: unknown }).prepare === "function"
   );
-}
-
-function isJobsEnvironment(value: unknown): value is JobsEnvironment {
-  return (JOBS_ENVIRONMENTS as readonly unknown[]).includes(value);
 }
