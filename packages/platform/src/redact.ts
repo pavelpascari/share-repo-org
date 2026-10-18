@@ -13,37 +13,52 @@ const SENSITIVE_WORDS = [
   "session",
 ] as const;
 
+/** Key names that end with one of these words are sensitive (`encryptionKey`, `jwt`). */
+const SENSITIVE_SUFFIXES = ["jwt", "pem", "encryptionkey", "masterkey", "signingkey"] as const;
+
+/** Key names that start with one of these words are sensitive (`accessKeyId`). */
+const SENSITIVE_PREFIXES = ["accesskey"] as const;
+
 const MAX_DEPTH = 10;
 
-/** Case-insensitive substring match, ignoring `-` and `_` (so `X-API-Key` matches `apikey`). */
+/** Strings are cut to this length before scanning, which bounds the cost of redaction. */
+const MAX_STRING_LENGTH = 16_384;
+const TRUNCATED = "[Truncated]";
+
+/** Case-insensitive match, ignoring `-` and `_` (so `X-API-Key` matches `apikey`). */
 export function isSensitiveKey(key: string): boolean {
   const normalised = key.toLowerCase().replace(/[-_]/g, "");
-  return SENSITIVE_WORDS.some((word) => normalised.includes(word));
+  return (
+    SENSITIVE_WORDS.some((word) => normalised.includes(word)) ||
+    SENSITIVE_SUFFIXES.some((word) => normalised.endsWith(word)) ||
+    SENSITIVE_PREFIXES.some((word) => normalised.startsWith(word))
+  );
 }
 
-const SENSITIVE_KEY_SOURCE =
-  "[A-Za-z0-9_-]*(?:token|secret|password|authorization|cookie|api[_-]?key|private[_-]?key|signature|credential|session)[A-Za-z0-9_-]*";
-
 // Defence in depth for secrets embedded in free text; key-based redaction is the primary control.
+// Every pattern must run in linear time: no unbounded quantifier may precede an alternation, and a
+// lazy scan must always have a fallback that consumes the rest of the input.
 const STRING_PATTERNS: readonly (readonly [RegExp, string])[] = [
-  [/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, REDACTED],
-  // `key=value`, `key: value`, `"key":"value"`, including an optional auth scheme.
+  // A key cut off before its END marker is redacted to the end of the string.
   [
-    new RegExp(
-      `(${SENSITIVE_KEY_SOURCE})(["']?\\s*[:=]\\s*["']?)(?:(?:bearer|basic)\\s+)?[^\\s"'&,;]+`,
-      "gi",
-    ),
-    `$1$2${REDACTED}`,
+    /-----BEGIN [A-Z ]{0,40}PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]{0,40}PRIVATE KEY-----|$)/g,
+    REDACTED,
   ],
   [/\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]+/gi, `$1 ${REDACTED}`],
   [/\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})/g, REDACTED],
   [/\bpdl_[A-Za-z0-9_]{10,}/g, REDACTED],
 ];
 
+// `key=value`, `key: value`, `"key":"value"`, including an optional auth scheme. The key is
+// anchored at a non-key character and every quantifier around the sensitive word is bounded.
+const KEY_VALUE_PATTERN =
+  /(?<![A-Za-z0-9_-])([A-Za-z0-9_-]{0,32}?(?:token|secret|password|authorization|cookie|api[_-]?key|private[_-]?key|signature|credential|session|jwt|pem|encryption[_-]?key|master[_-]?key|signing[_-]?key|access[_-]?key)[A-Za-z0-9_-]{0,32})(["']?[ \t]{0,8}[:=][ \t]{0,8}["']?)(?:(?:bearer|basic)[ \t]{1,8})?[^\s"'&,;]+/gi;
+
 export function redactString(value: string): string {
-  let out = value;
+  let out =
+    value.length > MAX_STRING_LENGTH ? `${value.slice(0, MAX_STRING_LENGTH)}${TRUNCATED}` : value;
   for (const [pattern, replacement] of STRING_PATTERNS) out = out.replace(pattern, replacement);
-  return out;
+  return out.replace(KEY_VALUE_PATTERN, `$1$2${REDACTED}`);
 }
 
 export interface RedactOptions {
