@@ -1,5 +1,4 @@
 import { expect, test } from "@playwright/test";
-import { JOBS_URL } from "./support/ports.ts";
 
 test("home page renders", async ({ page }) => {
   const response = await page.goto("/");
@@ -25,10 +24,4 @@ test("the web Worker assigns its own request ID, ignoring the client's", async (
     headers: { "x-request-id": "e2e-request-0001" },
   });
   expect(response.headers()["x-request-id"]).toMatch(/^[0-9a-f-]{36}$/);
-});
-
-test("the jobs Worker answers its health check", async ({ request }) => {
-  const response = await request.get(`${JOBS_URL}/healthz`);
-  expect(response.status()).toBe(200);
-  expect(await response.json()).toEqual({ status: "ok" });
 });

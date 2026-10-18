@@ -15,9 +15,15 @@
     },
     "packages/application/src/**": {
       "lines": 100,
-      "branches": 97.5,
+      "branches": 100,
       "functions": 100,
-      "statements": 98.7
+      "statements": 100
+    },
+    "packages/integrations/src/**": {
+      "lines": 100,
+      "branches": 100,
+      "functions": 100,
+      "statements": 100
     },
     "packages/platform/src/**": {
       "lines": 100,

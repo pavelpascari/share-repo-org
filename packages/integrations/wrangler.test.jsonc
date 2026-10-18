@@ -1,0 +1,6 @@
+// Test-only Worker environment for this package's Workers-runtime tests. Not deployed.
+{
+  "name": "sharerepo-integrations-test",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat"]
+}

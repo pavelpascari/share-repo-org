@@ -2,6 +2,7 @@ import { listMyWorkspaces, openWorkspace } from "@sharerepo/application";
 import { Form, Link, redirect } from "react-router";
 import { servicesFor } from "../auth/server.ts";
 import { getSignedInUser } from "../auth/session.server.ts";
+import { GITHUB_SETUP_ERRORS, GITHUB_SETUP_FALLBACK } from "../github-messages.ts";
 import { lastWorkspaceCookie } from "../workspaces.server.ts";
 import type { Route } from "./+types/home";
 
@@ -13,22 +14,30 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   const user = await getSignedInUser(request, context);
   if (user === null) {
     const signInFailed = new URL(request.url).searchParams.has("error");
-    return { user: null, workspaces: [], signInFailed };
+    return { user: null, workspaces: [], signInFailed, githubError: null };
   }
   const services = servicesFor(context);
+  const code = new URL(request.url).searchParams.get("github_error");
   const lastSlug: unknown = await lastWorkspaceCookie(context).parse(request.headers.get("cookie"));
-  if (typeof lastSlug === "string") {
+  // A GitHub setup error is shown here, so stay instead of returning to the last workspace.
+  if (code === null && typeof lastSlug === "string") {
     const reachable = await openWorkspace(services, user, lastSlug, "workspace.read").then(
       () => true,
       () => false,
     );
     if (reachable) throw redirect(`/w/${lastSlug}`);
   }
-  return { user, workspaces: await listMyWorkspaces(services, user), signInFailed: false };
+  const githubError = code === null ? null : (GITHUB_SETUP_ERRORS[code] ?? GITHUB_SETUP_FALLBACK);
+  return {
+    user,
+    workspaces: await listMyWorkspaces(services, user),
+    signInFailed: false,
+    githubError,
+  };
 }
 
 export default function Home({ loaderData }: Route.ComponentProps) {
-  const { user, workspaces, signInFailed } = loaderData;
+  const { user, workspaces, signInFailed, githubError } = loaderData;
   return (
     <main className="mx-auto max-w-2xl p-8">
       <h1 className="text-2xl font-semibold">ShareRepo</h1>
@@ -49,6 +58,11 @@ export default function Home({ loaderData }: Route.ComponentProps) {
       ) : (
         <>
           <p className="mt-2 text-gray-600">Signed in as {user.name}.</p>
+          {githubError !== null && (
+            <p role="alert" className="mt-4 text-red-700">
+              {githubError}
+            </p>
+          )}
           <Form method="post" action="/sign-out">
             <button type="submit" className="text-sm underline">
               Sign out

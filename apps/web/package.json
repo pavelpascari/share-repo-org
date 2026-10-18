@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "react-router dev --port 5173 --strictPort",
+    "dev": "SHAREREPO_WITH_JOBS=1 react-router dev --port 5173 --strictPort",
     "build": "react-router build",
     "preview": "vite preview",
     "deploy": "wrangler deploy",
@@ -15,6 +15,7 @@
     "@sharerepo/application": "workspace:*",
     "@sharerepo/db": "workspace:*",
     "@sharerepo/domain": "workspace:*",
+    "@sharerepo/integrations": "workspace:*",
     "@sharerepo/platform": "workspace:*",
     "better-auth": "1.7.10",
     "drizzle-orm": "0.45.4",

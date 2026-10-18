@@ -17,7 +17,7 @@ corepack enable
 pnpm install
 cp apps/web/.dev.vars.example apps/web/.dev.vars   # then fill in, see below
 pnpm db:migrate:local      # apply migrations to the local D1 used by `pnpm dev`
-pnpm dev                   # web on http://localhost:5173, jobs on http://localhost:8788
+pnpm dev                   # web on http://localhost:5173, with the jobs Worker in the same runtime
 ```
 
 ### Signing in locally
@@ -26,6 +26,10 @@ The web Worker refuses to start requests without its auth configuration ([decisi
 
 - `BETTER_AUTH_SECRET`: any random value of at least 32 characters (`openssl rand -base64 32`).
 - `GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET`: from your own GitHub OAuth App (GitHub → Settings → Developer settings → OAuth Apps) with the callback URL `http://localhost:5173/api/auth/callback/github`. No scopes are requested.
+
+### Connecting GitHub locally (optional)
+
+Connecting GitHub needs a development GitHub App: follow [the runbook](runbooks/github-app-setup.md) and add its values to `apps/web/.dev.vars` and `apps/jobs/.dev.vars`. Without them the Repositories page says GitHub is not configured; everything else works.
 
 Tests never need these values. Workers-pool tests use test-only secrets from `apps/web/vitest.config.ts`, and `pnpm test:e2e` signs in through a local fake GitHub (`apps/web/e2e/support/fake-github.ts`) with the wrangler `e2e` environment, which is the only one that accepts GitHub endpoint overrides.
 
@@ -40,7 +44,8 @@ pnpm blocks dependency build scripts by default; `pnpm-workspace.yaml` allows on
 | `packages/domain` | Pure domain rules and ports (`Clock`, `IdGenerator`); mutation-tested |
 | `packages/db` | Drizzle schema, SQL migrations, workspace-scoped repositories |
 | `packages/platform` | Env parsing, structured logging with redaction, correlation IDs, error types |
-| `packages/application` | Application services: sign-in recording, workspaces, authorization, audit |
+| `packages/application` | Application services: sign-in recording, workspaces, GitHub connections and resync, authorization, audit |
+| `packages/integrations` | GitHub App client (JWT, installation tokens, webhooks); a fake under `@sharerepo/integrations/testing` |
 | `packages/testing` | Test helpers: fake clock, deterministic IDs, log capture, secret canaries, audit completeness |
 | `scripts` | Coverage ratchet and scenario-catalog checks |
 
@@ -48,7 +53,7 @@ pnpm blocks dependency build scripts by default; `pnpm-workspace.yaml` allows on
 
 | Command | What it does |
 |---|---|
-| `pnpm dev` | Run both Workers locally against local D1 |
+| `pnpm dev` | Run the web Worker with the jobs Worker as an auxiliary Worker, sharing local D1 and the `EVENTS` queue. `pnpm --filter @sharerepo/jobs dev` runs jobs alone, with crons triggerable at `/__scheduled`. |
 | `pnpm lint` / `pnpm format` | Biome check / fix |
 | `pnpm typecheck` | Wrangler type drift check, React Router typegen, `tsc` for every package |
 | `pnpm test` | Every Vitest project (Node and Workers runtimes) |
@@ -59,6 +64,7 @@ pnpm blocks dependency build scripts by default; `pnpm-workspace.yaml` allows on
 | `pnpm db:generate` | Generate a SQL migration from schema changes in `packages/db/src/schema` |
 | `pnpm db:check` | Fails if the schema and committed migrations disagree |
 | `pnpm build` | Build both Workers |
+| `pnpm spike:github` | Live GitHub feasibility spike against your development App ([runbook](runbooks/github-app-setup.md) § 6); never runs in CI |
 
 Run a single project or file with Vitest directly, for example `pnpm exec vitest run --project db` or `pnpm exec vitest run packages/platform/test/redact.test.ts`.
 

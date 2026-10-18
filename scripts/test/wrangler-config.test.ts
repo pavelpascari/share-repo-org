@@ -114,6 +114,26 @@ describe("apps/web/wrangler.jsonc", () => {
   });
 });
 
+describe("apps/jobs/wrangler.jsonc", () => {
+  const config: WranglerConfig = JSON.parse(stripJsonc(repoFile("apps/jobs/wrangler.jsonc")));
+
+  it.each([
+    ["top level (dev)", config],
+    ["production", config.env?.production],
+  ] as const)("%s is not e2e and never overrides the GitHub API", (_, env) => {
+    expect(env?.vars?.ENVIRONMENT).toBeDefined();
+    expect(env?.vars?.ENVIRONMENT).not.toBe("e2e");
+    expect(env?.vars).not.toHaveProperty("GITHUB_API_BASE_URL");
+  });
+
+  it("only the e2e environment runs as e2e, on the top-level local database", () => {
+    for (const [name, env] of Object.entries(config.env ?? {})) {
+      expect(env.vars?.ENVIRONMENT === "e2e").toBe(name === "e2e");
+    }
+    expect(config.env?.e2e?.d1_databases).toEqual(config.d1_databases);
+  });
+});
+
 describe(".github/workflows/ci.yml", () => {
   const workflow = repoFile(".github/workflows/ci.yml");
 

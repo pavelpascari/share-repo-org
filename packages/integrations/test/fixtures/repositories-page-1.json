@@ -1,0 +1,30 @@
+{
+  "total_count": 3,
+  "repository_selection": "selected",
+  "repositories": [
+    {
+      "id": 9001,
+      "node_id": "R_9001",
+      "name": "course-code",
+      "full_name": "octo-creator/course-code",
+      "owner": { "login": "octo-creator", "id": 5001, "type": "User", "site_admin": false },
+      "private": true,
+      "archived": false,
+      "visibility": "private",
+      "default_branch": "main",
+      "html_url": "https://github.com/octo-creator/course-code"
+    },
+    {
+      "id": 9002,
+      "node_id": "R_9002",
+      "name": "starter-kit",
+      "full_name": "octo-creator/starter-kit",
+      "owner": { "login": "octo-creator", "id": 5001, "type": "User", "site_admin": false },
+      "private": true,
+      "archived": true,
+      "visibility": "private",
+      "default_branch": "main",
+      "html_url": "https://github.com/octo-creator/starter-kit"
+    }
+  ]
+}

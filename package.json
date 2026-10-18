@@ -7,7 +7,7 @@
     "node": ">=22.22.0"
   },
   "scripts": {
-    "dev": "pnpm --parallel --filter @sharerepo/web --filter @sharerepo/jobs dev",
+    "dev": "pnpm --filter @sharerepo/web dev",
     "build": "pnpm -r --if-present build",
     "lint": "biome check .",
     "format": "biome check --write .",
@@ -21,6 +21,7 @@
     "test:e2e": "playwright test",
     "test:sandbox": "node -e \"console.log('No sandbox suites until Phase 2.')\"",
     "check:scenarios": "node scripts/scenario-catalog.ts",
+    "spike:github": "node scripts/spike/github-feasibility.ts",
     "db:generate": "pnpm --filter @sharerepo/db db:generate",
     "db:migrate:local": "pnpm --filter @sharerepo/db db:migrate:local",
     "db:migrate:dev": "pnpm --filter @sharerepo/db db:migrate:dev",

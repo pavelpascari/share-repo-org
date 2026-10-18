@@ -9,9 +9,11 @@ export default [
   route("api/auth/callback/github", "routes/api.auth.callback.ts"),
   layout("routes/signed-in-layout.tsx", [
     route("workspaces/new", "routes/workspaces.new.tsx"),
+    route("github/setup", "routes/github.setup.ts"),
     route("w/:slug", "routes/w.$slug.tsx", [
       index("routes/w.$slug._index.tsx"),
       route("settings", "routes/w.$slug.settings.tsx"),
+      route("repositories", "routes/w.$slug.repositories.tsx"),
     ]),
   ]),
 ] satisfies RouteConfig;

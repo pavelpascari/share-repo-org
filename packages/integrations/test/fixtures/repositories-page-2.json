@@ -1,0 +1,18 @@
+{
+  "total_count": 3,
+  "repository_selection": "selected",
+  "repositories": [
+    {
+      "id": 9003,
+      "node_id": "R_9003",
+      "name": "public-notes",
+      "full_name": "octo-creator/public-notes",
+      "owner": { "login": "octo-creator", "id": 5001, "type": "User", "site_admin": false },
+      "private": false,
+      "archived": false,
+      "visibility": "public",
+      "default_branch": "main",
+      "html_url": "https://github.com/octo-creator/public-notes"
+    }
+  ]
+}

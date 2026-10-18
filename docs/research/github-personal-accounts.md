@@ -121,6 +121,8 @@ Source: https://docs.github.com/en/webhooks/webhook-events-and-payloads
 
 ## Product implications
 
+> **Decided:** v1 targets personal-account repositories with write access ([0008](../decisions/0008-v1-personal-account-repositories.md)). Live results from the Phase 2 spike go in `github-live-results.md`.
+
 1. **Every subscriber gets write access, and that cannot be changed on a personal repo.** Subscribers can push, delete or force-push non-protected branches, merge PRs, publish releases and packages, and read all Actions secrets through workflows. Creators must be told plainly during onboarding. Recommend that creators:
    - keep no Actions secrets in sold repos
    - protect the default branch with rulesets or branch protection

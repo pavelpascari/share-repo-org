@@ -3,6 +3,7 @@ import { ConfigurationError } from "@sharerepo/platform";
 import { createSecretCanaries, expectNoCanaryLeak } from "@sharerepo/testing";
 import { describe, expect, it } from "vitest";
 import { parseJobsEnv } from "../src/env.ts";
+import { GITHUB_APP } from "./support/github.ts";
 
 function configurationError(input: object): ConfigurationError {
   try {
@@ -21,8 +22,19 @@ describe("parseJobsEnv", () => {
     expect(config.db).toBe(env.DB);
   });
 
-  it("accepts production", () => {
-    expect(parseJobsEnv({ ...env, ENVIRONMENT: "production" }).environment).toBe("production");
+  it("has no GitHub App locally until one is configured", () => {
+    expect(parseJobsEnv(env).github).toBeNull();
+  });
+
+  it("accepts production with a GitHub App", () => {
+    const config = parseJobsEnv({ ...env, ...GITHUB_APP, ENVIRONMENT: "production" });
+    expect(config.environment).toBe("production");
+    expect(config.github).toMatchObject({ appId: "1000", apiBaseUrl: "https://api.github.com" });
+  });
+
+  it("fails closed in production without a GitHub App", () => {
+    const error = configurationError({ ...env, ENVIRONMENT: "production" });
+    expect(error.issues.map((issue) => issue.path)).toContain("GITHUB_APP_ID");
   });
 
   it.each([

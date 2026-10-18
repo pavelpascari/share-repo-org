@@ -1,6 +1,8 @@
 import { z } from "zod";
+import { CONNECTION_STATUSES } from "./connection.ts";
 import { IDENTITY_PROVIDERS } from "./identity.ts";
 import type { IdGenerator } from "./ids.ts";
+import { RESOURCE_SELECTIONS } from "./resource.ts";
 import type { Clock, Instant } from "./time.ts";
 import { WORKSPACE_ROLES } from "./workspace.ts";
 
@@ -38,7 +40,23 @@ interface AuditActionDefinition {
 }
 
 const text = z.string().min(1);
+const count = z.number().int().nonnegative();
 const provider = z.enum(IDENTITY_PROVIDERS);
+const connectionStatus = z.enum(CONNECTION_STATUSES);
+const selection = z.enum(RESOURCE_SELECTIONS);
+
+const textChange = z.strictObject({ from: text, to: text });
+const booleanChange = z.strictObject({ from: z.boolean(), to: z.boolean() });
+
+/** Mirrors `ResourceChanges` in resource-sync.ts: at least one field, each as from/to. */
+const resourceChanges = z
+  .strictObject({
+    name: textChange.optional(),
+    ownerExternalId: textChange.optional(),
+    private: booleanChange.optional(),
+    archived: booleanChange.optional(),
+  })
+  .refine((changes) => Object.keys(changes).length > 0);
 
 /** Why a sign-in that authenticated with the provider was refused anyway. */
 export const SIGN_IN_REFUSAL_REASONS = ["identity_conflict", "internal_error"] as const;
@@ -88,6 +106,47 @@ export const AUDIT_ACTIONS = {
     scope: "workspace",
     targetType: "user",
     details: z.strictObject({ role: z.enum(WORKSPACE_ROLES) }),
+  },
+  "connection.intent_created": {
+    scope: "workspace",
+    targetType: "connection_intent",
+    details: z.strictObject({ provider }),
+  },
+  "connection.created": {
+    scope: "workspace",
+    targetType: "connection",
+    details: z.strictObject({ provider, installationId: text, accountLogin: text }),
+  },
+  "connection.status_changed": {
+    scope: "workspace",
+    targetType: "connection",
+    details: z
+      .strictObject({ previousStatus: connectionStatus, status: connectionStatus })
+      // A transition must change something; the issue names the new value's field.
+      .refine((d) => d.previousStatus !== d.status, { path: ["status"] }),
+  },
+  // Written by every resync, so its bookkeeping (last_synced_at) is audited too.
+  "connection.synced": {
+    scope: "workspace",
+    targetType: "connection",
+    details: z.strictObject({ discovered: count, updated: count, removed: count }),
+  },
+  "resource.discovered": {
+    scope: "workspace",
+    targetType: "resource",
+    details: z.strictObject({ externalId: text, name: text, private: z.boolean() }),
+  },
+  "resource.updated": {
+    scope: "workspace",
+    targetType: "resource",
+    details: z.strictObject({ externalId: text, changes: resourceChanges }),
+  },
+  "resource.selection_changed": {
+    scope: "workspace",
+    targetType: "resource",
+    details: z
+      .strictObject({ externalId: text, previousSelection: selection, selection })
+      .refine((d) => d.previousSelection !== d.selection, { path: ["selection"] }),
   },
 } as const satisfies Record<string, AuditActionDefinition>;
 
@@ -140,9 +199,11 @@ export function auditEvent<A extends AuditAction>(
 
   const parsed = definition.details.safeParse(input.details);
   if (!parsed.success) {
-    // Details schemas are flat, so each issue names top-level keys.
+    // Each issue is named by its dotted path, for example `changes.name.to`.
     const fields = parsed.error.issues.flatMap((issue) =>
-      issue.code === "unrecognized_keys" ? issue.keys : issue.path.map(String),
+      issue.code === "unrecognized_keys"
+        ? issue.keys.map((key) => [...issue.path, key].join("."))
+        : [issue.path.join(".")],
     );
     throw new Error(`invalid details for ${action}: ${fields.join(", ")}`);
   }

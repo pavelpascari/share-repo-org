@@ -6,8 +6,17 @@
   "compatibility_flags": ["nodejs_compat"],
   "observability": { "enabled": true },
   "upload_source_maps": true,
-  "triggers": { "crons": ["0 * * * *"] },
-  "vars": { "ENVIRONMENT": "development" },
+  // Hourly heartbeat; outbox drain every minute (decision 0003); daily full resync of connections.
+  "triggers": { "crons": ["0 * * * *", "* * * * *", "17 3 * * *"] },
+  "vars": {
+    "ENVIRONMENT": "development",
+    // The GitHub App (docs/runbooks/github-app-setup.md). Empty disables GitHub work locally.
+    "GITHUB_APP_ID": ""
+  },
+  "secrets": { "required": ["GITHUB_APP_PRIVATE_KEY"] },
+  "queues": {
+    "consumers": [{ "queue": "sharerepo-events-dev", "max_batch_size": 10, "max_retries": 5 }]
+  },
   // Shared database; see docs/decisions/0002. Replace the ID after `wrangler d1 create sharerepo-dev`.
   "d1_databases": [
     {
@@ -20,14 +29,42 @@
   "env": {
     "production": {
       "name": "sharerepo-jobs-production",
-      "triggers": { "crons": ["0 * * * *"] },
-      "vars": { "ENVIRONMENT": "production" },
+      "triggers": { "crons": ["0 * * * *", "* * * * *", "17 3 * * *"] },
+      "vars": { "ENVIRONMENT": "production", "GITHUB_APP_ID": "REPLACE_WITH_PRODUCTION_APP_ID" },
+      "secrets": { "required": ["GITHUB_APP_PRIVATE_KEY"] },
+      "queues": {
+        "consumers": [{ "queue": "sharerepo-events-prod", "max_batch_size": 10, "max_retries": 5 }]
+      },
       // Replace the ID after `wrangler d1 create sharerepo-prod`.
       "d1_databases": [
         {
           "binding": "DB",
           "database_name": "sharerepo-prod",
           "database_id": "00000000-0000-0000-0000-000000000001",
+          "migrations_dir": "../../packages/db/migrations"
+        }
+      ]
+    },
+    // Local Playwright runs only; never deployed. The GitHub API override is accepted only
+    // when ENVIRONMENT is "e2e" (decision 0006).
+    "e2e": {
+      "name": "sharerepo-jobs-e2e",
+      "triggers": { "crons": ["0 * * * *", "* * * * *", "17 3 * * *"] },
+      "vars": {
+        "ENVIRONMENT": "e2e",
+        "GITHUB_APP_ID": "1000",
+        "GITHUB_API_BASE_URL": "http://localhost:5190/api"
+      },
+      "secrets": { "required": ["GITHUB_APP_PRIVATE_KEY"] },
+      "queues": {
+        "consumers": [{ "queue": "sharerepo-events-dev", "max_batch_size": 10, "max_retries": 5 }]
+      },
+      // Same local database as the top level, where E2E applies migrations.
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "sharerepo-dev",
+          "database_id": "00000000-0000-0000-0000-000000000000",
           "migrations_dir": "../../packages/db/migrations"
         }
       ]

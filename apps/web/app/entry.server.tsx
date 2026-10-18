@@ -1,14 +1,21 @@
 import { isbot } from "isbot";
 import { renderToReadableStream } from "react-dom/server";
 import type { EntryContext, HandleErrorFunction, RouterContextProvider } from "react-router";
-import { ServerRouter } from "react-router";
+import { isRouteErrorResponse, ServerRouter } from "react-router";
 import { logRouteError, requestLogger } from "./error-logging.ts";
+
+/** A thrown `data(...)` value, which React Router renders as an error response. */
+const isDataResponse = (error: unknown) =>
+  typeof error === "object" &&
+  error !== null &&
+  (error as { type?: unknown }).type === "DataWithResponseInit";
 
 // React Router's default entry, with errors logged through the request's redacting logger
 // instead of `console.error` (which would print raw messages, including SQL parameters).
 
 export const handleError: HandleErrorFunction = (error, { request, context }) => {
-  if (request.signal.aborted) return;
+  // Aborted requests and deliberate error responses (404, 403, 503) are not failures.
+  if (request.signal.aborted || isRouteErrorResponse(error) || isDataResponse(error)) return;
   const logger = requestLogger(context);
   if (logger !== undefined) logRouteError(logger, error);
 };

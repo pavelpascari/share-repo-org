@@ -1,5 +1,5 @@
 import { createDb, ping } from "@sharerepo/db";
-import { type IdGenerator, randomIds } from "@sharerepo/domain";
+import { type Clock, type IdGenerator, randomIds } from "@sharerepo/domain";
 import {
   AppError,
   ConfigurationError,
@@ -16,6 +16,9 @@ import {
 import { RouterContextProvider } from "react-router";
 import { cloudflareContext } from "../app/context.ts";
 import { parseWebEnv, type WebEnv } from "./env.ts";
+import { handleGitHubWebhook } from "./webhooks.ts";
+
+const GITHUB_WEBHOOK_PATH = "/webhooks/github";
 
 /** React Router's request handler, as returned by `createRequestHandler`. */
 export type RenderApp = (request: Request, context: RouterContextProvider) => Promise<Response>;
@@ -67,7 +70,10 @@ export function createFetchHandler(deps: FetchHandlerDeps): FetchHandler {
     let response: Response;
     try {
       const env = parseWebEnv(rawEnv);
-      response = await route(request, path, env, ctx, deps.renderApp, logger, correlationId);
+      response = await route(request, path, env, ctx, deps.renderApp, logger, correlationId, {
+        ids,
+        clock: { now },
+      });
     } catch (error) {
       logFailure(logger, error);
       response = toErrorResponse(error, correlationId);
@@ -92,6 +98,7 @@ async function route(
   renderApp: RenderApp,
   logger: Logger,
   correlationId: string,
+  { ids, clock }: { ids: IdGenerator; clock: Clock },
 ): Promise<Response> {
   if (path === "/healthz" || path === "/readyz") {
     if (!PROBE_METHODS.includes(request.method)) {
@@ -102,6 +109,15 @@ async function route(
     return path === "/healthz"
       ? json(200, { status: "ok" })
       : readiness(env, logger, correlationId);
+  }
+
+  if (path === GITHUB_WEBHOOK_PATH) {
+    if (request.method !== "POST") {
+      const response = toErrorResponse(METHOD_NOT_ALLOWED, correlationId);
+      response.headers.set("allow", "POST");
+      return response;
+    }
+    return handleGitHubWebhook(request, env, ctx, { ids, clock, correlationId, logger });
   }
 
   const context = new RouterContextProvider();
