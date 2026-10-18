@@ -3,11 +3,12 @@ import { type IdGenerator, randomIds } from "@sharerepo/domain";
 import {
   AppError,
   ConfigurationError,
-  correlationIdFrom,
   createLogger,
+  isValidCorrelationId,
   type Logger,
   type LoggerOptions,
   type LogSink,
+  REQUEST_ID_HEADER,
   ServiceUnavailableError,
   toErrorResponse,
   withCorrelationId,
@@ -21,7 +22,7 @@ export type RenderApp = (request: Request, context: RouterContextProvider) => Pr
 
 export interface FetchHandlerDeps {
   readonly renderApp: RenderApp;
-  /** Generates correlation IDs when the request has no valid `x-request-id`. */
+  /** Generates each request's correlation ID. */
   readonly ids?: IdGenerator;
   /** Epoch-millisecond clock for log timestamps and request duration. */
   readonly now?: () => number;
@@ -51,8 +52,16 @@ export function createFetchHandler(deps: FetchHandlerDeps): FetchHandler {
 
   return async (request, rawEnv, ctx) => {
     const startedAt = now();
-    const correlationId = correlationIdFrom(request, ids);
-    const logger = createLogger({ correlationId }, loggerOptions);
+    // Always generated here: correlation IDs end up in audit events, so a client must not be
+    // able to choose one. A valid incoming x-request-id is kept in logs only.
+    const correlationId = ids.next();
+    const incoming = request.headers.get(REQUEST_ID_HEADER);
+    const logger = createLogger(
+      incoming !== null && isValidCorrelationId(incoming)
+        ? { correlationId, clientRequestId: incoming }
+        : { correlationId },
+      loggerOptions,
+    );
     const path = new URL(request.url).pathname;
 
     let response: Response;

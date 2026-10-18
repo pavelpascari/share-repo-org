@@ -45,7 +45,7 @@
     },
     "apps/web/app/auth/**": {
       "lines": 100,
-      "branches": 98.3,
+      "branches": 98.4,
       "functions": 100,
       "statements": 100
     },

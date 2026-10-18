@@ -6,8 +6,15 @@ export type {
   AuditEvent,
   AuditEventInput,
   AuditScope,
+  SignInRefusalReason,
 } from "./audit.ts";
-export { AUDIT_ACTIONS, AUDIT_ACTOR_TYPES, AUDIT_SCOPES, auditEvent } from "./audit.ts";
+export {
+  AUDIT_ACTIONS,
+  AUDIT_ACTOR_TYPES,
+  AUDIT_SCOPES,
+  auditEvent,
+  SIGN_IN_REFUSAL_REASONS,
+} from "./audit.ts";
 export type { WorkspaceMembership, WorkspacePermission, WorkspaceScope } from "./authorization.ts";
 export { authorizeMembership, roleAllows, WORKSPACE_PERMISSIONS } from "./authorization.ts";
 export type {

@@ -3,6 +3,7 @@ export {
   createUserForSignIn,
   type ProviderProfile,
   recordSignIn,
+  recordSignInRefused,
   recordSignOut,
   type SignInOutcome,
 } from "./identity.ts";

@@ -104,7 +104,10 @@ describe("GitHub sign-in", () => {
   it("rejects a forged state without calling GitHub", async () => {
     const callsBefore = github.calls.length;
     const { response } = await callback(`code=${github.authorize(fakeAccount())}&state=forged`, "");
-    expect(response.headers.get("location")).toContain("error=");
+    // Better Auth's own error page is not routed; every failure lands on the home page's error.
+    expect(response.headers.get("location")).toMatch(
+      /^(http:\/\/localhost:5173)?\/\?error=sign_in_failed/,
+    );
     expect(github.calls.length).toBe(callsBefore);
   });
 
@@ -134,5 +137,6 @@ describe("GitHub sign-in", () => {
     expect(attempt.cookie).not.toContain("session_token");
     expect(owner?.id).not.toBe(otherUser?.id);
     expect(attempt.lines.join("\n")).toContain('"reason":"identity_conflict"');
+    expect(await actions(attempt.correlationId)).toContain("auth.sign_in_refused");
   });
 });

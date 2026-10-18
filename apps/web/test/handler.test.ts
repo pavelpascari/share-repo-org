@@ -119,16 +119,21 @@ describe("createFetchHandler", () => {
   });
 
   describe("request IDs", () => {
-    it("accepts a valid incoming x-request-id", async () => {
-      const { fetch } = harness();
+    it("never adopts an incoming x-request-id, but logs a valid one as clientRequestId", async () => {
+      const { fetch, logs } = harness();
       const response = await fetch(request("/", { headers: { "x-request-id": "edge-abc-123" } }));
-      expect(response.headers.get("x-request-id")).toBe("edge-abc-123");
+      expect(response.headers.get("x-request-id")).toBe("req-000001");
+      expect(logs().at(-1)).toMatchObject({
+        correlationId: "req-000001",
+        clientRequestId: "edge-abc-123",
+      });
     });
 
-    it("replaces an invalid incoming x-request-id with a generated one", async () => {
-      const { fetch } = harness();
+    it("ignores an invalid incoming x-request-id", async () => {
+      const { fetch, logs } = harness();
       const response = await fetch(request("/", { headers: { "x-request-id": "bad id\n" } }));
       expect(response.headers.get("x-request-id")).toBe("req-000001");
+      expect(logs().at(-1)).not.toHaveProperty("clientRequestId");
     });
 
     it("adds the header to React Router responses with immutable headers", async () => {

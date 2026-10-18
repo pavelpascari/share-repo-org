@@ -1,5 +1,5 @@
 import { createUserForSignIn } from "@sharerepo/application";
-import { createDb } from "@sharerepo/db";
+import { createDb, listAuditEventsByCorrelationId } from "@sharerepo/db";
 import { randomIds, systemClock } from "@sharerepo/domain";
 import { createLogger } from "@sharerepo/platform";
 import { describe, expect, it } from "vitest";
@@ -52,18 +52,49 @@ describe("createSignInRecorder", () => {
     await expect(recorder.beforeSessionCreate({ userId })).resolves.toBeUndefined();
   });
 
-  it("rethrows unexpected failures instead of refusing silently", async () => {
+  it("refuses and audits a sign-in whose identity belongs to another user", async () => {
+    const account = fakeAccount();
+    const owner = await createUserForSignIn(services());
+    const first = createSignInRecorder(services(), recordingLogger().logger);
+    first.captureProfile(account);
+    await first.beforeSessionCreate(owner);
+
+    const intruder = await createUserForSignIn(services());
+    const ctx = services();
+    const { logger, lines } = recordingLogger();
+    const second = createSignInRecorder(ctx, logger);
+    second.captureProfile(account);
+    await expect(second.beforeSessionCreate(intruder)).resolves.toBe(false);
+    expect(await listAuditEventsByCorrelationId(db, ctx.correlationId)).toMatchObject([
+      {
+        action: "auth.sign_in_refused",
+        target: { id: intruder.userId },
+        details: { provider: "github", reason: "identity_conflict" },
+      },
+    ]);
+    expect(lines.join("\n")).toContain('"reason":"identity_conflict"');
+  });
+
+  it.each([
+    ["an error", new Error("D1 unavailable: SELECT secret params")],
+    ["a non-error value", "D1 unavailable: SELECT secret params"],
+  ])("refuses unexpected failures (%s) too, logging only a classification", async (_, thrown) => {
     const broken = createDb({
       prepare() {
-        throw new Error("D1 unavailable");
+        throw thrown;
       },
       batch() {
-        throw new Error("D1 unavailable");
+        throw thrown;
       },
     } as unknown as D1Database);
-    const recorder = createSignInRecorder(services(broken), recordingLogger().logger);
+    const { logger, lines } = recordingLogger();
+    const recorder = createSignInRecorder(services(broken), logger);
     recorder.captureProfile(fakeAccount());
-    await expect(recorder.beforeSessionCreate({ userId: "anyone" })).rejects.toThrow();
+    await expect(recorder.beforeSessionCreate({ userId: "anyone" })).resolves.toBe(false);
+    const logged = lines.join("\n");
+    expect(logged).toContain('"reason":"internal_error"');
+    expect(logged).toContain("could not audit refused sign-in");
+    expect(logged).not.toContain("SELECT secret params");
   });
 });
 

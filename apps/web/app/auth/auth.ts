@@ -2,6 +2,7 @@ import {
   createUserForSignIn,
   type ProviderProfile,
   recordSignIn,
+  recordSignInRefused,
   type ServiceContext,
 } from "@sharerepo/application";
 import { schema } from "@sharerepo/db";
@@ -19,6 +20,7 @@ import type { GitHubClient, GitHubUser } from "./github.ts";
 export const AUTH_BASE_PATH = "/api/auth";
 export const GITHUB_PROVIDER_ID = "github";
 export const CLIENT_IP_HEADER = "cf-connecting-ip";
+export const SIGN_IN_ERROR_PATH = "/?error=sign_in_failed";
 
 /** Better Auth requires a unique email. Ours is derived from the immutable GitHub ID, never real. */
 export const syntheticEmail = (githubUserId: string) =>
@@ -49,7 +51,6 @@ export function createAuth(deps: AuthDeps) {
     logger: { level: "warn", log: forwardAuthLog(logger) },
     database: drizzleAdapter(services.db, { provider: "sqlite", schema }),
     user: { modelName: "authUsers" },
-    session: { modelName: "authSessions" },
     verification: { modelName: "authVerifications" },
     account: {
       modelName: "authAccounts",
@@ -58,6 +59,12 @@ export function createAuth(deps: AuthDeps) {
       accountLinking: { enabled: true, trustedProviders: [] },
     },
     emailAndPassword: { enabled: false },
+    // Every failed sign-in (expired state, provider error, refused session) lands on the home
+    // page's sign-in error, never on Better Auth's unrouted default error page.
+    onAPIError: { errorURL: SIGN_IN_ERROR_PATH },
+    // Sessions last a fixed 7 days. Refreshing would need every loader to forward Better Auth's
+    // cookie, so an active user signs in again weekly (one click through GitHub).
+    session: { modelName: "authSessions", disableSessionRefresh: true },
     rateLimit: { enabled: true, storage: "database", modelName: "authRateLimits" },
     advanced: {
       cookiePrefix: "sharerepo",
@@ -115,6 +122,8 @@ export function createAuth(deps: AuthDeps) {
 
 export type Auth = ReturnType<typeof createAuth>;
 
+const errorName = (error: unknown) => (error instanceof Error ? error.name : "unknown");
+
 /**
  * Routes Better Auth's log calls through our redacting logger. Only the message is kept: its
  * extra arguments can include errors that carry SQL parameters.
@@ -157,14 +166,20 @@ export function createSignInRecorder(services: ServiceContext, logger: Logger) {
      */
     async beforeSessionCreate(session: { userId: string }): Promise<false | undefined> {
       if (profile === undefined) return false;
+      const actor = { userId: session.userId };
       try {
-        await recordSignIn(services, { userId: session.userId }, profile);
+        await recordSignIn(services, actor, profile);
+        return undefined;
       } catch (error) {
-        if (!(error instanceof ConflictError)) throw error;
-        logger.warn("sign-in refused", { reason: "identity_conflict" });
+        // Never a 500 mid-callback: refuse the session, so Better Auth redirects to the sign-in
+        // error page, and keep only a classification of the error.
+        const reason = error instanceof ConflictError ? "identity_conflict" : "internal_error";
+        logger.warn("sign-in refused", { reason, errorName: errorName(error) });
+        await recordSignInRefused(services, actor, { provider: profile.provider, reason }).catch(
+          () => logger.error("could not audit refused sign-in", { reason }),
+        );
         return false;
       }
-      return undefined;
     },
   };
 }

@@ -31,6 +31,7 @@ const VALID_DETAILS = {
   },
   "auth.signed_in": { provider: "github" },
   "auth.signed_out": {},
+  "auth.sign_in_refused": { provider: "github", reason: "identity_conflict" },
   "workspace.created": { slug: "acme", name: "Acme" },
   "workspace.renamed": { previousName: "Acme", name: "Acme Labs" },
   "membership.added": { role: "owner" },
@@ -49,6 +50,7 @@ describe("audit action catalog", () => {
     ["identity.snapshot_updated", "account", "external_identity"],
     ["auth.signed_in", "account", "user"],
     ["auth.signed_out", "account", "user"],
+    ["auth.sign_in_refused", "account", "user"],
     ["workspace.created", "workspace", "workspace"],
     ["workspace.renamed", "workspace", "workspace"],
     ["membership.added", "workspace", "user"],
@@ -86,6 +88,7 @@ describe("audit action catalog", () => {
     ["workspace.renamed", "previousName", ""],
     ["workspace.renamed", "name", ""],
     ["membership.added", "role", "admin"],
+    ["auth.sign_in_refused", "reason", "because"],
   ] as const)("%s rejects %s %j", (action, key, value) => {
     const details = { ...VALID_DETAILS[action], [key]: value };
     expect(AUDIT_ACTIONS[action].details.safeParse(details).success).toBe(false);

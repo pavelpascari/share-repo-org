@@ -10,6 +10,7 @@ import {
   type GitHubLogin,
   type GitHubUserId,
   type IdentityProvider,
+  type SignInRefusalReason,
 } from "@sharerepo/domain";
 import { ConflictError } from "@sharerepo/platform";
 import { asAuditActor, atOneInstant, type ServiceContext, type UserActor } from "./context.ts";
@@ -131,7 +132,25 @@ export async function recordSignIn(
   return { identityId: existing.id, outcome: renamed ? "renamed" : "refreshed" };
 }
 
-/** Records a sign-out. The session itself is removed by the auth library. */
+/**
+ * Records a sign-in that authenticated with the provider but was refused, for example because
+ * the provider account's identity belongs to another user.
+ */
+export async function recordSignInRefused(
+  context: ServiceContext,
+  actor: UserActor,
+  input: { readonly provider: IdentityProvider; readonly reason: SignInRefusalReason },
+): Promise<void> {
+  await appendAuditEvents(context.db, [
+    auditEvent(
+      "auth.sign_in_refused",
+      { actor: asAuditActor(actor), targetId: actor.userId, details: input },
+      context,
+    ),
+  ]);
+}
+
+/** Records a sign-out, after the auth library has removed the session. */
 export async function recordSignOut(context: ServiceContext, actor: UserActor): Promise<void> {
   const ctx = atOneInstant(context);
   await appendAuditEvents(ctx.db, [

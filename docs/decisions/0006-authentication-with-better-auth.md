@@ -61,6 +61,9 @@ GitHub sign-in uses a **GitHub OAuth App**, separate from the Phase 2 GitHub App
 - **Only the OAuth callback is routed** (`/api/auth/callback/github`). Sign-in and sign-out are our own same-origin-checked actions calling Better Auth server-side, so its account-linking, profile-update and session-listing endpoints are unreachable.
 - **Sign-in starts through Better Auth's handler**, not its server API, so the rate limit applies. Limits are keyed by `cf-connecting-ip`: Cloudflare sets it and overwrites client values. Without a configured header, Better Auth falls back to one shared bucket for everyone.
 - **Identity conflicts refuse the session.** If the GitHub account's identity belongs to another ShareRepo user, the session hook logs `identity_conflict` and returns false. Better Auth then redirects to the error URL instead of answering 500.
+- **Every sign-in failure lands on `/?error=sign_in_failed`** (`onAPIError.errorURL` and `errorCallbackURL`), including an expired state and an unexpected error in the session hook. That hook refuses the session and logs a classification instead of letting Better Auth answer 500.
+- **Sessions last a fixed 7 days** (`disableSessionRefresh`). A refresh would need every loader to forward Better Auth's cookie, otherwise the browser cookie expires before the database row.
+- **Route errors are logged as classifications** through `handleError` in `app/entry.server.tsx`, because React Router's default `console.error` would print Drizzle messages with SQL parameters.
 - **One instant per service call.** Rows and audit events written by one call share a timestamp, so audit order follows write order.
 
 ## Consequences

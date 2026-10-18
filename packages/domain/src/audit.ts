@@ -40,6 +40,10 @@ interface AuditActionDefinition {
 const text = z.string().min(1);
 const provider = z.enum(IDENTITY_PROVIDERS);
 
+/** Why a sign-in that authenticated with the provider was refused anyway. */
+export const SIGN_IN_REFUSAL_REASONS = ["identity_conflict", "internal_error"] as const;
+export type SignInRefusalReason = (typeof SIGN_IN_REFUSAL_REASONS)[number];
+
 // Details schemas are strict: an unknown key is rejected rather than stored, so a secret cannot
 // reach the audit trail through an unvetted field.
 export const AUDIT_ACTIONS = {
@@ -65,6 +69,11 @@ export const AUDIT_ACTIONS = {
     details: z.strictObject({ provider }),
   },
   "auth.signed_out": { scope: "account", targetType: "user", details: z.strictObject({}) },
+  "auth.sign_in_refused": {
+    scope: "account",
+    targetType: "user",
+    details: z.strictObject({ provider, reason: z.enum(SIGN_IN_REFUSAL_REASONS) }),
+  },
   "workspace.created": {
     scope: "workspace",
     targetType: "workspace",
