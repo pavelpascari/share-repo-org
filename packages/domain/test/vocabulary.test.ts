@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  ACCESS_DECISION_REASONS,
   ACCESS_LEVELS,
   ACCESS_POLICY_VERSION,
   AUDIT_ACTOR_TYPES,
@@ -15,8 +16,14 @@ import {
   GRACE_PERIOD_DAYS_MIN,
   GRANT_STATES,
   IDENTITY_PROVIDERS,
+  OFFER_ACCESSES_MAX,
+  OFFER_CHANGES,
+  OFFER_ITEMS_MAX,
+  OFFER_NAME_MAX_LENGTH,
   OFFER_STATUSES,
   OUTBOX_KINDS,
+  RECONCILIATION_ACTIONS,
+  RECONCILIATION_REASONS,
   RESOURCE_SELECTIONS,
   RESOURCE_TYPES,
   RETRY_CLASSES,
@@ -85,4 +92,64 @@ describe("persisted vocabularies", () => {
       "terminal",
     ]));
   it("subject types", () => expect(SUBJECT_TYPES).toEqual(["user"]));
+});
+
+// Stored in entitlements, audit details and shown in the UI: add codes, never rename them.
+describe("stable decision codes", () => {
+  it("access decision reasons", () =>
+    expect(ACCESS_DECISION_REASONS).toEqual([
+      "active",
+      "trialing",
+      "cancel_scheduled",
+      "past_due_in_grace",
+      "canceled_until_end",
+      "paused",
+      "grace_expired",
+      "cancellation_effective",
+      "canceled",
+      "expired",
+      "offer_archived",
+      "offer_access_removed",
+      "offer_access_changed",
+      "item_removed",
+      "customer_unlinked",
+      "subscription_missing",
+    ]));
+  it("offer changes", () =>
+    expect(OFFER_CHANGES).toEqual(["name", "gracePeriodDays", "items", "accesses"]));
+  it("reconciliation actions", () =>
+    expect(RECONCILIATION_ACTIONS).toEqual([
+      "provision",
+      "verify",
+      "wait",
+      "retry",
+      "request_action",
+      "blocked",
+      "revoke",
+      "noop",
+    ]));
+  it("reconciliation reasons", () =>
+    expect(RECONCILIATION_REASONS).toEqual([
+      "grant_missing",
+      "access_level_change",
+      "invitation_expired",
+      "grant_active",
+      "intermediate_state",
+      "invitation_pending",
+      "transient_error",
+      "rate_limited",
+      "user_action_required",
+      "terminal_error",
+      "unmanaged_lower_access",
+      "resource_missing",
+      "connection_inactive",
+      "resource_unavailable",
+      "access_level_unsupported",
+      "not_entitled",
+      "revocation_in_progress",
+      "unmanaged_access",
+      "no_access",
+    ]));
+  it("offer limits", () =>
+    expect([OFFER_NAME_MAX_LENGTH, OFFER_ITEMS_MAX, OFFER_ACCESSES_MAX]).toEqual([100, 100, 100]));
 });

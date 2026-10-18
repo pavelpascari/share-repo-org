@@ -1,8 +1,12 @@
 import { z } from "zod";
 import { CONNECTION_STATUSES } from "./connection.ts";
+import { ACCESS_LEVELS } from "./entitlement.ts";
 import { IDENTITY_PROVIDERS } from "./identity.ts";
 import type { IdGenerator } from "./ids.ts";
+import { COMMERCIAL_SOURCES, GRACE_PERIOD_DAYS_MAX, GRACE_PERIOD_DAYS_MIN } from "./offer.ts";
+import { ACCESS_DECISION_REASONS } from "./policy.ts";
 import { RESOURCE_SELECTIONS } from "./resource.ts";
+import { SUBSCRIPTION_STATES } from "./subscription.ts";
 import type { Clock, Instant } from "./time.ts";
 import { WORKSPACE_ROLES } from "./workspace.ts";
 
@@ -44,6 +48,16 @@ const count = z.number().int().nonnegative();
 const provider = z.enum(IDENTITY_PROVIDERS);
 const connectionStatus = z.enum(CONNECTION_STATUSES);
 const selection = z.enum(RESOURCE_SELECTIONS);
+const positive = z.number().int().positive();
+const instant = z.number().int().nonnegative();
+const gracePeriodDays = z.number().int().min(GRACE_PERIOD_DAYS_MIN).max(GRACE_PERIOD_DAYS_MAX);
+const source = z.enum(COMMERCIAL_SOURCES);
+const subscriptionState = z.enum(SUBSCRIPTION_STATES);
+const decisionReason = z.enum(ACCESS_DECISION_REASONS);
+
+/** The parts of an offer's configuration an `offer.updated` event says changed. */
+export const OFFER_CHANGES = ["name", "gracePeriodDays", "items", "accesses"] as const;
+export type OfferChange = (typeof OFFER_CHANGES)[number];
 
 const textChange = z.strictObject({ from: text, to: text });
 const booleanChange = z.strictObject({ from: z.boolean(), to: z.boolean() });
@@ -147,6 +161,99 @@ export const AUDIT_ACTIONS = {
     details: z
       .strictObject({ externalId: text, previousSelection: selection, selection })
       .refine((d) => d.previousSelection !== d.selection, { path: ["selection"] }),
+  },
+  "offer.created": {
+    scope: "workspace",
+    targetType: "offer",
+    details: z.strictObject({
+      name: text,
+      version: positive,
+      gracePeriodDays,
+      items: count,
+      accesses: count,
+    }),
+  },
+  "offer.updated": {
+    scope: "workspace",
+    targetType: "offer",
+    details: z
+      .strictObject({
+        version: positive,
+        previousVersion: positive,
+        changes: z.array(z.enum(OFFER_CHANGES)).min(1),
+      })
+      .refine((d) => d.version === d.previousVersion + 1, { path: ["version"] }),
+  },
+  "offer.archived": {
+    scope: "workspace",
+    targetType: "offer",
+    details: z.strictObject({ version: positive }),
+  },
+  "subject.created": {
+    scope: "workspace",
+    targetType: "subject",
+    details: z.strictObject({ provider, externalSubjectId: text, login: text }),
+  },
+  "customer.created": {
+    scope: "workspace",
+    targetType: "customer",
+    details: z.strictObject({ source, externalCustomerId: text }),
+  },
+  "customer.linked": {
+    scope: "workspace",
+    targetType: "customer",
+    details: z
+      .strictObject({ previousSubjectId: text.nullable(), subjectId: text.nullable() })
+      .refine((d) => d.previousSubjectId !== d.subjectId, { path: ["subjectId"] }),
+  },
+  "subscription.recorded": {
+    scope: "workspace",
+    targetType: "subscription",
+    details: z.strictObject({ source, externalSubscriptionId: text, state: subscriptionState }),
+  },
+  "subscription.updated": {
+    scope: "workspace",
+    targetType: "subscription",
+    details: z.strictObject({
+      previousState: subscriptionState,
+      state: subscriptionState,
+      sourceUpdatedAt: instant,
+    }),
+  },
+  "entitlement.created": {
+    scope: "workspace",
+    targetType: "entitlement",
+    details: z.strictObject({
+      subjectId: text,
+      resourceId: text,
+      accessLevel: z.enum(ACCESS_LEVELS),
+      subscriptionId: text,
+      offerId: text,
+      offerVersion: positive,
+      policyVersion: positive,
+      validUntil: instant.nullable(),
+      reason: decisionReason,
+    }),
+  },
+  "entitlement.updated": {
+    scope: "workspace",
+    targetType: "entitlement",
+    details: z.strictObject({
+      validUntil: z.strictObject({ from: instant.nullable(), to: instant.nullable() }),
+      reason: decisionReason,
+      offerVersion: positive,
+      policyVersion: positive,
+    }),
+  },
+  "entitlement.ended": {
+    scope: "workspace",
+    targetType: "entitlement",
+    details: z.strictObject({ state: z.enum(["expired", "revoked"]), reason: decisionReason }),
+  },
+  "simulation.subscription_changed": {
+    scope: "workspace",
+    targetType: "simulated_subscription",
+    details: z.strictObject({ action: text, state: subscriptionState }),
   },
 } as const satisfies Record<string, AuditActionDefinition>;
 
