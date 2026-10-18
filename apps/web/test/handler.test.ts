@@ -223,7 +223,7 @@ describe("createFetchHandler", () => {
           correlationId: "req-000001",
           errorCode: "configuration_error",
           issues: [
-            { path: "DB", code: "invalid_type" },
+            { path: "DB", code: "custom" },
             { path: "ENVIRONMENT", code: "invalid_value" },
           ],
         });

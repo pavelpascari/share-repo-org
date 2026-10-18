@@ -1,5 +1,5 @@
 {
-  "$comment": "Coverage ratchet (docs/decisions/0005-coverage-ratchet.md). Values only go up: run `pnpm test:coverage` and commit this file. Add a new scope at its floor. apps/web/workers starts at 0 until Phase 0 T6 adds Worker entry tests and raises it to at least the 90 floor.",
+  "$comment": "Coverage ratchet (docs/decisions/0005-coverage-ratchet.md). Values only go up: run `pnpm test:coverage` and commit this file. Add a new scope at its floor.",
   "coverage": {
     "packages/domain/src/**": {
       "lines": 100,
@@ -32,10 +32,10 @@
       "statements": 100
     },
     "apps/web/workers/**": {
-      "lines": 98.1,
+      "lines": 100,
       "branches": 100,
-      "functions": 91.6,
-      "statements": 98.2
+      "functions": 100,
+      "statements": 100
     },
     "scripts/*.ts": {
       "lines": 100,

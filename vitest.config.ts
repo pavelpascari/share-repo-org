@@ -26,8 +26,13 @@ export default defineConfig({
         "apps/web/workers/**/*.ts",
         "scripts/*.ts",
       ],
-      // Package barrels only re-export; V8 would report them as uncovered.
-      exclude: ["packages/*/src/**/index.ts"],
+      exclude: [
+        // Package barrels only re-export; V8 would report them as uncovered.
+        "packages/*/src/**/index.ts",
+        // Framework wiring around the virtual server build, which only resolves in a real build;
+        // its behaviour lives in handler.ts and the wiring itself is exercised by E2E.
+        "apps/web/workers/app.ts",
+      ],
       reporter: ["text-summary", "html", "json-summary"],
       // Globs that match no files (packages without source yet) pass trivially.
       thresholds: { ...ratchet.coverage },
