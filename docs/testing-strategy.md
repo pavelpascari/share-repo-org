@@ -150,19 +150,19 @@ All packages use Istanbul coverage so results are identical locally and in CI an
 
 The floor is a starting point. Each package's committed thresholds (lines, branches, functions, statements, and mutation score for domain) can only go up.
 
-- **Local:** `pnpm test:coverage` uses Vitest threshold auto-update to raise committed thresholds when measured coverage exceeds them, rounding down to avoid noise. Developers commit the raised values with their change.
+- **Local:** committed thresholds live in `coverage-thresholds.json`, which `vitest.config.ts` reads as per-package glob thresholds and `packages/domain/stryker.config.mjs` reads for the mutation break threshold. `pnpm test:coverage` runs coverage and then `scripts/coverage-ratchet.ts update`, which raises thresholds to measured coverage rounded down to 0.1 and never lowers them. Developers commit the raised values with their change. A glob that matches no files, or a metric with nothing to count, is neither checked nor raised.
 - **CI check 1, floor:** measured coverage must meet or exceed the committed thresholds.
-- **CI check 2, no lowering:** a script compares thresholds in the PR against the base branch and fails if any value decreased.
+- **CI check 2, no lowering:** `scripts/coverage-ratchet.ts check --base <base thresholds>` compares thresholds in the PR against the base branch and fails if any value decreased or a scope was removed.
 - **CI check 3, gains are committed:** if measured coverage exceeds a committed threshold by more than the rounding margin, CI fails and asks the author to run `pnpm test:coverage` and commit the update.
 
-**Escape hatch.** Coverage can legitimately drop, for example when well-tested code is deleted. A lowered threshold is accepted only when the PR carries an explicit `coverage-decrease` justification, such as a label plus a short reason in the description, and passes review. It is never automatic.
+**Escape hatch.** Coverage can legitimately drop, for example when well-tested code is deleted. A lowered threshold is accepted only when the PR carries an explicit `coverage-decrease` justification, such as a label plus a short reason in the description, and passes review. It is never automatic. CI passes that reason to the check as `COVERAGE_DECREASE_REASON`; with it set, check 2 reports the decrease instead of failing.
 
 ## Commands
 
 | Command | Runs | Needs network/credentials |
 |---|---|---|
 | `pnpm test` | Domain, DB, contract, service, scenario, convergence, and entry-point tests | No |
-| `pnpm test:coverage` | `pnpm test` with merged Istanbul coverage, thresholds, and auto-update | No |
+| `pnpm test:coverage` | `pnpm test` with merged Istanbul coverage and thresholds, then raises committed thresholds | No |
 | `pnpm test:mutation` | Stryker on `packages/domain`, with ratcheted break threshold | No |
 | `pnpm test:e2e` | Playwright against local Workers, fresh D1, fake OAuth server | No |
 | `pnpm test:sandbox` | Contract and smoke tests against real GitHub test account and Paddle sandbox | Yes, opt-in |
@@ -183,6 +183,6 @@ Tool versions and the testing APIs this strategy relies on are recorded in [`doc
 - Workers tests use `@cloudflare/vitest-plugin` (the renamed `vitest-pool-workers`) on Vitest 4.1, in a root `projects` config alongside Node projects, with merged Istanbul coverage.
 - D1 migrations are applied with `readD1Migrations`/`applyD1Migrations`; queue consumers are tested with `createMessageBatch`/`getQueueResult`; cron with `createScheduledController`; Workflows with disposable introspectors that can mock steps and skip sleeps.
 - **Storage is isolated per test file, not per test.** Tests in one file share D1 state, so each test creates its own workspace and IDs, or resets in `afterEach`. Isolation tests must not pass by accident because another test's data happens to be absent.
-- Vitest `coverage.thresholds.autoUpdate` takes a rounding function, which implements the ratchet.
+- Vitest `coverage.thresholds.autoUpdate` can only rewrite literal values in the Vitest config, not an imported JSON file, so `scripts/coverage-ratchet.ts` owns raising thresholds. One file then feeds both Vitest and Stryker.
 - Stryker runs only on `packages/domain` and requires Vitest 4 until stryker-js #6210 is fixed.
 - Outbound HTTP is tested through injected `fetch`. `fetchMock` no longer exists in `cloudflare:test`; MSW with `@msw/cloudflare` is the fallback if needed.
