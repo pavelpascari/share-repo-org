@@ -8,14 +8,10 @@ import {
   type WorkspaceName,
   type WorkspaceSlug,
 } from "@sharerepo/domain";
-import { type SQL, sql } from "drizzle-orm";
+import { sql } from "drizzle-orm";
 import { check, index, integer, primaryKey, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { literalList } from "./sql.ts";
 import { users } from "./users.ts";
-
-// CHECK constraints mirror the rules in @sharerepo/domain (workspace.ts). The values are trusted
-// constants, inlined as SQL literals because DDL cannot take bound parameters.
-const literalList = (values: readonly string[]): SQL =>
-  sql.raw(values.map((value) => `'${value}'`).join(", "));
 
 // SQLite has no regular expressions. GLOB is case-sensitive and expresses the same format:
 // only [a-z0-9-], with no leading, trailing, or doubled hyphen.

@@ -3,7 +3,7 @@ import { z } from "zod";
 
 const webEnvSchema = z.object({
   DB: z.custom<D1Database>(isD1Binding),
-  ENVIRONMENT: z.enum(["development", "production"]),
+  ENVIRONMENT: z.enum(["development", "e2e", "production"]),
 });
 
 /** The bindings and vars this Worker relies on, after validation. Unvalidated keys are dropped. */

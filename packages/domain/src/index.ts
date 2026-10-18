@@ -1,3 +1,7 @@
+export type { AuditActorType, AuditEvent, AuditScope } from "./audit.ts";
+export { AUDIT_ACTOR_TYPES, AUDIT_SCOPES } from "./audit.ts";
+export type { IdentityProvider } from "./identity.ts";
+export { IDENTITY_PROVIDERS } from "./identity.ts";
 export type { IdGenerator } from "./ids.ts";
 export { randomIds } from "./ids.ts";
 export type { Clock, Instant } from "./time.ts";
