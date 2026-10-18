@@ -39,8 +39,8 @@ export async function handleGitHubWebhook(
   if (secret === undefined) return text(503, "GitHub is not configured.");
   const declared = Number(request.headers.get("content-length") ?? "0");
   if (declared > MAX_WEBHOOK_BYTES) return text(413, "Payload too large.");
-  const rawBody = await request.arrayBuffer();
-  if (rawBody.byteLength > MAX_WEBHOOK_BYTES) return text(413, "Payload too large.");
+  const rawBody = await readBounded(request, MAX_WEBHOOK_BYTES);
+  if (rawBody === null) return text(413, "Payload too large.");
 
   const services: ServiceContext = {
     db: createDb(env.DB),
@@ -68,4 +68,32 @@ export async function handleGitHubWebhook(
     ),
   );
   return text(202, "Accepted.");
+}
+
+/**
+ * Reads the body, stopping as soon as it exceeds `limit`: a chunked request without a
+ * Content-Length must not be buffered whole before the size check. Null means too large.
+ */
+export async function readBounded(request: Request, limit: number): Promise<ArrayBuffer | null> {
+  if (request.body === null) return new ArrayBuffer(0);
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > limit) {
+      await reader.cancel();
+      return null;
+    }
+    chunks.push(value);
+  }
+  const body = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return body.buffer;
 }

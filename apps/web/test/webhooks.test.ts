@@ -5,7 +5,7 @@ import { signWebhook } from "@sharerepo/integrations/testing";
 import { createLogger } from "@sharerepo/platform";
 import { describe, expect, it } from "vitest";
 import { parseWebEnv, type WebEnv } from "../workers/env.ts";
-import { handleGitHubWebhook, MAX_WEBHOOK_BYTES } from "../workers/webhooks.ts";
+import { handleGitHubWebhook, MAX_WEBHOOK_BYTES, readBounded } from "../workers/webhooks.ts";
 
 const SECRET = "test-webhook-secret";
 
@@ -132,6 +132,25 @@ describe("POST /webhooks/github", () => {
       body: actual,
     });
     expect((await call(sneaky)).status).toBe(413);
+  });
+
+  it("stops reading a streamed body as soon as it exceeds the limit", async () => {
+    let pulled = 0;
+    const chunk = new Uint8Array(64 * 1024);
+    const endless = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulled += 1;
+        controller.enqueue(chunk);
+      },
+    });
+    expect(
+      await readBounded(
+        new Request("https://x.test", { method: "POST", body: endless }),
+        MAX_WEBHOOK_BYTES,
+      ),
+    ).toBeNull();
+    expect(pulled).toBeLessThanOrEqual(MAX_WEBHOOK_BYTES / chunk.byteLength + 2);
+    expect((await readBounded(new Request("https://x.test"), 10))?.byteLength).toBe(0);
   });
 
   it("answers 503 when the GitHub App is not configured", async () => {
