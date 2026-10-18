@@ -91,6 +91,7 @@ Each scenario has a stable name used as the test title so coverage of the matrix
 | `resource/selection-removed-blocks-new-provisioning` | Matrix: resource removal | Service | 2, 4 |
 | `resource/rename-transfer-keeps-identity` | Integrations: GitHub risks | Contract, service | 2 |
 | `connection/suspended-installation-surfaces-error` | Matrix: connection suspension | Service | 2, 4 |
+| `connection/install-callback-bound-to-intent` | Implementation plan, Phase 2: callbacks cannot attach to the wrong workspace | Service, E2E | 2 |
 | `invitation/pending-is-not-active` | AGENTS: pending invitations | Service | 4 |
 | `invitation/expired-is-reissued-or-surfaced` | Matrix: pending invitation expiration | Service | 4 |
 | `provider/rate-limit-backs-off-and-retries` | Matrix: rate limit; AGENTS: provider rate limits | Contract, service | 4 |
