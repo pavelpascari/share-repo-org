@@ -19,6 +19,7 @@ export {
   type UpdateConnectionResult,
   updateConnection,
 } from "./connection-repository.ts";
+export { type Customer, findCustomer, getCustomer } from "./customer-repository.ts";
 export { isUniqueViolation, uniqueViolationColumns } from "./errors.ts";
 export {
   type ExternalEvent,
@@ -29,6 +30,7 @@ export {
   type RecordExternalEventResult,
   recordExternalEvent,
 } from "./event-repository.ts";
+export { type Grant, listGrantsForWorkspace } from "./grant-repository.ts";
 export {
   type ExternalIdentity,
   type ExternalIdentitySnapshot,
@@ -39,6 +41,24 @@ export {
   type UpdateExternalIdentitySnapshotResult,
   updateExternalIdentitySnapshot,
 } from "./identity-repository.ts";
+export {
+  createOffer,
+  findOffersForItems,
+  getOffer,
+  getOfferVersion,
+  listOffers,
+  listOffersByIds,
+  listSubscriptionIdsForOffer,
+  type NewOffer,
+  type Offer,
+  type OfferAccess,
+  type OfferItem,
+  type OfferUpdate,
+  type OfferVersion,
+  type OfferWithConfig,
+  type UpdateOfferResult,
+  updateOffer,
+} from "./offer-repository.ts";
 export {
   claimOutbox,
   enqueueOutbox,
@@ -59,6 +79,39 @@ export {
   type ResourceSync,
 } from "./resource-repository.ts";
 export * as schema from "./schema/index.ts";
+export {
+  createSimulatedSubscription,
+  getSimulatedSubscription,
+  listSimulatedSubscriptions,
+  type SimulatedSubscription,
+  type SimulatedSubscriptionChanges,
+  type UpdateSimulatedSubscriptionResult,
+  updateSimulatedSubscription,
+} from "./simulation-repository.ts";
+export {
+  findSubjectByExternalId,
+  insertSubject,
+  listSubjects,
+  type Subject,
+} from "./subject-repository.ts";
+export {
+  type ApplySubscriptionRefreshResult,
+  applySubscriptionRefresh,
+  claimDueEvaluations,
+  type Entitlement,
+  type EntitlementChanges,
+  type EntitlementPlanWrite,
+  getSubscription,
+  getSubscriptionByExternal,
+  listEntitlementsForWorkspace,
+  listLiveEntitlementsForSubscription,
+  listLiveEntitlementsForWorkspace,
+  type NewEntitlement,
+  type Subscription,
+  type SubscriptionItem,
+  type SubscriptionRefresh,
+  type SubscriptionWithItems,
+} from "./subscription-repository.ts";
 export { createUser, type User } from "./user-repository.ts";
 export {
   type AddWorkspaceMemberResult,
