@@ -35,12 +35,18 @@ importers:
 
   apps/jobs:
     dependencies:
+      '@sharerepo/application':
+        specifier: workspace:*
+        version: link:../../packages/application
       '@sharerepo/db':
         specifier: workspace:*
         version: link:../../packages/db
       '@sharerepo/domain':
         specifier: workspace:*
         version: link:../../packages/domain
+      '@sharerepo/integrations':
+        specifier: workspace:*
+        version: link:../../packages/integrations
       '@sharerepo/platform':
         specifier: workspace:*
         version: link:../../packages/platform

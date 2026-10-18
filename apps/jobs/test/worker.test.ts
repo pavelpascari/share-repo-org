@@ -1,5 +1,6 @@
 import { createExecutionContext, createScheduledController } from "cloudflare:test";
 import { env } from "cloudflare:workers";
+import { createFakeGitHubApp } from "@sharerepo/integrations/testing";
 import { REQUEST_ID_HEADER } from "@sharerepo/platform";
 import {
   captureLogs,
@@ -15,7 +16,11 @@ import worker from "../src/index.ts";
 const SCHEDULED_TIME = Date.UTC(2026, 9, 18, 12, 0, 0);
 
 function testWorker(clock = new FakeClock("2026-10-18T12:00:01.500Z")) {
-  return createJobsWorker({ ids: new SequentialIds({ prefix: "corr-" }), clock });
+  return createJobsWorker({
+    ids: new SequentialIds({ prefix: "corr-" }),
+    clock,
+    github: () => createFakeGitHubApp(),
+  });
 }
 
 function runScheduled(target: ExportedHandler<Env>, bindings: object = env) {

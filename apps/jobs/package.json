@@ -11,7 +11,9 @@
     "typecheck": "wrangler types --check && tsc -p ."
   },
   "dependencies": {
+    "@sharerepo/application": "workspace:*",
     "@sharerepo/db": "workspace:*",
+    "@sharerepo/integrations": "workspace:*",
     "@sharerepo/domain": "workspace:*",
     "@sharerepo/platform": "workspace:*",
     "zod": "4.6.7"

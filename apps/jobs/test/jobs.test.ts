@@ -1,0 +1,339 @@
+import {
+  createExecutionContext,
+  createMessageBatch,
+  createScheduledController,
+  getQueueResult,
+} from "cloudflare:test";
+import { env } from "cloudflare:workers";
+import { claimOutbox, enqueueOutbox, getExternalEvent } from "@sharerepo/db";
+import { GitHubApiError, type GitHubAppPort } from "@sharerepo/integrations";
+import { createFakeGitHubApp, type FakeGitHubApp } from "@sharerepo/integrations/testing";
+import {
+  captureLogs,
+  changedTables,
+  type LogCapture,
+  SequentialIds,
+  snapshotTables,
+} from "@sharerepo/testing";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { CRONS, createJobsWorker } from "../src/handlers.ts";
+import worker from "../src/index.ts";
+import { retryDelaySeconds } from "../src/work.ts";
+import {
+  clock,
+  connectedCreator,
+  count,
+  db,
+  envWithGitHub,
+  outboxIdFor,
+  receivedWebhook,
+} from "./support/github.ts";
+
+const QUEUE = "sharerepo-events-dev";
+
+function jobsWorker(github: GitHubAppPort) {
+  return createJobsWorker({
+    ids: new SequentialIds({ prefix: `corr-${crypto.randomUUID()}-` }),
+    clock,
+    github: () => github,
+  });
+}
+
+let messageCounter = 0;
+async function deliver(
+  target: ExportedHandler<Env>,
+  bodies: unknown[],
+  options: { attempts?: number; bindings?: Env } = {},
+) {
+  const batch = createMessageBatch(
+    QUEUE,
+    bodies.map((body) => ({
+      id: `msg-${++messageCounter}`,
+      timestamp: clock.now(),
+      attempts: options.attempts ?? 1,
+      body,
+    })),
+  );
+  const ctx = createExecutionContext();
+  await target.queue?.(batch, options.bindings ?? envWithGitHub, ctx);
+  return getQueueResult(batch, ctx);
+}
+
+function runCron(target: ExportedHandler<Env>, cron: string, bindings: Env = envWithGitHub) {
+  return target.scheduled?.(
+    createScheduledController({ cron, scheduledTime: clock.now() }),
+    bindings,
+    createExecutionContext(),
+  );
+}
+
+const resourcesOf = (connectionId: string) =>
+  count("SELECT count(*) AS n FROM resources WHERE connection_id = ?", connectionId);
+const sentAt = async (outboxId: string) =>
+  (
+    await env.DB.prepare("SELECT sent_at FROM outbox WHERE id = ?")
+      .bind(outboxId)
+      .first<{ sent_at: number | null }>()
+  )?.sent_at;
+
+let logs: LogCapture;
+beforeEach(() => {
+  logs = captureLogs();
+});
+afterEach(() => {
+  logs.restore();
+});
+const logged = () => logs.lines().map((line) => JSON.parse(line) as Record<string, unknown>);
+const retried = () => logged().find((line) => line.msg === "job will be retried");
+
+describe("queue()", () => {
+  it("queue/redelivery-is-idempotent", async () => {
+    const github = createFakeGitHubApp();
+    const { installationId, connection } = await connectedCreator(github);
+    const { eventId, outboxId } = await receivedWebhook(installationId);
+    const message = { kind: "process_external_event", subjectId: eventId, outboxId };
+
+    // At-least-once delivery: the same message twice in one batch, then once more.
+    const result = await deliver(jobsWorker(github), [message, message]);
+    const before = await snapshotTables(env.DB);
+    const again = await deliver(jobsWorker(github), [message]);
+
+    expect(result.explicitAcks).toHaveLength(2);
+    expect(again.explicitAcks).toHaveLength(1);
+    expect(result.retryMessages).toEqual([]);
+    expect(changedTables(before, await snapshotTables(env.DB))).toEqual([]);
+    expect(await resourcesOf(connection.id)).toBe(1);
+    expect(
+      await count(
+        "SELECT count(*) AS n FROM audit_events WHERE action = 'resource.discovered' AND workspace_id = ?",
+        connection.workspaceId,
+      ),
+    ).toBe(1);
+    expect((await getExternalEvent(db, eventId))?.processingState).toBe("processed");
+    expect(await sentAt(outboxId)).toBe(clock.now());
+  });
+
+  it("runs a resync_connection job for its connection's workspace", async () => {
+    const github = createFakeGitHubApp();
+    const { connection } = await connectedCreator(github);
+    const outboxId = await outboxIdFor(connection.id);
+    const result = await deliver(jobsWorker(github), [
+      { kind: "resync_connection", subjectId: connection.id, outboxId },
+    ]);
+    expect(result.explicitAcks).toHaveLength(1);
+    expect(await resourcesOf(connection.id)).toBe(1);
+  });
+
+  // The message names a connection that no workspace owns (unknown, or deleted). A job never
+  // takes its workspace from the message, so there is nothing it may act on: it is acknowledged
+  // as out of scope and changes nothing but its own outbox bookkeeping.
+  it("isolation/job-without-workspace-scope-rejected", async () => {
+    const github = createFakeGitHubApp();
+    const before = await snapshotTables(env.DB);
+    const result = await deliver(jobsWorker(github), [
+      { kind: "resync_connection", subjectId: "no-such-connection", outboxId: "no-such-outbox" },
+    ]);
+    expect(result.explicitAcks).toHaveLength(1);
+    expect(changedTables(before, await snapshotTables(env.DB))).toEqual([]);
+    expect(github.calls).toEqual([]);
+    expect(logged().map((line) => line.msg)).toContain("job has no workspace scope");
+  });
+
+  it("drops a poison message without retrying it", async () => {
+    const result = await deliver(jobsWorker(createFakeGitHubApp()), [
+      { kind: "delete_everything", subjectId: "x", outboxId: "y" },
+      "not an object",
+    ]);
+    expect(result.explicitAcks).toHaveLength(2);
+    expect(result.retryMessages).toEqual([]);
+    expect(logged().filter((line) => line.msg === "invalid job message dropped")).toHaveLength(2);
+  });
+
+  it("retries a GitHub outage with a growing delay", async () => {
+    const github = createFakeGitHubApp();
+    const { installationId } = await connectedCreator(github);
+    const { eventId, outboxId } = await receivedWebhook(installationId);
+    github.failNext("transient");
+    const result = await deliver(
+      jobsWorker(github),
+      [{ kind: "process_external_event", subjectId: eventId, outboxId }],
+      { attempts: 3 },
+    );
+    expect(result.explicitAcks).toEqual([]);
+    expect(result.retryMessages).toHaveLength(1);
+    // getQueueResult does not report the delay; the log line carries it.
+    expect(retried()).toMatchObject({ delaySeconds: 120, errorKind: "transient" });
+    expect(await sentAt(outboxId)).toBeNull();
+  });
+
+  it("retries a rate limit after GitHub's reset time", async () => {
+    const github = createFakeGitHubApp();
+    const { installationId } = await connectedCreator(github);
+    const { eventId, outboxId } = await receivedWebhook(installationId);
+    const limited: GitHubAppPort = {
+      ...github,
+      getInstallation: () =>
+        Promise.reject(new GitHubApiError("rate_limited", "limited", { retryAfterMs: 90_500 })),
+    };
+    const result = await deliver(jobsWorker(limited), [
+      { kind: "process_external_event", subjectId: eventId, outboxId },
+    ]);
+    expect(result.retryMessages).toHaveLength(1);
+    expect(retried()).toMatchObject({ delaySeconds: 91, errorKind: "rate_limited" });
+  });
+
+  it("acknowledges a failure a retry cannot fix, logging only its classification", async () => {
+    const github = createFakeGitHubApp();
+    const { installationId } = await connectedCreator(github);
+    const { eventId, outboxId } = await receivedWebhook(installationId);
+    const broken: GitHubAppPort = {
+      ...github,
+      getInstallation: () => Promise.reject(new Error("secret detail")),
+    };
+    const result = await deliver(jobsWorker(broken), [
+      { kind: "process_external_event", subjectId: eventId, outboxId },
+    ]);
+    expect(result.explicitAcks).toHaveLength(1);
+    expect((await getExternalEvent(db, eventId))?.lastErrorCode).toBe("internal_error");
+    expect(logs.text()).not.toContain("secret detail");
+    expect(logged().at(-1)).toMatchObject({
+      level: "error",
+      msg: "job failed",
+      errorName: "Error",
+    });
+  });
+
+  it("drops jobs while no GitHub App is configured", async () => {
+    const result = await deliver(
+      jobsWorker(createFakeGitHubApp()),
+      [{ kind: "resync_connection", subjectId: "c", outboxId: "o" }],
+      { bindings: env },
+    );
+    expect(result.explicitAcks).toHaveLength(1);
+    expect(logged().map((line) => line.msg)).toContain("GitHub App not configured; job dropped");
+  });
+
+  it("runs through the default export with the real GitHub App client", async () => {
+    // An event that does not exist needs no GitHub call, so no network is touched.
+    const result = await deliver(worker, [
+      { kind: "process_external_event", subjectId: "no-such-event", outboxId: "o" },
+    ]);
+    expect(result.explicitAcks).toHaveLength(1);
+  });
+});
+
+describe("retryDelaySeconds", () => {
+  it.each([
+    [1, undefined, 30],
+    [2, undefined, 60],
+    [4, undefined, 240],
+    [20, undefined, 900],
+    [0, undefined, 30],
+    [1, 0, 1],
+    [1, 1_500, 2],
+    [1, 3_600_000, 900],
+  ])("attempt %i, retry-after %s ms → %i s", (attempts, retryAfterMs, expected) => {
+    expect(retryDelaySeconds(attempts, retryAfterMs)).toBe(expected);
+  });
+});
+
+describe("scheduled()", () => {
+  async function pendingConnection(github: FakeGitHubApp) {
+    const created = await connectedCreator(github);
+    return { ...created, outboxId: await outboxIdFor(created.connection.id) };
+  }
+
+  it("drains due outbox rows, running each job once", async () => {
+    const github = createFakeGitHubApp();
+    const { connection, outboxId } = await pendingConnection(github);
+    await runCron(jobsWorker(github), CRONS.drainOutbox);
+    expect(await resourcesOf(connection.id)).toBe(1);
+    expect(await sentAt(outboxId)).toBe(clock.now());
+
+    const calls = github.calls.length;
+    await runCron(jobsWorker(github), CRONS.drainOutbox);
+    expect(github.calls.length).toBe(calls);
+  });
+
+  it("does not run rows another drainer has leased", async () => {
+    const github = createFakeGitHubApp();
+    const { connection } = await pendingConnection(github);
+    await claimOutbox(db, { now: clock.now(), limit: 1000, leaseMs: 60_000 });
+    await runCron(jobsWorker(github), CRONS.drainOutbox);
+    expect(await resourcesOf(connection.id)).toBe(0);
+  });
+
+  it("leaves a failed job leased for a later attempt", async () => {
+    const github = createFakeGitHubApp();
+    const { outboxId } = await pendingConnection(github);
+    // Clear anything else due so this row is the only claimed job.
+    await runCron(jobsWorker(github), CRONS.drainOutbox);
+    // Due before anything else, so it is the first job claimed and meets the failure.
+    await env.DB.prepare("UPDATE outbox SET sent_at = NULL, available_at = 0 WHERE id = ?")
+      .bind(outboxId)
+      .run();
+    github.failNext("transient");
+    await runCron(jobsWorker(github), CRONS.drainOutbox);
+    expect(await sentAt(outboxId)).toBeNull();
+    expect(logged().find((line) => line.msg === "outbox job failed")).toMatchObject({
+      outboxId,
+      kind: "resync_connection",
+      errorKind: "transient",
+    });
+  });
+
+  it("marks an out-of-scope outbox job sent so it is not repeated", async () => {
+    const id = `out-${crypto.randomUUID()}`;
+    await enqueueOutbox(db, {
+      id,
+      kind: "resync_connection",
+      subjectId: "no-such-connection",
+      createdAt: clock.now(),
+      availableAt: clock.now(),
+    });
+    await runCron(jobsWorker(createFakeGitHubApp()), CRONS.drainOutbox);
+    expect(await sentAt(id)).toBe(clock.now());
+  });
+
+  it("resyncs every connection daily and continues past a failure", async () => {
+    const github = createFakeGitHubApp();
+    const first = await connectedCreator(github);
+    const second = await connectedCreator(github);
+    // Settle everything already due, then make the first resync of the run fail.
+    await runCron(jobsWorker(github), CRONS.drainOutbox);
+    github.failNext("transient");
+    await runCron(jobsWorker(github), CRONS.dailyResync);
+    const summary = logged().find((line) => line.msg === "daily resync finished");
+    expect(summary?.failed).toBe(1);
+    expect(summary?.connections).toBeGreaterThanOrEqual(2);
+    expect(await resourcesOf(first.connection.id)).toBe(1);
+    expect(await resourcesOf(second.connection.id)).toBe(1);
+  });
+
+  it("classifies a thrown non-error value as unknown", async () => {
+    const github = createFakeGitHubApp();
+    await connectedCreator(github);
+    const throwing: GitHubAppPort = {
+      ...github,
+      getInstallation: () => Promise.reject("plain string"),
+    };
+    await runCron(jobsWorker(throwing), CRONS.dailyResync);
+    expect(logged().find((line) => line.msg === "daily resync failed")).toMatchObject({
+      errorName: "unknown",
+    });
+  });
+
+  it("skips GitHub work while no App is configured, but keeps the heartbeat", async () => {
+    await runCron(jobsWorker(createFakeGitHubApp()), CRONS.drainOutbox, env);
+    await runCron(jobsWorker(createFakeGitHubApp()), CRONS.heartbeat, env);
+    expect(logged().map((line) => line.msg)).toEqual([
+      "GitHub App not configured; skipped",
+      "scheduled heartbeat",
+    ]);
+  });
+
+  it("ignores an unknown cron", async () => {
+    await runCron(jobsWorker(createFakeGitHubApp()), "5 5 * * *");
+    expect(logged()).toMatchObject([{ level: "warn", msg: "unknown cron; nothing to do" }]);
+  });
+});
