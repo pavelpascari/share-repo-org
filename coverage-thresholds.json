@@ -17,7 +17,7 @@
       "lines": 100,
       "branches": 97.5,
       "functions": 100,
-      "statements": 98.5
+      "statements": 98.7
     },
     "packages/platform/src/**": {
       "lines": 100,
@@ -38,6 +38,18 @@
       "statements": 100
     },
     "apps/web/workers/**": {
+      "lines": 100,
+      "branches": 100,
+      "functions": 100,
+      "statements": 100
+    },
+    "apps/web/app/auth/**": {
+      "lines": 100,
+      "branches": 98.3,
+      "functions": 100,
+      "statements": 100
+    },
+    "apps/web/app/security/**": {
       "lines": 100,
       "branches": 100,
       "functions": 100,

@@ -96,7 +96,7 @@ async function route(
   }
 
   const context = new RouterContextProvider();
-  context.set(cloudflareContext, { env, ctx });
+  context.set(cloudflareContext, { env, ctx, correlationId, logger });
   return renderApp(request, context);
 }
 

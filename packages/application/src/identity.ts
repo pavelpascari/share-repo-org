@@ -12,7 +12,7 @@ import {
   type IdentityProvider,
 } from "@sharerepo/domain";
 import { ConflictError } from "@sharerepo/platform";
-import { asAuditActor, type ServiceContext, type UserActor } from "./context.ts";
+import { asAuditActor, atOneInstant, type ServiceContext, type UserActor } from "./context.ts";
 
 /** A verified provider profile, fetched from the provider during this sign-in. */
 export interface ProviderProfile {
@@ -27,7 +27,8 @@ export interface ProviderProfile {
  * Creates the ShareRepo user for a first sign-in, before the auth library stores its own profile
  * row with the same ID (decision 0006).
  */
-export async function createUserForSignIn(ctx: ServiceContext): Promise<{ userId: string }> {
+export async function createUserForSignIn(context: ServiceContext): Promise<{ userId: string }> {
+  const ctx = atOneInstant(context);
   const userId = ctx.ids.next();
   const created = auditEvent(
     "user.created",
@@ -47,10 +48,11 @@ export type SignInOutcome = "linked" | "renamed" | "refreshed";
  * updates the existing identity and never creates a new one.
  */
 export async function recordSignIn(
-  ctx: ServiceContext,
+  context: ServiceContext,
   actor: UserActor,
   profile: ProviderProfile,
 ): Promise<{ identityId: string; outcome: SignInOutcome }> {
+  const ctx = atOneInstant(context);
   const now = ctx.clock.now();
   const audit = (targetId: string) => ({ actor: asAuditActor(actor), targetId });
   const signedIn = auditEvent(
@@ -130,7 +132,8 @@ export async function recordSignIn(
 }
 
 /** Records a sign-out. The session itself is removed by the auth library. */
-export async function recordSignOut(ctx: ServiceContext, actor: UserActor): Promise<void> {
+export async function recordSignOut(context: ServiceContext, actor: UserActor): Promise<void> {
+  const ctx = atOneInstant(context);
   await appendAuditEvents(ctx.db, [
     auditEvent(
       "auth.signed_out",

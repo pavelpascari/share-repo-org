@@ -12,7 +12,7 @@ import {
   type WorkspaceStatus,
 } from "@sharerepo/domain";
 import { ConflictError, ForbiddenError, NotFoundError } from "@sharerepo/platform";
-import { asAuditActor, type ServiceContext, type UserActor } from "./context.ts";
+import { asAuditActor, atOneInstant, type ServiceContext, type UserActor } from "./context.ts";
 
 /** What a member sees of a workspace. */
 export interface WorkspaceSummary {
@@ -41,10 +41,11 @@ const summary = (found: repo.WorkspaceForMember): WorkspaceSummary => ({
 
 /** Creates a workspace owned by the actor. Invalid or taken values come back as field errors. */
 export async function createWorkspace(
-  ctx: ServiceContext,
+  context: ServiceContext,
   actor: UserActor,
   input: { readonly name: string; readonly slug: string },
 ): Promise<WorkspaceResult> {
+  const ctx = atOneInstant(context);
   const name = parseWorkspaceName(input.name);
   const slug = parseWorkspaceSlug(input.slug);
   const errors: WorkspaceFieldError[] = [];
@@ -81,9 +82,10 @@ export async function createWorkspace(
 
 /** The actor's workspaces, ordered by name. */
 export async function listMyWorkspaces(
-  ctx: ServiceContext,
+  context: ServiceContext,
   actor: UserActor,
 ): Promise<WorkspaceSummary[]> {
+  const ctx = atOneInstant(context);
   return (await repo.listWorkspacesForUser(ctx.db, actor.userId)).map(summary);
 }
 
@@ -94,11 +96,12 @@ export async function listMyWorkspaces(
  * Forbidden.
  */
 export async function openWorkspace(
-  ctx: ServiceContext,
+  context: ServiceContext,
   actor: UserActor,
   slug: string,
   permission: WorkspacePermission,
 ): Promise<{ scope: WorkspaceScope; workspace: WorkspaceSummary }> {
+  const ctx = atOneInstant(context);
   const parsed = parseWorkspaceSlug(slug);
   const found = parsed.ok
     ? await repo.findWorkspaceForMemberBySlug(ctx.db, { slug: parsed.value, userId: actor.userId })
@@ -118,11 +121,12 @@ export async function openWorkspace(
 
 /** Renames a workspace the actor manages. An unchanged name is a no-op and writes nothing. */
 export async function renameWorkspace(
-  ctx: ServiceContext,
+  context: ServiceContext,
   actor: UserActor,
   slug: string,
   input: { readonly name: string },
 ): Promise<WorkspaceResult> {
+  const ctx = atOneInstant(context);
   const { scope, workspace } = await openWorkspace(ctx, actor, slug, "workspace.manage");
   const name = parseWorkspaceName(input.name);
   if (!name.ok) return { ok: false, errors: [{ field: "name", code: name.error }] };
@@ -148,11 +152,12 @@ export async function renameWorkspace(
  * is the building block it will use.
  */
 export async function addWorkspaceMember(
-  ctx: ServiceContext,
+  context: ServiceContext,
   actor: UserActor,
   slug: string,
   member: { readonly userId: string; readonly role: WorkspaceRole },
 ): Promise<void> {
+  const ctx = atOneInstant(context);
   const { scope } = await openWorkspace(ctx, actor, slug, "workspace.manage");
   const result = await repo.addWorkspaceMember(
     ctx.db,

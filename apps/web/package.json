@@ -12,6 +12,7 @@
     "typecheck": "wrangler types --check && react-router typegen && tsc -p . && tsc -p e2e"
   },
   "dependencies": {
+    "@sharerepo/application": "workspace:*",
     "@sharerepo/db": "workspace:*",
     "@sharerepo/domain": "workspace:*",
     "@sharerepo/platform": "workspace:*",
@@ -19,6 +20,7 @@
     "drizzle-orm": "0.45.4",
     "isbot": "5.2.2",
     "react": "19.3.1",
+    "react-aria-components": "1.22.1",
     "react-dom": "19.3.1",
     "react-router": "8.4.0",
     "zod": "4.6.7"

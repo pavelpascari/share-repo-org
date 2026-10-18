@@ -15,3 +15,12 @@ export const asAuditActor = (actor: UserActor): AuditEvent["actor"] => ({
   type: "user",
   id: actor.userId,
 });
+
+/**
+ * The same context with time frozen at one instant, so every row and audit event written by one
+ * service call carries the same timestamp, and audit order follows write order.
+ */
+export function atOneInstant(ctx: ServiceContext): ServiceContext {
+  const now = ctx.clock.now();
+  return { ...ctx, clock: { now: () => now } };
+}
