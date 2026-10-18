@@ -11,3 +11,5 @@ Each record has: **Status**, **Context**, **Decision**, **Consequences**.
 | [0003](0003-d1-batches-and-transactional-outbox.md) | D1 atomicity through batches and a transactional outbox | Proposed |
 | [0004](0004-workspace-scoped-composite-foreign-keys.md) | Workspace-scoped composite foreign keys | Proposed |
 | [0005](0005-coverage-ratchet.md) | Coverage floors and never-decrease ratchet | Accepted |
+| [0006](0006-authentication-with-better-auth.md) | Better Auth tables, GitHub sign-in via `genericOAuth`, E2E seam | Proposed |
+| [0007](0007-audit-events.md) | Append-only audit events written in the same batch | Proposed |

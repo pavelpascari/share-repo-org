@@ -47,7 +47,7 @@ Pin exact versions in `package.json` (no `^`) and upgrade deliberately through R
 
 ## Open items
 
-- **E2E sign-in (Phase 1).** Better Auth's GitHub provider hardcodes GitHub URLs. Options: (a) `genericOAuth` against a local fake in the E2E build only, which exercises a different callback path; (b) keep the real GitHub social provider and redirect its outbound token/user calls to a fake server through an E2E-only `fetch` seam, plus Playwright routing of the browser authorize redirect. Decide in Phase 1 with a spike; prefer (b) if it stays small, because it tests the production path.
+- ~~E2E sign-in (Phase 1)~~ — **resolved by [0006](0006-authentication-with-better-auth.md):** `genericOAuth` with our own GitHub client and endpoint overrides that only an `e2e` environment accepts.
 - ~~Drizzle-kit 0.31 migration folder layout with `wrangler d1 migrations apply`~~ — **resolved in Phase 0 T3 (verified 2026-10-18 with drizzle-kit 0.31.11, Wrangler 4.151.1, @cloudflare/vitest-plugin 1.4.4).**
   - `drizzle-kit generate` (`dialect: "sqlite"`) writes flat `migrations/NNNN_name.sql` files, plus `migrations/meta/{_journal.json,NNNN_snapshot.json}`.
   - `wrangler d1 migrations apply DB --local -c apps/web/wrangler.jsonc` applies only the top-level `*.sql` files and ignores `meta/`. The `--> statement-breakpoint` markers are plain SQL comments. Local state is written under `apps/web/.wrangler`. Re-applying reports "No migrations to apply".
