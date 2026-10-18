@@ -1,0 +1,5 @@
+{
+  "message": "This installation has been suspended",
+  "documentation_url": "https://docs.github.com/rest/apps/apps#create-an-installation-access-token-for-an-app",
+  "status": "403"
+}
