@@ -21,9 +21,9 @@ Pin exact versions in `package.json` (no `^`) and upgrade deliberately through R
 | Workers dev/build | @cloudflare/vite-plugin | 1.64.0 | |
 | Workers CLI | wrangler | **4.151.1** | Exact match with the version the test plugin pins, to avoid duplicate Miniflare/workerd copies. |
 | Types | @cloudflare/workers-types | 5.x (generated `wrangler types` preferred) | Wrangler peers on v5. |
-| Test runner | vitest, @vitest/coverage-istanbul | **4.1.12** | Stryker reports every covered mutant as survived on Vitest 5 (stryker-js #6210). One Vitest version across all packages. Move to 5 when fixed. |
+| Test runner | vitest, @vitest/coverage-v8 | **4.1.12** | Stryker reports every covered mutant as survived on Vitest 5 (stryker-js #6210). One Vitest version across all packages. Move to 5 when fixed. |
 | Workers tests | **@cloudflare/vitest-plugin** | 1.4.4 | Replaces the deprecated `@cloudflare/vitest-pool-workers`. Configured with `cloudflareTest()` in plain `defineProject`. |
-| Coverage provider | Istanbul | — | Works in both Node and Workers projects with merged reports. V8 support in the Workers plugin arrived on 2026-10-08 (1.4.0); revisit after it has matured. |
+| Coverage provider | **V8** | — | Supported in the Workers plugin since 1.4.0. Istanbul was the initial choice but, under the Workers plugin, intermittently double-counted a module reused across test files (source vs transpiled positions), making thresholds flaky; V8 produced byte-identical summaries across repeated runs. |
 | Mutation testing | @stryker-mutator/core, vitest-runner | 10.0.0 | Used only on `packages/domain` (Node project). |
 | Property testing | fast-check | 4.10.2 | |
 | ORM | drizzle-orm / drizzle-kit | **0.45.4 / 0.31.11** (stable) | Drizzle's D1 page recommends the 1.0 RC; prefer stable `latest` for a production schema. Better Auth peers on both. Revisit at 1.0 GA. |
@@ -48,7 +48,11 @@ Pin exact versions in `package.json` (no `^`) and upgrade deliberately through R
 ## Open items
 
 - **E2E sign-in (Phase 1).** Better Auth's GitHub provider hardcodes GitHub URLs. Options: (a) `genericOAuth` against a local fake in the E2E build only, which exercises a different callback path; (b) keep the real GitHub social provider and redirect its outbound token/user calls to a fake server through an E2E-only `fetch` seam, plus Playwright routing of the browser authorize redirect. Decide in Phase 1 with a spike; prefer (b) if it stays small, because it tests the production path.
-- Drizzle-kit 0.31 migration folder layout with `wrangler d1 migrations apply` — confirm in Phase 0 task 3.
+- ~~Drizzle-kit 0.31 migration folder layout with `wrangler d1 migrations apply`~~ — **resolved in Phase 0 T3 (verified 2026-10-18 with drizzle-kit 0.31.11, Wrangler 4.151.1, @cloudflare/vitest-plugin 1.4.4).**
+  - `drizzle-kit generate` (`dialect: "sqlite"`) writes flat `migrations/NNNN_name.sql` files, plus `migrations/meta/{_journal.json,NNNN_snapshot.json}`.
+  - `wrangler d1 migrations apply DB --local -c apps/web/wrangler.jsonc` applies only the top-level `*.sql` files and ignores `meta/`. The `--> statement-breakpoint` markers are plain SQL comments. Local state is written under `apps/web/.wrangler`. Re-applying reports "No migrations to apply".
+  - `readD1Migrations(dir)` (string form) reads the same top-level `*.sql` files, and `applyD1Migrations` applies them per test file. No `migrations_pattern` is needed.
+  - Drizzle 0.45 emits named `CHECK` constraints itself, so the generated SQL needs no hand edits, and a second `generate` reports no changes. drizzle-kit 1.0 moves to one folder per migration; revisit this item when upgrading.
 
 ## Consequences
 

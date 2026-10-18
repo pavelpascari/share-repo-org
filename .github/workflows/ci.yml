@@ -1,0 +1,168 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CURRENT_PHASE: "0"
+
+jobs:
+  checks:
+    name: Lint, types, tests, coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm typecheck
+      - name: Tests with coverage floors
+        run: pnpm exec vitest run --coverage
+      - name: Coverage ratchet
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          COVERAGE_DECREASE_REASON: ${{ contains(github.event.pull_request.labels.*.name, 'coverage-decrease') && 'coverage-decrease label approved in review' || '' }}
+        run: |
+          # A base without thresholds (before Phase 0 lands) has nothing to ratchet against.
+          if git show "origin/${BASE_REF}:coverage-thresholds.json" > "$RUNNER_TEMP/base-thresholds.json" 2>/dev/null; then
+            pnpm coverage:check --base "$RUNNER_TEMP/base-thresholds.json"
+          else
+            pnpm coverage:check
+          fi
+      - name: Scenario catalog
+        run: pnpm check:scenarios --phase "$CURRENT_PHASE"
+      - name: Migrations apply from empty and match the schema
+        run: pnpm db:check
+      - run: pnpm build
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: coverage
+          path: coverage/
+          if-no-files-found: ignore
+
+  mutation:
+    name: Mutation tests (domain)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Detect domain changes
+        id: changes
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          if [ "$EVENT_NAME" != "pull_request" ] \
+            || ! git diff --quiet "origin/${BASE_REF}...HEAD" -- packages/domain coverage-thresholds.json; then
+            echo "domain=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: pnpm/action-setup@v6
+        if: steps.changes.outputs.domain == 'true'
+      - uses: actions/setup-node@v7
+        if: steps.changes.outputs.domain == 'true'
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - if: steps.changes.outputs.domain == 'true'
+        run: pnpm install --frozen-lockfile
+      - if: steps.changes.outputs.domain == 'true'
+        run: pnpm test:mutation
+      - name: Mutation ratchet
+        if: steps.changes.outputs.domain == 'true'
+        run: pnpm coverage:check --mutation packages/domain/reports/mutation/mutation.json
+
+  e2e:
+    name: End-to-end
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm test:e2e
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: playwright-report
+          path: playwright-report/
+
+  # Deployment runs only on main after every gate passes, and only once the
+  # repository variable DEPLOY_ENABLED is "true" (set after Cloudflare is configured;
+  # see docs/deployment.md). Production requires approval on the "production" environment.
+  deploy-dev:
+    name: Deploy (dev)
+    needs: [checks, mutation, e2e]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.DEPLOY_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    environment: dev
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Apply migrations
+        run: pnpm db:migrate:dev
+      - name: Deploy jobs
+        run: pnpm --filter @sharerepo/jobs run deploy
+      - name: Deploy web
+        run: pnpm --filter @sharerepo/web build && pnpm --filter @sharerepo/web run deploy
+      - name: Smoke test
+        env:
+          WEB_URL: ${{ vars.WEB_URL }}
+        run: curl --fail --silent --show-error --retry 5 --retry-delay 3 "$WEB_URL/readyz"
+
+  deploy-production:
+    name: Deploy (production)
+    needs: [deploy-dev]
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_ENV: production
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Apply migrations
+        run: pnpm db:migrate:prod
+      - name: Deploy jobs
+        run: pnpm --filter @sharerepo/jobs run deploy --env production
+      - name: Deploy web
+        run: pnpm --filter @sharerepo/web build && pnpm --filter @sharerepo/web run deploy
+      - name: Smoke test
+        env:
+          WEB_URL: ${{ vars.WEB_URL }}
+        run: curl --fail --silent --show-error --retry 5 --retry-delay 3 "$WEB_URL/readyz"

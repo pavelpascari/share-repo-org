@@ -1,0 +1,14 @@
+// Test-only Worker environment for this package's Workers-runtime tests. Not deployed.
+{
+  "name": "sharerepo-db-test",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "sharerepo-test",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "./migrations"
+    }
+  ]
+}

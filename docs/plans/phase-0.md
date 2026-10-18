@@ -46,7 +46,7 @@ Paddle, GitHub App, Better Auth, Queues, Workflows, provisioning, and UI beyond 
 ├── scripts/
 │   ├── coverage-ratchet.ts      # CI checks 2 and 3 from decision 0005
 │   └── scenario-catalog.ts      # checks scenario names in testing-strategy.md exist as tests
-├── .github/workflows/ci.yml, deploy.yml
+├── .github/workflows/ci.yml   (checks, then gated deploys)
 ├── biome.json, tsconfig.base.json, vitest.config.ts, playwright.config.ts
 ├── pnpm-workspace.yaml, package.json, .nvmrc
 └── docs/
@@ -75,8 +75,8 @@ Why each package exists now:
   - `users(id, created_at, updated_at)`. This table is deliberately minimal; Better Auth table ownership is decided in Phase 1.
   - `workspaces(id, slug UNIQUE CHECK(format), name CHECK(length), status CHECK IN ('active','suspended'), created_at, updated_at)`.
   - `workspace_memberships(workspace_id FK, user_id FK, role CHECK IN ('owner','member'), created_at, PRIMARY KEY(workspace_id, user_id))`.
-- **Vitest:** a root `vitest.config.ts` with `test.projects` covering `domain` and `platform` (Node), `db`, `testing`, `web` and `jobs` (Workers, through `cloudflareTest()`). Coverage uses Istanbul, merged at the root, with per-package `thresholds` that `autoUpdate` rounds down to one decimal.
-- **Logging:** JSON lines through `console.log`, with a redaction allowlist. Fields are `ts, level, msg, correlationId, workspaceId?, …`. The correlation ID comes from an `x-request-id` header when present and valid, otherwise it is generated. It is echoed in the response header.
+- **Vitest:** a root `vitest.config.ts` with `test.projects` covering `domain` and `platform` (Node), `db`, `testing`, `web` and `jobs` (Workers, through `cloudflareTest()`). Coverage uses V8 (see 0001 for why not Istanbul), merged at the root, with per-package thresholds read from `coverage-thresholds.json`, which `scripts/coverage-ratchet.ts update` raises (rounded down to 0.1).
+- **Logging:** JSON lines through `console`, with key-based redaction from a denylist. Fields are `ts, level, msg, correlationId, workspaceId?, …`. The correlation ID comes from an `x-request-id` header when present and valid, otherwise it is generated. It is echoed in the response header.
 
 ## Tasks and parallelisation
 
@@ -84,10 +84,12 @@ Task 1 runs first and alone: it creates every config file and installs **all** P
 
 ```text
 T1 skeleton ──┬─ T2 test harness + ratchet ─┐
-              ├─ T3 db schema + migrations ─┼─ T6 web worker ── T7 E2E harness ─┐
-              ├─ T4 platform ───────────────┤                                  ├─ T9 docs + final verification
-              └─ T5 jobs worker ────────────┘   T8 CI (after T2) ──────────────┘
+              ├─ T3 db schema + migrations ─┼─┬─ T5 jobs worker ─────────────────┐
+              └─ T4 platform ───────────────┘ └─ T6 web worker ── T7 E2E harness ─┼─ T9 docs + final verification
+                                                T8 CI (after T2) ─────────────────┘
 ```
+
+T5 depends on T4 because the scheduled heartbeat uses the platform logger, so it runs in the second wave alongside T6. Only the lead edits the root `package.json`; parallel tasks report the scripts they need.
 
 Each task is test-first: write the failing tests listed, then implement.
 
@@ -109,7 +111,7 @@ Each task is test-first: write the failing tests listed, then implement.
   - `scripts/scenario-catalog` tests: parses the table in `testing-strategy.md` and reports scenarios that are due but missing.
 - **Work:**
   - `packages/testing`: `FakeClock`, `SequentialIds`, `captureLogs()`, `withSecretCanaries()` with an `expectNoCanaryLeak()` assertion, and `freshWorkspaceIds()` to cope with per-file D1 isolation;
-  - Istanbul coverage configuration with per-package floors from [0005](../decisions/0005-coverage-ratchet.md);
+  - coverage configuration with per-package floors from [0005](../decisions/0005-coverage-ratchet.md);
   - Stryker config for `packages/domain` with `thresholds.break` ratcheted the same way.
 - **Done when:** `pnpm test:coverage` and `pnpm test:mutation` run locally, and the ratchet scripts are covered at ≥ 90%.
 
@@ -171,7 +173,7 @@ Each task is test-first: write the failing tests listed, then implement.
   - migration validation (apply all migrations to an empty local D1, then check that `drizzle-kit generate` produces no diff);
   - `pnpm build`, `pnpm test:e2e`;
   - `pnpm test:mutation` when `packages/domain` changed.
-- **`deploy.yml` on `main`:**
+- **Deploy jobs in `ci.yml` on `main`** (gated by the `DEPLOY_ENABLED` repository variable until Cloudflare is configured):
   - repeat the CI gates;
   - apply migrations to dev, then deploy jobs and web to dev, then smoke `/readyz`;
   - production is a manual approval through a GitHub environment, running the same steps.
@@ -193,7 +195,7 @@ Each task is test-first: write the failing tests listed, then implement.
 | `lint` / `format` | Biome check / write |
 | `typecheck` | `tsc -b` across the workspace plus React Router typegen |
 | `test` | All Vitest projects |
-| `test:coverage` | Merged Istanbul coverage with thresholds and auto-update |
+| `test:coverage` | Merged V8 coverage with thresholds, then raises committed thresholds |
 | `test:mutation` | Stryker on `packages/domain` |
 | `test:e2e` | Playwright against local Workers |
 | `test:sandbox` | Placeholder that exits cleanly until Phase 2 |

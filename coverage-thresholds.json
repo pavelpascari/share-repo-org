@@ -1,0 +1,50 @@
+{
+  "$comment": "Coverage ratchet (docs/decisions/0005-coverage-ratchet.md). Values only go up: run `pnpm test:coverage` and commit this file. Add a new scope at its floor.",
+  "coverage": {
+    "packages/domain/src/**": {
+      "lines": 100,
+      "branches": 100,
+      "functions": 100,
+      "statements": 100
+    },
+    "packages/db/src/**": {
+      "lines": 100,
+      "branches": 100,
+      "functions": 100,
+      "statements": 100
+    },
+    "packages/platform/src/**": {
+      "lines": 100,
+      "branches": 96.4,
+      "functions": 100,
+      "statements": 99.2
+    },
+    "packages/testing/src/**": {
+      "lines": 100,
+      "branches": 99,
+      "functions": 100,
+      "statements": 100
+    },
+    "apps/jobs/src/**": {
+      "lines": 100,
+      "branches": 100,
+      "functions": 100,
+      "statements": 100
+    },
+    "apps/web/workers/**": {
+      "lines": 100,
+      "branches": 100,
+      "functions": 100,
+      "statements": 100
+    },
+    "scripts/*.ts": {
+      "lines": 100,
+      "branches": 95,
+      "functions": 100,
+      "statements": 98.9
+    }
+  },
+  "mutation": {
+    "domain": 100
+  }
+}

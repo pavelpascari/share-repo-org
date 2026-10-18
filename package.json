@@ -1,0 +1,40 @@
+{
+  "name": "sharerepo",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.34.7",
+  "engines": {
+    "node": ">=22.22.0"
+  },
+  "scripts": {
+    "dev": "pnpm --parallel --filter @sharerepo/web --filter @sharerepo/jobs dev",
+    "build": "pnpm -r --if-present build",
+    "lint": "biome check .",
+    "format": "biome check --write .",
+    "typecheck": "pnpm -r --if-present typecheck && tsc -p scripts && tsc -p .",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage && node scripts/coverage-ratchet.ts update",
+    "coverage:update": "node scripts/coverage-ratchet.ts update",
+    "coverage:check": "node scripts/coverage-ratchet.ts check",
+    "test:mutation": "pnpm --filter @sharerepo/domain test:mutation",
+    "mutation:update": "node scripts/coverage-ratchet.ts update --mutation packages/domain/reports/mutation/mutation.json",
+    "test:e2e": "playwright test",
+    "test:sandbox": "node -e \"console.log('No sandbox suites until Phase 2.')\"",
+    "check:scenarios": "node scripts/scenario-catalog.ts",
+    "db:generate": "pnpm --filter @sharerepo/db db:generate",
+    "db:migrate:local": "pnpm --filter @sharerepo/db db:migrate:local",
+    "db:migrate:dev": "pnpm --filter @sharerepo/db db:migrate:dev",
+    "db:migrate:prod": "pnpm --filter @sharerepo/db db:migrate:prod",
+    "db:check": "pnpm db:generate && git diff --exit-code -- packages/db/migrations && git status --porcelain -- packages/db/migrations | (! grep .)"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.15",
+    "@cloudflare/vitest-plugin": "1.4.4",
+    "@playwright/test": "1.64.1",
+    "@types/node": "24.19.2",
+    "@vitest/coverage-v8": "4.1.12",
+    "typescript": "6.0.3",
+    "vitest": "4.1.12",
+    "wrangler": "4.151.1"
+  }
+}
