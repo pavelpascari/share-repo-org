@@ -15,6 +15,13 @@
       "when": 1792343281081,
       "tag": "0001_identity_and_audit",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1792349613342,
+      "tag": "0002_github_connections",
+      "breakpoints": true
     }
   ]
 }

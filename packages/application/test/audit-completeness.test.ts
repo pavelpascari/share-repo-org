@@ -124,5 +124,6 @@ describe("audit/every-state-change-has-audit-event", () => {
       }),
       { numRuns: 30 },
     );
-  });
+    // Each run snapshots every table around every command; this is slow by design.
+  }, 60_000);
 });

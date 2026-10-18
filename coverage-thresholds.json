@@ -19,6 +19,12 @@
       "functions": 100,
       "statements": 98.7
     },
+    "packages/integrations/src/**": {
+      "lines": 90,
+      "branches": 90,
+      "functions": 90,
+      "statements": 90
+    },
     "packages/platform/src/**": {
       "lines": 100,
       "branches": 96.4,

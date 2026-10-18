@@ -19,10 +19,13 @@ describe("drizzle schema matches the migrated database", () => {
       const migratedChecks = [...ddl.matchAll(/CONSTRAINT "([^"]+)" CHECK/g)].map((m) => m[1]);
       expect(config.checks.map((check) => check.name).sort()).toEqual(migratedChecks.sort());
 
-      const { results } = await env.DB.prepare(`PRAGMA foreign_key_list("${name}")`).all<{
+      // One row per column: a composite foreign key spans several rows with the same `id`.
+      const { results: rows } = await env.DB.prepare(`PRAGMA foreign_key_list("${name}")`).all<{
+        id: number;
         table: string;
         on_delete: string;
       }>();
+      const results = [...new Map(rows.map((row) => [row.id, row])).values()];
       expect(
         config.foreignKeys.map((fk) => ({
           table: getTableConfig(fk.reference().foreignTable).name,

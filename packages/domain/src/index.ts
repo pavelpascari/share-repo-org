@@ -17,6 +17,10 @@ export {
 } from "./audit.ts";
 export type { WorkspaceMembership, WorkspacePermission, WorkspaceScope } from "./authorization.ts";
 export { authorizeMembership, roleAllows, WORKSPACE_PERMISSIONS } from "./authorization.ts";
+export type { ConnectableAccountType, ConnectionStatus } from "./connection.ts";
+export { CONNECTABLE_ACCOUNT_TYPES, CONNECTION_STATUSES } from "./connection.ts";
+export type { ExternalEventState, OutboxKind } from "./external-event.ts";
+export { EXTERNAL_EVENT_STATES, OUTBOX_KINDS } from "./external-event.ts";
 export type {
   GitHubLogin,
   GitHubLoginError,
@@ -31,6 +35,8 @@ export {
 } from "./identity.ts";
 export type { IdGenerator } from "./ids.ts";
 export { randomIds } from "./ids.ts";
+export type { ResourceSelection, ResourceType } from "./resource.ts";
+export { RESOURCE_SELECTIONS, RESOURCE_TYPES } from "./resource.ts";
 export type { Clock, Instant } from "./time.ts";
 export { systemClock } from "./time.ts";
 export type {

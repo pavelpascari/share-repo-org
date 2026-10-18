@@ -1,7 +1,7 @@
 import { parseEnv } from "@sharerepo/platform";
 import { z } from "zod";
 
-export const JOBS_ENVIRONMENTS = ["development", "production"] as const;
+export const JOBS_ENVIRONMENTS = ["development", "e2e", "production"] as const;
 export type JobsEnvironment = (typeof JOBS_ENVIRONMENTS)[number];
 
 export interface JobsConfig {

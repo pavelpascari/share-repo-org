@@ -11,10 +11,23 @@
   "vars": {
     "ENVIRONMENT": "development",
     "BETTER_AUTH_URL": "http://localhost:5173",
-    "GITHUB_CLIENT_ID": "REPLACE_WITH_DEV_OAUTH_APP_CLIENT_ID"
+    "GITHUB_CLIENT_ID": "REPLACE_WITH_DEV_OAUTH_APP_CLIENT_ID",
+    // The GitHub App (Phase 2; docs/runbooks/github-app-setup.md). Empty disables connecting
+    // GitHub in local development; production requires it.
+    "GITHUB_APP_ID": "",
+    "GITHUB_APP_SLUG": ""
   },
   // Set with `wrangler secret put`; locally in .dev.vars (decision 0006).
-  "secrets": { "required": ["BETTER_AUTH_SECRET", "GITHUB_CLIENT_SECRET"] },
+  "secrets": {
+    "required": [
+      "BETTER_AUTH_SECRET",
+      "GITHUB_CLIENT_SECRET",
+      "GITHUB_APP_PRIVATE_KEY",
+      "GITHUB_WEBHOOK_SECRET"
+    ]
+  },
+  // Webhook receipts hand work to the jobs Worker (decision 0003); the outbox is the safety net.
+  "queues": { "producers": [{ "binding": "EVENTS", "queue": "sharerepo-events-dev" }] },
   // Shared database; see docs/decisions/0002. Replace the ID after `wrangler d1 create sharerepo-dev`.
   "d1_databases": [
     {
@@ -30,9 +43,19 @@
       "vars": {
         "ENVIRONMENT": "production",
         "BETTER_AUTH_URL": "https://REPLACE-WITH-PRODUCTION-HOST.invalid",
-        "GITHUB_CLIENT_ID": "REPLACE_WITH_PRODUCTION_OAUTH_APP_CLIENT_ID"
+        "GITHUB_CLIENT_ID": "REPLACE_WITH_PRODUCTION_OAUTH_APP_CLIENT_ID",
+        "GITHUB_APP_ID": "REPLACE_WITH_PRODUCTION_APP_ID",
+        "GITHUB_APP_SLUG": "REPLACE_WITH_PRODUCTION_APP_SLUG"
       },
-      "secrets": { "required": ["BETTER_AUTH_SECRET", "GITHUB_CLIENT_SECRET"] },
+      "secrets": {
+        "required": [
+          "BETTER_AUTH_SECRET",
+          "GITHUB_CLIENT_SECRET",
+          "GITHUB_APP_PRIVATE_KEY",
+          "GITHUB_WEBHOOK_SECRET"
+        ]
+      },
+      "queues": { "producers": [{ "binding": "EVENTS", "queue": "sharerepo-events-prod" }] },
       // Replace the ID after `wrangler d1 create sharerepo-prod`.
       "d1_databases": [
         {
@@ -52,9 +75,19 @@
         "BETTER_AUTH_URL": "http://localhost:5180",
         "GITHUB_CLIENT_ID": "e2e-client",
         "GITHUB_OAUTH_BASE_URL": "http://localhost:5190",
-        "GITHUB_API_BASE_URL": "http://localhost:5190/api"
+        "GITHUB_API_BASE_URL": "http://localhost:5190/api",
+        "GITHUB_APP_ID": "1000",
+        "GITHUB_APP_SLUG": "sharerepo-e2e"
       },
-      "secrets": { "required": ["BETTER_AUTH_SECRET", "GITHUB_CLIENT_SECRET"] },
+      "secrets": {
+        "required": [
+          "BETTER_AUTH_SECRET",
+          "GITHUB_CLIENT_SECRET",
+          "GITHUB_APP_PRIVATE_KEY",
+          "GITHUB_WEBHOOK_SECRET"
+        ]
+      },
+      "queues": { "producers": [{ "binding": "EVENTS", "queue": "sharerepo-events-dev" }] },
       // Same local database as the top level, so E2E migrations and the jobs Worker share it.
       "d1_databases": [
         {
