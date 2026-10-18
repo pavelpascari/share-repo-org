@@ -124,6 +124,9 @@ importers:
       '@sharerepo/domain':
         specifier: workspace:*
         version: link:../domain
+      '@sharerepo/integrations':
+        specifier: workspace:*
+        version: link:../integrations
       '@sharerepo/platform':
         specifier: workspace:*
         version: link:../platform

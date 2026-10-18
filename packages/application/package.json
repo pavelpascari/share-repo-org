@@ -12,6 +12,7 @@
   "dependencies": {
     "@sharerepo/db": "workspace:*",
     "@sharerepo/domain": "workspace:*",
+    "@sharerepo/integrations": "workspace:*",
     "@sharerepo/platform": "workspace:*",
     "zod": "4.6.7"
   },
