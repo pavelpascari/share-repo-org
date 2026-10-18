@@ -76,7 +76,7 @@ Why each package exists now:
   - `workspaces(id, slug UNIQUE CHECK(format), name CHECK(length), status CHECK IN ('active','suspended'), created_at, updated_at)`.
   - `workspace_memberships(workspace_id FK, user_id FK, role CHECK IN ('owner','member'), created_at, PRIMARY KEY(workspace_id, user_id))`.
 - **Vitest:** a root `vitest.config.ts` with `test.projects` covering `domain` and `platform` (Node), `db`, `testing`, `web` and `jobs` (Workers, through `cloudflareTest()`). Coverage uses Istanbul, merged at the root, with per-package `thresholds` that `autoUpdate` rounds down to one decimal.
-- **Logging:** JSON lines through `console.log`, with a redaction allowlist. Fields are `ts, level, msg, correlationId, workspaceId?, …`. The correlation ID comes from an `x-request-id` header when present and valid, otherwise it is generated. It is echoed in the response header.
+- **Logging:** JSON lines through `console`, with key-based redaction from a denylist. Fields are `ts, level, msg, correlationId, workspaceId?, …`. The correlation ID comes from an `x-request-id` header when present and valid, otherwise it is generated. It is echoed in the response header.
 
 ## Tasks and parallelisation
 
@@ -84,10 +84,12 @@ Task 1 runs first and alone: it creates every config file and installs **all** P
 
 ```text
 T1 skeleton ──┬─ T2 test harness + ratchet ─┐
-              ├─ T3 db schema + migrations ─┼─ T6 web worker ── T7 E2E harness ─┐
-              ├─ T4 platform ───────────────┤                                  ├─ T9 docs + final verification
-              └─ T5 jobs worker ────────────┘   T8 CI (after T2) ──────────────┘
+              ├─ T3 db schema + migrations ─┼─┬─ T5 jobs worker ─────────────────┐
+              └─ T4 platform ───────────────┘ └─ T6 web worker ── T7 E2E harness ─┼─ T9 docs + final verification
+                                                T8 CI (after T2) ─────────────────┘
 ```
+
+T5 depends on T4 because the scheduled heartbeat uses the platform logger, so it runs in the second wave alongside T6. Only the lead edits the root `package.json`; parallel tasks report the scripts they need.
 
 Each task is test-first: write the failing tests listed, then implement.
 
