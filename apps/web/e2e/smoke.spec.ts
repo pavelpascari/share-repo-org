@@ -20,11 +20,11 @@ test("readiness reports D1 through the application boundary", async ({ request }
   expect(await response.json()).toEqual({ status: "ready", checks: { d1: "ok" } });
 });
 
-test("a valid incoming request ID is echoed back", async ({ request }) => {
+test("the web Worker assigns its own request ID, ignoring the client's", async ({ request }) => {
   const response = await request.get("/healthz", {
     headers: { "x-request-id": "e2e-request-0001" },
   });
-  expect(response.headers()["x-request-id"]).toBe("e2e-request-0001");
+  expect(response.headers()["x-request-id"]).toMatch(/^[0-9a-f-]{36}$/);
 });
 
 test("the jobs Worker answers its health check", async ({ request }) => {

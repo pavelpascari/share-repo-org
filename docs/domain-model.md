@@ -110,7 +110,8 @@ ExternalIdentity
   provider
   externalUserId
   usernameSnapshot
-  profileSnapshot
+  displayNameSnapshot
+  avatarUrlSnapshot
   verifiedAt
 
 Workspace
@@ -237,7 +238,8 @@ ExternalEvent
 
 AuditEvent
   id
-  workspaceId
+  scope            (workspace | account; decision 0007)
+  workspaceId      (null for account-scoped events)
   actorType
   actorId
   action

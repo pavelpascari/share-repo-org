@@ -2,7 +2,10 @@ import type { Instant } from "@sharerepo/domain";
 import { sql } from "drizzle-orm";
 import { check, integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
 
-/** Global (not workspace-owned). Deliberately minimal until Better Auth table ownership is decided in Phase 1. */
+/**
+ * Global (not workspace-owned) and deliberately minimal: login profile data lives in `auth_users`
+ * and provider accounts in `external_identities` (decision 0006).
+ */
 export const users = sqliteTable(
   "users",
   {

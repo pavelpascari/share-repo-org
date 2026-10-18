@@ -15,16 +15,22 @@ Drizzle schema, SQL migrations, and workspace-scoped repositories for the shared
   - a reference to another tenant table is a composite foreign key, `(workspace_id, x_id) REFERENCES x (workspace_id, id)`, so the database rejects cross-workspace links.
 
   `test/schema-conformance.test.ts` enforces these rules on the migrated schema. Exemptions must be listed there with a reason.
-- **Global tables** (`users`, and later `external_identities`) have no `workspace_id` and use ordinary foreign keys.
+- **Global tables** (`users`, `external_identities`, and Better Auth's `auth_*` tables) have no `workspace_id` and use ordinary foreign keys.
+  - `auth_*` belong to Better Auth ([0006](../../docs/decisions/0006-authentication-with-better-auth.md)): its adapter finds them by export name, their dates are `timestamp_ms`, and `auth_accounts` has a CHECK that rejects any stored OAuth token or password.
+  - `external_identities` is unique on `(provider, external_user_id)` (one provider account, one user) and on `(user_id, provider)` (one identity per provider per user). The username is a snapshot that sign-in refreshes in place.
+- **`audit_events`** ([0007](../../docs/decisions/0007-audit-events.md)) holds both workspace- and account-scoped events, so `workspace_id` is nullable and a CHECK ties it to `scope`; the conformance test exempts it by name. `BEFORE UPDATE` and `BEFORE DELETE` triggers make it append-only. Drizzle does not model triggers, so they are appended by hand to `0001_identity_and_audit.sql`, and `test/audit.test.ts` proves they exist.
 - **Deletes** use `ON DELETE RESTRICT`. Removing a workspace or user must be an explicit, audited process that revokes access first. It must never be a silent cascade.
 - **Foreign keys** are enforced by D1 by default, and in the local test runtime. A test checks that this stays true.
 
 ## Repositories
 
 - Every function takes the Drizzle instance from `createDb(env.DB)` as its first argument.
-- Functions that read tenant data take an explicit `workspaceId` and filter on it. `getWorkspaceForMember` only returns a workspace to one of its members.
+- Functions that read tenant data take an explicit `workspaceId` and filter on it. `getWorkspaceForMember` and `findWorkspaceForMemberBySlug` only return a workspace to one of its members, and return the same `null` for a non-member as for an unknown workspace. `listWorkspacesForUser` returns only the user's own memberships.
 - D1 has no interactive transactions. A write that must be atomic is a single `db.batch([...])` ([0003](../../docs/decisions/0003-d1-batches-and-transactional-outbox.md)). For example, `createWorkspace` inserts the workspace and its owner membership in one batch. If either insert fails, neither row exists.
-- Constraint violations propagate as errors. Outside `batch()`, Drizzle wraps the D1 error, which is available as `error.cause`. The wrapper's message includes the SQL and the bound parameters, so never log it verbatim.
+- **Audit in the same batch.** Every function that changes state takes the `AuditEvents` it must write (a non-empty tuple, so the type system rejects a write without one) and puts their inserts in the same `db.batch()` as the change. Either both commit or neither does. `appendAuditEvents` is only for events with no D1 state change of their own, such as a sign-out.
+- **Guarded updates.** When an UPDATE is guarded by a predicate (for example `updateExternalIdentitySnapshot`, `WHERE id = ? AND user_id = ?`), its audit inserts use the same predicate (`INSERT … SELECT … WHERE EXISTS`) in the same batch, so an update that matches no row leaves no audit row. The function reports that case as a typed result.
+- **Expected conflicts are typed results**, never raw errors: `createWorkspace` returns `{ ok: false, reason: "slug_taken" }`; `insertExternalIdentity` returns `identity_taken` or `user_already_linked`. `isUniqueViolation(error, ["table.column", …])` in `errors.ts` recognises a UNIQUE failure by its exact columns anywhere in the cause chain.
+- Other constraint violations propagate as errors. Outside `batch()`, Drizzle wraps the D1 error, which is available as `error.cause`. The wrapper's message includes the SQL and the bound parameters, so never log it verbatim: log a classification.
 - `ping(db)` runs `SELECT 1` for readiness checks.
 
 ## Migrations

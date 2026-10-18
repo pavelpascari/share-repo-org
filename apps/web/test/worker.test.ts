@@ -34,14 +34,16 @@ describe("web worker entry point", () => {
     expect(response.headers.get("cache-control")).toBe("no-store");
   });
 
-  it("echoes a valid incoming x-request-id and logs the request with it", async () => {
+  it("assigns its own request ID and logs a valid incoming one alongside it", async () => {
     const response = await get("/healthz?probe=1", { "x-request-id": "lb-request-0001" });
-    expect(response.headers.get("x-request-id")).toBe("lb-request-0001");
+    const correlationId = response.headers.get("x-request-id");
+    expect(correlationId).not.toBe("lb-request-0001");
     const line = JSON.parse(logs.lines().at(-1) ?? "{}");
     expect(line).toMatchObject({
       level: "info",
       msg: "request",
-      correlationId: "lb-request-0001",
+      correlationId,
+      clientRequestId: "lb-request-0001",
       method: "GET",
       path: "/healthz",
       status: 200,

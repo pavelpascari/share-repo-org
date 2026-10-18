@@ -13,6 +13,12 @@
       "functions": 100,
       "statements": 100
     },
+    "packages/application/src/**": {
+      "lines": 100,
+      "branches": 97.5,
+      "functions": 100,
+      "statements": 98.7
+    },
     "packages/platform/src/**": {
       "lines": 100,
       "branches": 96.4,
@@ -21,7 +27,7 @@
     },
     "packages/testing/src/**": {
       "lines": 100,
-      "branches": 99,
+      "branches": 99.1,
       "functions": 100,
       "statements": 100
     },
@@ -32,6 +38,18 @@
       "statements": 100
     },
     "apps/web/workers/**": {
+      "lines": 100,
+      "branches": 100,
+      "functions": 100,
+      "statements": 100
+    },
+    "apps/web/app/auth/**": {
+      "lines": 100,
+      "branches": 98.4,
+      "functions": 100,
+      "statements": 100
+    },
+    "apps/web/app/security/**": {
       "lines": 100,
       "branches": 100,
       "functions": 100,

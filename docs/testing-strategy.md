@@ -38,7 +38,7 @@ Build these in Phase 0–1 so later phases can be tested without retrofitting.
 | HTTP client / `fetch` | Global `fetch` | Fixture-backed or fake-backed `fetch` | Adapters are tested without network access or a version-specific request mock |
 | Queue port | Cloudflare Queues producer | In-process queue that tests drain explicitly, with redelivery and reordering | Repeated delivery and crash-between-steps scenarios |
 | Transactional outbox | D1 table drained by jobs | Same table, drained by the test | Event receipt, state change, and job intent commit in one `batch()` |
-| OAuth provider | GitHub OAuth | Local fake GitHub OAuth server | E2E signs in through OAuth with no test-only login backdoor. Better Auth hardcodes GitHub URLs, so the exact wiring is a Phase 1 decision (see [0001](decisions/0001-stack-versions.md#open-items)) |
+| OAuth provider | GitHub OAuth | Local fake GitHub OAuth server | E2E signs in through OAuth with no test-only login backdoor. Wired through endpoint overrides accepted only when `ENVIRONMENT=e2e` ([0006](decisions/0006-authentication-with-better-auth.md)) |
 | Secrets/key provider | Cloudflare secrets | Fixed test keys | Signature and envelope-encryption tests use known material |
 
 ## Fake providers
@@ -79,6 +79,10 @@ Each scenario has a stable name used as the test title so coverage of the matrix
 | `identity/username-change-keeps-identity` | Matrix: username change | Service, contract | 1 |
 | `identity/unlink-relink-moves-subject-safely` | Matrix: identity unlink/relink | Service | 4–5 |
 | `identity/unverified-email-match-grants-nothing` | Domain: identity linking | Service | 5 |
+| `claim/token-single-use-and-expiring` | [Claim threat model](security/purchase-claim-threat-model.md) T2 | Service | 5 |
+| `claim/get-never-mutates` | Claim threat model T3 | Entry point | 5 |
+| `claim/request-does-not-reveal-purchases` | Claim threat model T4 | Service | 5 |
+| `claim/request-rate-limited` | Claim threat model T5 | Service | 5 |
 | `timing/renewal-during-scheduled-revocation` | Matrix: renewal during scheduled revocation; AGENTS: reactivation | Service, entry point | 5–6 |
 | `timing/cancellation-revokes-at-effective-time` | AGENTS: cancellation timing | Domain, service | 3, 5 |
 | `timing/past-due-within-grace-keeps-access` | AGENTS: grace periods | Domain, service | 3, 5 |

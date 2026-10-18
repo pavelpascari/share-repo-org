@@ -1,0 +1,6 @@
+# Copy to .dev.vars (gitignored) for `pnpm dev`. Never commit real values.
+# Generate a secret with: openssl rand -base64 32
+BETTER_AUTH_SECRET=replace-with-at-least-32-random-characters
+# Your own GitHub OAuth App with callback http://localhost:5173/api/auth/callback/github
+GITHUB_CLIENT_ID=replace-me
+GITHUB_CLIENT_SECRET=replace-me

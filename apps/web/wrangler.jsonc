@@ -6,7 +6,15 @@
   "compatibility_flags": ["nodejs_compat"],
   "observability": { "enabled": true },
   "upload_source_maps": true,
-  "vars": { "ENVIRONMENT": "development" },
+  // Top level is local development and the deployed dev environment.
+  // Local overrides (your own GitHub OAuth App) go in .dev.vars; see .dev.vars.example.
+  "vars": {
+    "ENVIRONMENT": "development",
+    "BETTER_AUTH_URL": "http://localhost:5173",
+    "GITHUB_CLIENT_ID": "REPLACE_WITH_DEV_OAUTH_APP_CLIENT_ID"
+  },
+  // Set with `wrangler secret put`; locally in .dev.vars (decision 0006).
+  "secrets": { "required": ["BETTER_AUTH_SECRET", "GITHUB_CLIENT_SECRET"] },
   // Shared database; see docs/decisions/0002. Replace the ID after `wrangler d1 create sharerepo-dev`.
   "d1_databases": [
     {
@@ -19,13 +27,40 @@
   "env": {
     "production": {
       "name": "sharerepo-web-production",
-      "vars": { "ENVIRONMENT": "production" },
+      "vars": {
+        "ENVIRONMENT": "production",
+        "BETTER_AUTH_URL": "https://REPLACE-WITH-PRODUCTION-HOST.invalid",
+        "GITHUB_CLIENT_ID": "REPLACE_WITH_PRODUCTION_OAUTH_APP_CLIENT_ID"
+      },
+      "secrets": { "required": ["BETTER_AUTH_SECRET", "GITHUB_CLIENT_SECRET"] },
       // Replace the ID after `wrangler d1 create sharerepo-prod`.
       "d1_databases": [
         {
           "binding": "DB",
           "database_name": "sharerepo-prod",
           "database_id": "00000000-0000-0000-0000-000000000001",
+          "migrations_dir": "../../packages/db/migrations"
+        }
+      ]
+    },
+    // Local Playwright runs only; never deployed (CI deploys only the top level and production).
+    // The GitHub endpoint overrides are accepted only when ENVIRONMENT is "e2e" (decision 0006).
+    "e2e": {
+      "name": "sharerepo-web-e2e",
+      "vars": {
+        "ENVIRONMENT": "e2e",
+        "BETTER_AUTH_URL": "http://localhost:5180",
+        "GITHUB_CLIENT_ID": "e2e-client",
+        "GITHUB_OAUTH_BASE_URL": "http://localhost:5190",
+        "GITHUB_API_BASE_URL": "http://localhost:5190/api"
+      },
+      "secrets": { "required": ["BETTER_AUTH_SECRET", "GITHUB_CLIENT_SECRET"] },
+      // Same local database as the top level, so E2E migrations and the jobs Worker share it.
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "sharerepo-dev",
+          "database_id": "00000000-0000-0000-0000-000000000000",
           "migrations_dir": "../../packages/db/migrations"
         }
       ]

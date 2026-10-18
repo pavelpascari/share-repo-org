@@ -32,12 +32,16 @@ export default function App() {
 }
 
 export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
-  const notFound = isRouteErrorResponse(error) && error.status === 404;
+  const status = isRouteErrorResponse(error) ? error.status : 500;
+  const title =
+    status === 404
+      ? "Page not found"
+      : status === 403
+        ? "You don't have access to this page"
+        : "Something went wrong";
   return (
     <main className="mx-auto max-w-2xl p-8">
-      <h1 className="text-2xl font-semibold">
-        {notFound ? "Page not found" : "Something went wrong"}
-      </h1>
+      <h1 className="text-2xl font-semibold">{title}</h1>
     </main>
   );
 }

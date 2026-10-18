@@ -1,3 +1,34 @@
+export type {
+  AuditAction,
+  AuditActorType,
+  AuditContext,
+  AuditDetails,
+  AuditEvent,
+  AuditEventInput,
+  AuditScope,
+  SignInRefusalReason,
+} from "./audit.ts";
+export {
+  AUDIT_ACTIONS,
+  AUDIT_ACTOR_TYPES,
+  AUDIT_SCOPES,
+  auditEvent,
+  SIGN_IN_REFUSAL_REASONS,
+} from "./audit.ts";
+export type { WorkspaceMembership, WorkspacePermission, WorkspaceScope } from "./authorization.ts";
+export { authorizeMembership, roleAllows, WORKSPACE_PERMISSIONS } from "./authorization.ts";
+export type {
+  GitHubLogin,
+  GitHubLoginError,
+  GitHubUserId,
+  IdentityProvider,
+} from "./identity.ts";
+export {
+  GITHUB_LOGIN_MAX_LENGTH,
+  IDENTITY_PROVIDERS,
+  parseGitHubLogin,
+  parseGitHubUserId,
+} from "./identity.ts";
 export type { IdGenerator } from "./ids.ts";
 export { randomIds } from "./ids.ts";
 export type { Clock, Instant } from "./time.ts";

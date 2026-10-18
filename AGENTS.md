@@ -15,6 +15,7 @@ Start with:
 - `docs/decisions/` for architecture decisions, including pinned stack versions.
 - `docs/plans/` for the detailed plan of the current phase.
 - `docs/research/` for verified provider and tooling findings.
+- `docs/security/` for threat models.
 
 If code and documentation disagree, stop and make the conflict explicit. Do not silently reinterpret the domain model.
 

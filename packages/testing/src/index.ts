@@ -1,3 +1,11 @@
+export type { AuditedChange, TableSnapshot } from "./audit-completeness.ts";
+export {
+  changedTables,
+  expectAuditedChange,
+  expectNoChangeOnFailure,
+  snapshotTables,
+  UNAUDITED_TABLES,
+} from "./audit-completeness.ts";
 export type { SecretCanaries } from "./canaries.ts";
 export {
   CANARY_PREFIX,

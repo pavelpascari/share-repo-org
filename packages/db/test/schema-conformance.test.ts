@@ -5,7 +5,14 @@ import { type ConformanceExemption, checkTenantSchema } from "./support/schema-c
 // Tables that may break the tenant-key conventions, each with a reason. Keep this list short.
 // workspace_memberships needs no entry: its composite primary key starts with workspace_id and
 // its only workspace reference is workspace_id -> workspaces(id).
-const EXEMPTIONS: readonly ConformanceExemption[] = [];
+const EXEMPTIONS: readonly ConformanceExemption[] = [
+  {
+    table: "audit_events",
+    reason:
+      "Holds account-scoped events with no workspace, so workspace_id is nullable; workspace rows " +
+      "reference the root workspaces table directly (decision 0007).",
+  },
+];
 
 describe("isolation/composite-fk-rejects-cross-tenant-link: migrated schema", () => {
   it("every tenant table has UNIQUE(workspace_id, id) and composite tenant foreign keys", async () => {
