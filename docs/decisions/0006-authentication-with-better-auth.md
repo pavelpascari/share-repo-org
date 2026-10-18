@@ -1,6 +1,6 @@
 # 0006 — Authentication: Better Auth tables, GitHub sign-in, and the E2E seam
 
-**Status:** Proposed (Phase 1; verified by the `spike/better-auth` spike, 2026-10-18, better-auth 1.7.10)
+**Status:** Accepted (Phase 1; verified by the `spike/better-auth` spike and the Phase 1 implementation, 2026-10-18, better-auth 1.7.10)
 
 ## Context
 
@@ -55,6 +55,13 @@ GitHub sign-in uses a **GitHub OAuth App**, separate from the Phase 2 GitHub App
 - **Rate limiting:** on in every environment, with `storage: "database"`. The default in-memory store is per isolate on Workers and therefore ineffective.
 - **CSRF:** Better Auth protects only its own routes, so our React Router actions check `Origin` and `Sec-Fetch-Site`.
 - **Telemetry:** off.
+
+### Added during implementation
+
+- **Only the OAuth callback is routed** (`/api/auth/callback/github`). Sign-in and sign-out are our own same-origin-checked actions calling Better Auth server-side, so its account-linking, profile-update and session-listing endpoints are unreachable.
+- **Sign-in starts through Better Auth's handler**, not its server API, so the rate limit applies. Limits are keyed by `cf-connecting-ip`: Cloudflare sets it and overwrites client values. Without a configured header, Better Auth falls back to one shared bucket for everyone.
+- **Identity conflicts refuse the session.** If the GitHub account's identity belongs to another ShareRepo user, the session hook logs `identity_conflict` and returns false. Better Auth then redirects to the error URL instead of answering 500.
+- **One instant per service call.** Rows and audit events written by one call share a timestamp, so audit order follows write order.
 
 ## Consequences
 

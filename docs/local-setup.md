@@ -15,9 +15,19 @@ Everything in ShareRepo builds, runs, and tests on a laptop without Cloudflare c
 ```sh
 corepack enable
 pnpm install
+cp apps/web/.dev.vars.example apps/web/.dev.vars   # then fill in, see below
 pnpm db:migrate:local      # apply migrations to the local D1 used by `pnpm dev`
 pnpm dev                   # web on http://localhost:5173, jobs on http://localhost:8788
 ```
+
+### Signing in locally
+
+The web Worker refuses to start requests without its auth configuration ([decision 0006](decisions/0006-authentication-with-better-auth.md)). `apps/web/.dev.vars` (gitignored) needs:
+
+- `BETTER_AUTH_SECRET`: any random value of at least 32 characters (`openssl rand -base64 32`).
+- `GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET`: from your own GitHub OAuth App (GitHub → Settings → Developer settings → OAuth Apps) with the callback URL `http://localhost:5173/api/auth/callback/github`. No scopes are requested.
+
+Tests never need these values. Workers-pool tests use test-only secrets from `apps/web/vitest.config.ts`, and `pnpm test:e2e` signs in through a local fake GitHub (`apps/web/e2e/support/fake-github.ts`) with the wrangler `e2e` environment, which is the only one that accepts GitHub endpoint overrides.
 
 pnpm blocks dependency build scripts by default; `pnpm-workspace.yaml` allows only `workerd` and `esbuild`, which the Workers runtime needs.
 
@@ -30,7 +40,8 @@ pnpm blocks dependency build scripts by default; `pnpm-workspace.yaml` allows on
 | `packages/domain` | Pure domain rules and ports (`Clock`, `IdGenerator`); mutation-tested |
 | `packages/db` | Drizzle schema, SQL migrations, workspace-scoped repositories |
 | `packages/platform` | Env parsing, structured logging with redaction, correlation IDs, error types |
-| `packages/testing` | Test helpers: fake clock, deterministic IDs, log capture, secret canaries |
+| `packages/application` | Application services: sign-in recording, workspaces, authorization, audit |
+| `packages/testing` | Test helpers: fake clock, deterministic IDs, log capture, secret canaries, audit completeness |
 | `scripts` | Coverage ratchet and scenario-catalog checks |
 
 ## Everyday commands
@@ -43,7 +54,7 @@ pnpm blocks dependency build scripts by default; `pnpm-workspace.yaml` allows on
 | `pnpm test` | Every Vitest project (Node and Workers runtimes) |
 | `pnpm test:coverage` | Tests with merged coverage, then raises committed thresholds in `coverage-thresholds.json` |
 | `pnpm test:mutation` | Stryker on `packages/domain` (slow; run when domain changes) |
-| `pnpm test:e2e` | Playwright against both Workers with a fresh local D1 |
+| `pnpm test:e2e` | Playwright against both Workers, a fresh local D1 and a fake GitHub OAuth server |
 | `pnpm check:scenarios --phase <n>` | Fails if a scenario due by phase `n` in `docs/testing-strategy.md` has no test |
 | `pnpm db:generate` | Generate a SQL migration from schema changes in `packages/db/src/schema` |
 | `pnpm db:check` | Fails if the schema and committed migrations disagree |
@@ -69,3 +80,5 @@ Run a single project or file with Vitest directly, for example `pnpm exec vitest
 - **A test sees data from another test:** D1 storage is isolated per test *file*, not per test. Give each test its own IDs (`freshWorkspaceIds()` from `@sharerepo/testing`).
 - **`wrangler types --check` fails in `pnpm typecheck`:** a `wrangler.jsonc` changed; run `pnpm --filter @sharerepo/web typegen` (or `jobs`) and commit the regenerated `worker-configuration.d.ts`.
 - **Local D1 state looks wrong:** delete `apps/web/.wrangler` and run `pnpm db:migrate:local` again.
+- **Every page returns 500 locally with "invalid environment configuration":** `apps/web/.dev.vars` is missing or incomplete; see [Signing in locally](#signing-in-locally).
+- **Writing a service:** take a `ServiceContext`, authorize with `openWorkspace` (which returns a `WorkspaceScope`), and pass audit events to the repository write so they share its batch. Wrap service tests in `expectAuditedChange` / `expectNoChangeOnFailure` from `@sharerepo/testing`.

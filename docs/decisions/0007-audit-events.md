@@ -1,6 +1,6 @@
 # 0007 — Audit events: one append-only table, written in the same batch
 
-**Status:** Proposed (Phase 1)
+**Status:** Accepted (Phase 1)
 
 ## Context
 

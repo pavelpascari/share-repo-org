@@ -36,6 +36,7 @@ function stripJsonc(source: string): string {
 interface WranglerEnv {
   vars?: Record<string, string>;
   secrets?: { required?: string[] };
+  d1_databases?: unknown[];
 }
 interface WranglerConfig extends WranglerEnv {
   env?: Record<string, WranglerEnv>;
@@ -106,6 +107,10 @@ describe("apps/web/wrangler.jsonc", () => {
       expect(env.vars?.ENVIRONMENT === "e2e").toBe(name === "e2e");
     }
     expect(config.env?.e2e?.vars?.ENVIRONMENT).toBe("e2e");
+  });
+
+  it("e2e uses the same local database as the top level, where E2E applies migrations", () => {
+    expect(config.env?.e2e?.d1_databases).toEqual(config.d1_databases);
   });
 });
 

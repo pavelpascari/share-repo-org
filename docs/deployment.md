@@ -23,9 +23,20 @@ Phase 0 serves from `*.workers.dev`. Attaching `sharerepo.org` is a separate, ex
 2. Create a Cloudflare API token with **Workers Scripts: Edit** and **D1: Edit** for the account.
 3. In the GitHub repository, create environments `dev` and `production`. Add a required reviewer to `production`.
 4. Add secrets `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` (repository or per environment), and a `WEB_URL` variable on each environment (for example `https://sharerepo-web.<subdomain>.workers.dev`).
-5. Set the repository variable `DEPLOY_ENABLED` to `true`. Until then, CI runs every check but skips deployment.
+5. Create a **GitHub OAuth App** per environment (on the personal account is fine) for sign-in ([decision 0006](decisions/0006-authentication-with-better-auth.md)). Callback URL: `<WEB_URL>/api/auth/callback/github`. It needs no scopes. This is separate from the GitHub App added in Phase 2.
+6. In `apps/web/wrangler.jsonc`, set `BETTER_AUTH_URL` (the web Worker's public URL) and `GITHUB_CLIENT_ID` for the top level (dev) and `env.production`. The production URL must be https.
+7. Set the web Worker's secrets for each environment. The web Worker fails closed without them, so the `/readyz` smoke test fails until they are set:
 
-ShareRepo-owned secrets (none yet in Phase 0) are added with `wrangler secret put <NAME> [--env production]`, never committed. Local values go in `apps/*/.dev.vars`, which is gitignored.
+   ```sh
+   cd apps/web
+   openssl rand -base64 32 | pnpm exec wrangler secret put BETTER_AUTH_SECRET
+   pnpm exec wrangler secret put GITHUB_CLIENT_SECRET
+   # and again with --env production
+   ```
+
+8. Set the repository variable `DEPLOY_ENABLED` to `true`. Until then, CI runs every check but skips deployment.
+
+ShareRepo-owned secrets are added with `wrangler secret put <NAME> [--env production]`, never committed; `secrets.required` in `wrangler.jsonc` lists them. Local values go in `apps/*/.dev.vars`, which is gitignored. The wrangler `e2e` environment is for local Playwright runs only and is never deployed; a test fails if CI ever selects it.
 
 ## Order of operations
 
