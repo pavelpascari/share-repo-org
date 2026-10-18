@@ -380,6 +380,20 @@ describe("refreshInstallationForMember", () => {
     expect(await resources(connection)).toHaveLength(2);
   });
 
+  it("returns null for members who cannot manage the workspace, without resyncing", async () => {
+    const { github, owner, installationId } = await connected();
+    const member = await signedUpUser();
+    await addWorkspaceMember(serviceContext(), owner, owner.slug, {
+      userId: member.userId,
+      role: "member",
+    });
+    const before = github.calls.length;
+    await expect(
+      refreshInstallationForMember(serviceContext(), member, installationId, github),
+    ).resolves.toBeNull();
+    expect(github.calls.length).toBe(before);
+  });
+
   it("returns null for strangers, unknown installations and malformed IDs", async () => {
     const { github, installationId } = await connected();
     const stranger = await signedUpUser();

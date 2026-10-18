@@ -243,8 +243,8 @@ export async function completeGitHubConnection(
 
 /**
  * GitHub's setup callback after the owner changed the repository selection on GitHub: it
- * carries no `state`. If the installation is already connected to a workspace the actor belongs
- * to, resync it and return that workspace; otherwise null (nothing is attached without an intent).
+ * carries no `state`. If the installation is already connected to a workspace the actor manages,
+ * resync it and return that workspace; otherwise null (nothing is attached without an intent).
  */
 export async function refreshInstallationForMember(
   context: ServiceContext,
@@ -259,7 +259,8 @@ export async function refreshInstallationForMember(
     workspaceId: connection.workspaceId,
     userId: actor.userId,
   });
-  if (membership === null) return null;
+  // A resync changes state, so it needs the same permission as "Refresh from GitHub".
+  if (membership === null || !roleAllows(membership.role, "workspace.manage")) return null;
   await resyncConnection(context, connection, github, "selection changed on GitHub");
   return { workspaceSlug: membership.workspace.slug };
 }
