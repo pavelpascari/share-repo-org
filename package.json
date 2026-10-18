@@ -7,7 +7,7 @@
     "node": ">=22.22.0"
   },
   "scripts": {
-    "dev": "pnpm --parallel --filter @sharerepo/web --filter @sharerepo/jobs dev",
+    "dev": "pnpm --filter @sharerepo/web dev",
     "build": "pnpm -r --if-present build",
     "lint": "biome check .",
     "format": "biome check --write .",

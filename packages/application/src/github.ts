@@ -241,6 +241,29 @@ export async function completeGitHubConnection(
   return { ok: true, workspaceId: intent.workspaceId, workspaceSlug, connectionId };
 }
 
+/**
+ * GitHub's setup callback after the owner changed the repository selection on GitHub: it
+ * carries no `state`. If the installation is already connected to a workspace the actor belongs
+ * to, resync it and return that workspace; otherwise null (nothing is attached without an intent).
+ */
+export async function refreshInstallationForMember(
+  context: ServiceContext,
+  actor: UserActor,
+  installationId: string,
+  github: GitHubAppPort,
+): Promise<{ readonly workspaceSlug: string } | null> {
+  if (!INSTALLATION_ID.test(installationId)) return null;
+  const connection = await repo.findConnectionByInstallationId(context.db, installationId);
+  if (connection === null) return null;
+  const membership = await repo.getWorkspaceForMember(context.db, {
+    workspaceId: connection.workspaceId,
+    userId: actor.userId,
+  });
+  if (membership === null) return null;
+  await resyncConnection(context, connection, github, "selection changed on GitHub");
+  return { workspaceSlug: membership.workspace.slug };
+}
+
 export type WebhookIngestResult =
   | { readonly status: "rejected" }
   /** Recorded; `outboxId` is the processing intent to hand to the queue. */

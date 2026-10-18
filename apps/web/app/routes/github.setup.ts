@@ -1,4 +1,8 @@
-import { completeGitHubConnection, resyncConnection } from "@sharerepo/application";
+import {
+  completeGitHubConnection,
+  refreshInstallationForMember,
+  resyncConnection,
+} from "@sharerepo/application";
 import { data, redirect } from "react-router";
 import { servicesFor } from "../auth/server.ts";
 import { requireUser } from "../auth/session.server.ts";
@@ -16,12 +20,23 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   if (github === null) throw data(null, { status: 503 });
   const url = new URL(request.url);
   const services = servicesFor(context);
+  const state = url.searchParams.get("state");
+  const installationId = url.searchParams.get("installation_id") ?? "";
+  if (state === null && url.searchParams.get("setup_action") === "update") {
+    // The owner changed the selection on GitHub: refresh, but never attach without an intent.
+    const refreshed = await refreshInstallationForMember(services, user, installationId, github);
+    return redirect(
+      refreshed === null
+        ? "/?github_error=invalid_state"
+        : `/w/${refreshed.workspaceSlug}/repositories`,
+    );
+  }
   const result = await completeGitHubConnection(
     services,
     user,
     {
-      state: url.searchParams.get("state") ?? "",
-      installationId: url.searchParams.get("installation_id") ?? "",
+      state: state ?? "",
+      installationId,
     },
     github,
   );

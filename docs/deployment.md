@@ -34,7 +34,25 @@ Phase 0 serves from `*.workers.dev`. Attaching `sharerepo.org` is a separate, ex
    # and again with --env production
    ```
 
-8. Set the repository variable `DEPLOY_ENABLED` to `true`. Until then, CI runs every check but skips deployment.
+8. Create the **GitHub App** per environment ([runbook](runbooks/github-app-setup.md)), with the setup URL `<WEB_URL>/github/setup` and the webhook URL `<WEB_URL>/webhooks/github`. Set `GITHUB_APP_ID` and `GITHUB_APP_SLUG` in `apps/web/wrangler.jsonc` and `GITHUB_APP_ID` in `apps/jobs/wrangler.jsonc` (top level and `env.production`). Then set the secrets:
+
+   ```sh
+   cd apps/web
+   pnpm exec wrangler secret put GITHUB_APP_PRIVATE_KEY   # PKCS#8, see the runbook
+   pnpm exec wrangler secret put GITHUB_WEBHOOK_SECRET
+   cd ../jobs
+   pnpm exec wrangler secret put GITHUB_APP_PRIVATE_KEY
+   # and again with --env production
+   ```
+
+9. Create the queues that carry webhook work from web to jobs:
+
+   ```sh
+   pnpm --filter @sharerepo/web exec wrangler queues create sharerepo-events-dev
+   pnpm --filter @sharerepo/web exec wrangler queues create sharerepo-events-prod
+   ```
+
+10. Set the repository variable `DEPLOY_ENABLED` to `true`. Until then, CI runs every check but skips deployment.
 
 ShareRepo-owned secrets are added with `wrangler secret put <NAME> [--env production]`, never committed; `secrets.required` in `wrangler.jsonc` lists them. Local values go in `apps/*/.dev.vars`, which is gitignored. The wrangler `e2e` environment is for local Playwright runs only and is never deployed; a test fails if CI ever selects it.
 

@@ -200,6 +200,15 @@ It cleans up after itself. A short manual checklist covers what a script can't: 
 | GitHub permissions, invitation limits, personal-repository behaviour and paid-seat implications are documented from live tests and current terms | T6 results file |
 | Go/no-go or target-segment decision before Phase 4 | [0008](../decisions/0008-v1-personal-account-repositories.md), confirmed by T6 |
 
+## Implementation notes
+
+- **Local runtime:** `pnpm dev` and E2E run the jobs Worker as an auxiliary Worker of the web dev server (`SHAREREPO_WITH_JOBS=1`). Two local processes sharing one persisted SQLite file failed under concurrent writes (`D1_ERROR: Failed to get session commit token`). In one runtime, both Workers share D1 and the `EVENTS` queue, and the webhook journey runs through the queue end to end. Cloudflare's hosted D1 does not have this limitation.
+- **Selection updates:** GitHub calls the setup URL with `setup_action=update` and no `state` after the owner changes the selection on GitHub. `refreshInstallationForMember` resyncs the installation for a member of its workspace and never attaches one without an intent.
+- **Security review fixes during the phase:**
+  - Consuming an intent is bound to its workspace and user.
+  - GitHub URL path segments are validated, since `..` would otherwise collapse a collaborator DELETE into a repository DELETE.
+  - Webhook bodies are read with a streaming size bound.
+
 ## Risks
 
 - **Administration: write is a frightening permission.** The connect page explains why it's needed and what ShareRepo does with it.

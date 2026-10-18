@@ -11,6 +11,7 @@ export {
   processExternalEvent,
   type RepositorySummary,
   type ResyncSummary,
+  refreshInstallationForMember,
   resyncConnection,
   resyncWorkspaceConnections,
   type StartConnectionResult,

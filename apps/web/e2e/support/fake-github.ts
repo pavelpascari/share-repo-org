@@ -1,9 +1,11 @@
 // A local stand-in for GitHub's OAuth web flow and `GET /user`, for E2E only (decision 0006).
 // It behaves like GitHub where ShareRepo depends on it: the client secret, redirect URI and PKCE
 // S256 verifier are checked, codes are single use, and failures use GitHub's response shapes.
-// The authorize page lets a test choose which GitHub account (ID and login) signs in.
+// The authorize page lets a test choose which GitHub account (ID and login) signs in. The App
+// endpoints (install page, installations, repositories) live in fake-github-app.ts.
 import { createHash, randomBytes } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { createFakeGitHubApp } from "./fake-github-app.ts";
 import { FAKE_GITHUB_PORT } from "./ports.ts";
 
 export const FAKE_CLIENT_ID = "e2e-client";
@@ -22,7 +24,9 @@ interface Grant {
   codeChallenge: string | null;
 }
 
-export function startFakeGitHub(port = FAKE_GITHUB_PORT) {
+export function startFakeGitHub(options: { webhookSecret: string; port?: number }) {
+  const port = options.port ?? FAKE_GITHUB_PORT;
+  const app = createFakeGitHubApp(options.webhookSecret);
   const codes = new Map<string, Grant>();
   const tokens = new Map<string, Profile>();
   // Every request ShareRepo or the browser makes, for assertions such as "no App installation".
@@ -33,6 +37,7 @@ export function startFakeGitHub(port = FAKE_GITHUB_PORT) {
     if (url.pathname === "/_control/calls") return json(res, 200, calls);
     calls.push(`${req.method} ${url.pathname}`);
     const body = await readBody(req);
+    if (await app.handle(req, res, url, body)) return;
 
     if (url.pathname === "/login/oauth/authorize") {
       if (url.searchParams.get("client_id") !== FAKE_CLIENT_ID) return send(res, 400, "bad client");

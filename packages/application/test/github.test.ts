@@ -22,6 +22,7 @@ import {
   ingestGitHubWebhook,
   listGitHubConnections,
   processExternalEvent,
+  refreshInstallationForMember,
   resyncConnection,
   resyncWorkspaceConnections,
   startGitHubConnection,
@@ -366,6 +367,27 @@ describe("connection/install-callback-bound-to-intent", () => {
       .bind(installed.installationId)
       .first<{ n: number }>();
     expect(rows?.n).toBe(1);
+  });
+});
+
+describe("refreshInstallationForMember", () => {
+  it("resyncs an installation connected to one of the actor's workspaces", async () => {
+    const { github, owner, connection, installationId, repositories } = await connected();
+    github.setRepositories(installationId, [...repositories, repository(owner)]);
+    await expect(
+      refreshInstallationForMember(serviceContext(), owner, installationId, github),
+    ).resolves.toEqual({ workspaceSlug: owner.slug });
+    expect(await resources(connection)).toHaveLength(2);
+  });
+
+  it("returns null for strangers, unknown installations and malformed IDs", async () => {
+    const { github, installationId } = await connected();
+    const stranger = await signedUpUser();
+    for (const id of [installationId, "123456789", "../1"]) {
+      await expect(
+        refreshInstallationForMember(serviceContext(), stranger, id, github),
+      ).resolves.toBeNull();
+    }
   });
 });
 
