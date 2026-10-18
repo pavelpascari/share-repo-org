@@ -144,7 +144,7 @@ Failing seeds are recorded as regression tests in the scenario layer.
 | Application services (`packages/application`, from Phase 1) and `apps/jobs` | ≥90% | Scenario catalog complete for the phase |
 | UI routes and components | Journey-based | Each critical journey in `product.md` has an E2E test |
 
-All packages use Istanbul coverage so results are identical locally and in CI and can be merged across Node and Workers projects.
+All packages use V8 coverage so results are identical locally and in CI and can be merged across Node and Workers projects. Istanbul was tried first but, under the Workers plugin, intermittently recorded a module twice (at source and transpiled positions) when the module was reused across test files, which made thresholds flaky. Package barrels (`src/**/index.ts`) that only re-export are excluded.
 
 ### Ratchet: coverage never decreases
 
@@ -162,7 +162,7 @@ The floor is a starting point. Each package's committed thresholds (lines, branc
 | Command | Runs | Needs network/credentials |
 |---|---|---|
 | `pnpm test` | Domain, DB, contract, service, scenario, convergence, and entry-point tests | No |
-| `pnpm test:coverage` | `pnpm test` with merged Istanbul coverage and thresholds, then raises committed thresholds | No |
+| `pnpm test:coverage` | `pnpm test` with merged V8 coverage and thresholds, then raises committed thresholds | No |
 | `pnpm test:mutation` | Stryker on `packages/domain`, with ratcheted break threshold | No |
 | `pnpm test:e2e` | Playwright against local Workers, fresh D1, fake OAuth server | No |
 | `pnpm test:sandbox` | Contract and smoke tests against real GitHub test account and Paddle sandbox | Yes, opt-in |
@@ -180,7 +180,7 @@ CI on every PR runs `pnpm lint`, `pnpm typecheck`, `pnpm test:coverage` with the
 
 Tool versions and the testing APIs this strategy relies on are recorded in [`docs/decisions/0001-stack-versions.md`](decisions/0001-stack-versions.md). In summary:
 
-- Workers tests use `@cloudflare/vitest-plugin` (the renamed `vitest-pool-workers`) on Vitest 4.1, in a root `projects` config alongside Node projects, with merged Istanbul coverage.
+- Workers tests use `@cloudflare/vitest-plugin` (the renamed `vitest-pool-workers`) on Vitest 4.1, in a root `projects` config alongside Node projects, with merged V8 coverage.
 - D1 migrations are applied with `readD1Migrations`/`applyD1Migrations`; queue consumers are tested with `createMessageBatch`/`getQueueResult`; cron with `createScheduledController`; Workflows with disposable introspectors that can mock steps and skip sleeps.
 - **Storage is isolated per test file, not per test.** Tests in one file share D1 state, so each test creates its own workspace and IDs, or resets in `afterEach`. Isolation tests must not pass by accident because another test's data happens to be absent.
 - Vitest `coverage.thresholds.autoUpdate` can only rewrite literal values in the Vitest config, not an imported JSON file, so `scripts/coverage-ratchet.ts` owns raising thresholds. One file then feeds both Vitest and Stryker.

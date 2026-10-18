@@ -15,15 +15,19 @@ export default defineConfig({
       "scripts/vitest.config.ts",
     ],
     coverage: {
-      provider: "istanbul",
+      provider: "v8",
+      // V8 rather than Istanbul: under the Workers plugin, Istanbul intermittently recorded a
+      // module twice (source and transpiled positions) when it was reused across test files.
       include: [
-        "packages/*/src/**",
-        "apps/*/src/**",
+        "packages/*/src/**/*.ts",
+        "apps/*/src/**/*.ts",
         // UI routes are reported but have no line threshold: they are covered by journeys.
-        "apps/web/app/**",
-        "apps/web/workers/**",
+        "apps/web/app/**/*.{ts,tsx}",
+        "apps/web/workers/**/*.ts",
         "scripts/*.ts",
       ],
+      // Package barrels only re-export; V8 would report them as uncovered.
+      exclude: ["packages/*/src/**/index.ts"],
       reporter: ["text-summary", "html", "json-summary"],
       // Globs that match no files (packages without source yet) pass trivially.
       thresholds: { ...ratchet.coverage },

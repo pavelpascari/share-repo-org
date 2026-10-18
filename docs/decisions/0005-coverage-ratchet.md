@@ -22,5 +22,5 @@ ShareRepo's main risk is wrong repository access. We want very high, meaningful 
 ## Consequences
 
 - Contributors commit threshold updates alongside code.
-- Coverage numbers must be deterministic between local and CI runs, so one coverage provider (Istanbul) is used for all packages.
+- Coverage numbers must be deterministic between local and CI runs, so one coverage provider (V8; see 0001) is used for all packages.
 - Details and commands are in `docs/testing-strategy.md`.

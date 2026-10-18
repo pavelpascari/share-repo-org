@@ -8,10 +8,10 @@
       "statements": 100
     },
     "packages/db/src/**": {
-      "lines": 90,
-      "branches": 90,
-      "functions": 90,
-      "statements": 90
+      "lines": 100,
+      "branches": 100,
+      "functions": 100,
+      "statements": 100
     },
     "packages/platform/src/**": {
       "lines": 100,
@@ -39,7 +39,7 @@
     },
     "scripts/*.ts": {
       "lines": 100,
-      "branches": 93.7,
+      "branches": 95,
       "functions": 100,
       "statements": 98.9
     }

@@ -20,14 +20,19 @@
     "mutation:update": "node scripts/coverage-ratchet.ts update --mutation packages/domain/reports/mutation/mutation.json",
     "test:e2e": "playwright test",
     "test:sandbox": "node -e \"console.log('No sandbox suites until Phase 2.')\"",
-    "check:scenarios": "node scripts/scenario-catalog.ts"
+    "check:scenarios": "node scripts/scenario-catalog.ts",
+    "db:generate": "pnpm --filter @sharerepo/db db:generate",
+    "db:migrate:local": "pnpm --filter @sharerepo/db db:migrate:local",
+    "db:migrate:dev": "pnpm --filter @sharerepo/db db:migrate:dev",
+    "db:migrate:prod": "pnpm --filter @sharerepo/db db:migrate:prod",
+    "db:check": "pnpm db:generate && git diff --exit-code -- packages/db/migrations && git status --porcelain -- packages/db/migrations | (! grep .)"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.15",
     "@cloudflare/vitest-plugin": "1.4.4",
     "@playwright/test": "1.64.1",
     "@types/node": "24.19.2",
-    "@vitest/coverage-istanbul": "4.1.12",
+    "@vitest/coverage-v8": "4.1.12",
     "typescript": "6.0.3",
     "vitest": "4.1.12",
     "wrangler": "4.151.1"

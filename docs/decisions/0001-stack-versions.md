@@ -21,9 +21,9 @@ Pin exact versions in `package.json` (no `^`) and upgrade deliberately through R
 | Workers dev/build | @cloudflare/vite-plugin | 1.64.0 | |
 | Workers CLI | wrangler | **4.151.1** | Exact match with the version the test plugin pins, to avoid duplicate Miniflare/workerd copies. |
 | Types | @cloudflare/workers-types | 5.x (generated `wrangler types` preferred) | Wrangler peers on v5. |
-| Test runner | vitest, @vitest/coverage-istanbul | **4.1.12** | Stryker reports every covered mutant as survived on Vitest 5 (stryker-js #6210). One Vitest version across all packages. Move to 5 when fixed. |
+| Test runner | vitest, @vitest/coverage-v8 | **4.1.12** | Stryker reports every covered mutant as survived on Vitest 5 (stryker-js #6210). One Vitest version across all packages. Move to 5 when fixed. |
 | Workers tests | **@cloudflare/vitest-plugin** | 1.4.4 | Replaces the deprecated `@cloudflare/vitest-pool-workers`. Configured with `cloudflareTest()` in plain `defineProject`. |
-| Coverage provider | Istanbul | — | Works in both Node and Workers projects with merged reports. V8 support in the Workers plugin arrived on 2026-10-08 (1.4.0); revisit after it has matured. |
+| Coverage provider | **V8** | — | Supported in the Workers plugin since 1.4.0. Istanbul was the initial choice but, under the Workers plugin, intermittently double-counted a module reused across test files (source vs transpiled positions), making thresholds flaky; V8 produced byte-identical summaries across repeated runs. |
 | Mutation testing | @stryker-mutator/core, vitest-runner | 10.0.0 | Used only on `packages/domain` (Node project). |
 | Property testing | fast-check | 4.10.2 | |
 | ORM | drizzle-orm / drizzle-kit | **0.45.4 / 0.31.11** (stable) | Drizzle's D1 page recommends the 1.0 RC; prefer stable `latest` for a production schema. Better Auth peers on both. Revisit at 1.0 GA. |
