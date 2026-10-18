@@ -71,9 +71,11 @@ Every change should run the narrowest relevant checks and, before merge, the com
 ```sh
 pnpm lint
 pnpm typecheck
-pnpm test
+pnpm test:coverage   # tests + coverage; commit any raised thresholds in coverage-thresholds.json
 pnpm test:e2e
 ```
+
+Coverage never decreases. Committed per-package thresholds only go up (≥ 90% floors; `packages/domain` near 100% plus a mutation score); see `docs/decisions/0005-coverage-ratchet.md`. Local setup and every command are in `docs/local-setup.md`.
 
 Add tests for:
 

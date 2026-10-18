@@ -173,7 +173,7 @@ Each task is test-first: write the failing tests listed, then implement.
   - migration validation (apply all migrations to an empty local D1, then check that `drizzle-kit generate` produces no diff);
   - `pnpm build`, `pnpm test:e2e`;
   - `pnpm test:mutation` when `packages/domain` changed.
-- **`deploy.yml` on `main`:**
+- **Deploy jobs in `ci.yml` on `main`** (gated by the `DEPLOY_ENABLED` repository variable until Cloudflare is configured):
   - repeat the CI gates;
   - apply migrations to dev, then deploy jobs and web to dev, then smoke `/readyz`;
   - production is a manual approval through a GitHub environment, running the same steps.
