@@ -1,0 +1,188 @@
+# ShareRepo testing strategy
+
+## Purpose
+
+ShareRepo's main risk is incorrect access: a paying subscriber without a grant, or a lapsed one who keeps it. The test suite exists to prove that desired state (entitlements) and observed state (grants) converge under duplicate, missing, out-of-order, and failed inputs. Coverage numbers support that goal; they do not replace it.
+
+## Principles
+
+1. **Everything runs locally.** `pnpm test` and `pnpm test:e2e` run on a developer machine with no network access to providers, using local D1 and the Workers runtime.
+2. **No live credentials in the default suite.** Real GitHub and Paddle calls happen only in the opt-in sandbox suite.
+3. **Prove access correctness, not line counts.** Each item in the cross-phase test matrix maps to a named scenario. A convergence property test checks the system as a whole.
+4. **Test through ports.** Domain logic is pure. Time, IDs, HTTP, queues, and providers are injected, so behaviour that depends on them is deterministic.
+5. **One test per invariant.** Every invariant in `domain-model.md` and every database constraint has a test that shows it rejects invalid data.
+6. **CI runs the same commands as developers.** No CI-only setup and no hidden fixtures.
+
+## Test layers
+
+| Layer | Runs in | Covers | Package(s) |
+|---|---|---|---|
+| Domain unit and property | Vitest, Node | Subscription policy (facts + time → entitlements), reconciliation planner, entitlement and grant state machines, capability checks | `packages/domain` |
+| DB integration | Vitest, Workers pool, local D1 with migrations applied per test file | Repositories, unique/check/foreign-key constraints, composite workspace foreign keys, `batch()` atomicity, partial unique indexes, migrations from empty | `packages/db` |
+| Adapter contract | Vitest, Workers pool, injected `fetch` | GitHub and Paddle adapters against recorded, redacted fixtures: signature verification, payload parsing, pagination, error classification, rate limits, pending invitations | `packages/integrations` |
+| Fake providers | Used by the layers below | In-memory GitHub and Paddle implementations of the ports, with fault injection | `packages/testing` |
+| Application service and scenario | Vitest, Workers pool, local D1, in-process queue drain | The full flow event → refresh → entitlements → plan → mutate → observe → audit, run against fakes. One named scenario per matrix item. | `packages/application`, `packages/testing` |
+| Model-based convergence | Vitest, Workers pool or Node, `fast-check` | Random event sequences with injected faults. Checks global invariants after a final reconcile. | `packages/testing` |
+| Worker entry points | Vitest, Workers pool | Queue consumer, scheduled (cron) handler, and Workflow entry points: wiring, acknowledge/retry behaviour, idempotency | `apps/jobs`, `apps/web` |
+| End-to-end | Playwright against local dev Workers, fresh local D1 per run, fake OAuth server | Critical journeys: sign in, create workspace, connect repositories, map offer, subscriber claim, access status | `apps/web` |
+| Sandbox smoke | Opt-in, real GitHub test account and Paddle sandbox | Real provider behaviour that fixtures cannot prove | `packages/integrations`, `apps/*` |
+
+## Required seams
+
+Build these in Phase 0–1 so later phases can be tested without retrofitting.
+
+| Seam | Production binding | Test binding | Why |
+|---|---|---|---|
+| `Clock` | System time (UTC) | Controllable clock | Grace periods, effective cancellation, invitation expiry, and workflow sleeps become ordinary tests |
+| ID generator | Random/ULID | Deterministic sequence | Stable assertions and reproducible property-test failures |
+| HTTP client / `fetch` | Global `fetch` | Fixture-backed or fake-backed `fetch` | Adapters are tested without network access or a version-specific request mock |
+| Queue port | Cloudflare Queues producer | In-process queue that tests drain explicitly, with redelivery and reordering | Repeated delivery and crash-between-steps scenarios |
+| Transactional outbox | D1 table drained by jobs | Same table, drained by the test | Event receipt, state change, and job intent commit in one `batch()` |
+| OAuth provider | GitHub OAuth | Local fake GitHub OAuth server | E2E signs in through OAuth with no test-only login backdoor. Better Auth hardcodes GitHub URLs, so the exact wiring is a Phase 1 decision (see [0001](decisions/0001-stack-versions.md#open-items)) |
+| Secrets/key provider | Cloudflare secrets | Fixed test keys | Signature and envelope-encryption tests use known material |
+
+## Fake providers
+
+`packages/testing` contains in-memory `FakeGitHub` and `FakePaddle` that implement the same ports as the real adapters.
+
+**State.** `FakeGitHub` models installations, selected repositories, users with immutable IDs and mutable logins, direct collaborators, pending invitations with expiry, and indirect access through teams or ownership. `FakePaddle` models customers, subscriptions with billing periods and scheduled cancellation, and an event log that can emit signed webhooks.
+
+**Fault injection.** Each operation can be scripted to:
+
+- fail with a retryable, rate-limited (including secondary rate limit), terminal, or user-action-required error;
+- succeed but lose the response, so the mutation is applied and the caller sees a timeout;
+- return stale state on the next read;
+- simulate an outage for a time window measured by the test clock.
+
+Tests can also make out-of-band changes that act as drift: a human removes a collaborator, adds one manually, renames a user or repository, suspends an installation, or a subscriber declines an invitation.
+
+**Keeping fakes honest.** One contract suite per port runs against both the fake and the real adapter backed by recorded fixtures. The sandbox suite runs the same contract against live providers. If a fake behaves differently from the fixtures, its contract run fails.
+
+## Scenario catalog
+
+Each scenario has a stable name used as the test title so coverage of the matrix can be checked by search. The phase column shows where it is first required.
+
+| Scenario | Source | Layer | Phase |
+|---|---|---|---|
+| `isolation/cross-workspace-read-denied` | Matrix: workspace isolation; AGENTS: workspace isolation and authorization | Service, E2E | 1 |
+| `isolation/cross-workspace-mutation-denied` | Same | Service | 1 |
+| `isolation/composite-fk-rejects-cross-tenant-link` | Domain invariant 2 | DB | 0–3 |
+| `isolation/job-without-workspace-scope-rejected` | Same | Entry point | 4 |
+| `webhook/duplicate-delivery-is-noop` | Matrix: duplicate external events; AGENTS: duplicate webhooks | Service | 2, 5 |
+| `webhook/out-of-order-does-not-regress` | Matrix: out-of-order events; AGENTS: out-of-order webhooks | Service, property | 3, 5 |
+| `webhook/invalid-signature-rejected-before-persist` | Integrations: signature verification | Contract | 2, 5 |
+| `queue/redelivery-is-idempotent` | Matrix: repeated queue delivery; AGENTS: repeated queue delivery | Service, entry point | 4 |
+| `workflow/replay-is-idempotent` | Matrix: workflow replay; AGENTS: workflow retries | Entry point | 6 |
+| `provider/mutation-succeeds-response-lost` | Matrix: provider success with lost response | Service | 4 |
+| `crash/between-event-commit-and-enqueue` | Matrix: partial transaction and crash recovery | Service | 3–4 |
+| `crash/between-mutation-and-observation` | Same | Service | 4 |
+| `identity/username-change-keeps-identity` | Matrix: username change | Service, contract | 1 |
+| `identity/unlink-relink-moves-subject-safely` | Matrix: identity unlink/relink | Service | 4–5 |
+| `identity/unverified-email-match-grants-nothing` | Domain: identity linking | Service | 5 |
+| `timing/renewal-during-scheduled-revocation` | Matrix: renewal during scheduled revocation; AGENTS: reactivation | Service, entry point | 5–6 |
+| `timing/cancellation-revokes-at-effective-time` | AGENTS: cancellation timing | Domain, service | 3, 5 |
+| `timing/past-due-within-grace-keeps-access` | AGENTS: grace periods | Domain, service | 3, 5 |
+| `timing/grace-expiry-revokes` | Same | Domain, service | 3, 6 |
+| `timing/stale-workflow-cannot-revoke-renewed` | Implementation plan, Phase 6 | Entry point | 6 |
+| `resource/selection-removed-blocks-new-provisioning` | Matrix: resource removal | Service | 2, 4 |
+| `resource/rename-transfer-keeps-identity` | Integrations: GitHub risks | Contract, service | 2 |
+| `connection/suspended-installation-surfaces-error` | Matrix: connection suspension | Service | 2, 4 |
+| `invitation/pending-is-not-active` | AGENTS: pending invitations | Service | 4 |
+| `invitation/expired-is-reissued-or-surfaced` | Matrix: pending invitation expiration | Service | 4 |
+| `provider/rate-limit-backs-off-and-retries` | Matrix: rate limit; AGENTS: provider rate limits | Contract, service | 4 |
+| `provider/transient-error-retries` | AGENTS: transient errors | Service | 4 |
+| `provider/outage-recovers-on-scheduled-reconcile` | Matrix: provider outage | Service | 4, 6 |
+| `drift/manual-removal-is-repaired` | Matrix: manual access drift; AGENTS: drift both directions | Service | 4 |
+| `drift/unmanaged-access-is-not-revoked` | Same; Integrations: ownership | Service | 4 |
+| `drift/indirect-access-reported-accurately` | Integrations: ownership | Service | 4 |
+| `audit/every-state-change-has-audit-event` | Matrix: audit completeness; AGENTS: audit completeness | Service, property | 1 onward |
+| `audit/no-secrets-in-logs-or-audit` | Matrix: secret redaction; AGENTS: without secret leakage | Service | 0 onward |
+
+A CI check fails if any scenario name in this table has no matching test once its phase is complete.
+
+## Model-based convergence test
+
+A `fast-check` model-based test drives application services against the fakes, local D1, and the in-process queue.
+
+**Generated commands:**
+
+- subscription lifecycle facts: create, renew, past-due, recover, pause, cancel at period end, cancel immediately, expire, reactivate;
+- webhook delivery: deliver, duplicate, delay, reorder, drop (to be recovered by scheduled reconcile);
+- identity: link, unlink, relink, rename;
+- resource and connection: add or remove repository selection, rename, suspend or unsuspend installation;
+- drift: manual collaborator removal or addition, invitation declined or expired;
+- time: advance the clock by generated durations;
+- runtime faults: redeliver a queue message, crash between named steps, lose a provider response, inject a rate limit or outage.
+
+**Invariants checked after every step:**
+
+- no record links across workspaces;
+- every entitlement references its source, policy version, and validity interval;
+- no grant created an entitlement;
+- every state change has a matching audit event with a correlation ID;
+- no secret appears in logs, audit details, or stored payloads.
+
+**Invariants checked after quiescence** (drain queues, run scheduled reconcile, advance past pending timers):
+
+- every active entitlement has a matching active or pending-invitation grant, or a classified error that explains why not;
+- no ShareRepo-managed grant exists without an active entitlement;
+- access that ShareRepo does not own was never revoked;
+- replaying the full event log from scratch produces the same entitlements.
+
+Failing seeds are recorded as regression tests in the scenario layer.
+
+## Coverage policy
+
+### Floors
+
+| Package | Floor | Additional gate |
+|---|---|---|
+| `packages/domain` | ~100% lines and branches | Stryker mutation score, ratcheted |
+| `packages/db` | ≥90% | One test per constraint |
+| `packages/integrations` | ≥90% | Contract suite per port |
+| `packages/platform` | ≥90% | Redaction tests for the logger |
+| Application services (`packages/application`, from Phase 1) and `apps/jobs` | ≥90% | Scenario catalog complete for the phase |
+| UI routes and components | Journey-based | Each critical journey in `product.md` has an E2E test |
+
+All packages use Istanbul coverage so results are identical locally and in CI and can be merged across Node and Workers projects.
+
+### Ratchet: coverage never decreases
+
+The floor is a starting point. Each package's committed thresholds (lines, branches, functions, statements, and mutation score for domain) can only go up.
+
+- **Local:** `pnpm test:coverage` uses Vitest threshold auto-update to raise committed thresholds when measured coverage exceeds them, rounding down to avoid noise. Developers commit the raised values with their change.
+- **CI check 1, floor:** measured coverage must meet or exceed the committed thresholds.
+- **CI check 2, no lowering:** a script compares thresholds in the PR against the base branch and fails if any value decreased.
+- **CI check 3, gains are committed:** if measured coverage exceeds a committed threshold by more than the rounding margin, CI fails and asks the author to run `pnpm test:coverage` and commit the update.
+
+**Escape hatch.** Coverage can legitimately drop, for example when well-tested code is deleted. A lowered threshold is accepted only when the PR carries an explicit `coverage-decrease` justification, such as a label plus a short reason in the description, and passes review. It is never automatic.
+
+## Commands
+
+| Command | Runs | Needs network/credentials |
+|---|---|---|
+| `pnpm test` | Domain, DB, contract, service, scenario, convergence, and entry-point tests | No |
+| `pnpm test:coverage` | `pnpm test` with merged Istanbul coverage, thresholds, and auto-update | No |
+| `pnpm test:mutation` | Stryker on `packages/domain`, with ratcheted break threshold | No |
+| `pnpm test:e2e` | Playwright against local Workers, fresh D1, fake OAuth server | No |
+| `pnpm test:sandbox` | Contract and smoke tests against real GitHub test account and Paddle sandbox | Yes, opt-in |
+
+CI on every PR runs `pnpm lint`, `pnpm typecheck`, `pnpm test:coverage` with the three ratchet checks, the scenario-catalog check, migration validation from an empty database, `pnpm test:e2e`, and the build. `pnpm test:mutation` runs on PRs that touch `packages/domain` and nightly. `pnpm test:sandbox` runs manually or on a schedule with dedicated secrets and never gates merge.
+
+## Fixtures
+
+- **Recorded and redacted.** Provider responses and webhooks are recorded from sandbox or test accounts, then redacted: tokens, emails, names, and IDs are replaced with stable synthetic values. A redaction check fails if a fixture contains token-shaped strings or real email domains.
+- **Exact raw bytes.** Webhook fixtures store the raw body as received, and the signature is computed over those bytes with a test secret. Tests cover a valid signature, a tampered body, re-serialised JSON (which must fail), a wrong secret, and a missing header.
+- **Versioned.** Fixtures record the provider API or webhook version so schema changes appear as explicit fixture updates.
+- **Secret leakage test.** Test setup injects canary values into every secret, token, and credential. A shared assertion runs after every service and scenario test and fails if any canary appears in captured logs, audit event details, stored external-event metadata, or error messages.
+
+## Version-sensitive details
+
+Tool versions and the testing APIs this strategy relies on are recorded in [`docs/decisions/0001-stack-versions.md`](decisions/0001-stack-versions.md). In summary:
+
+- Workers tests use `@cloudflare/vitest-plugin` (the renamed `vitest-pool-workers`) on Vitest 4.1, in a root `projects` config alongside Node projects, with merged Istanbul coverage.
+- D1 migrations are applied with `readD1Migrations`/`applyD1Migrations`; queue consumers are tested with `createMessageBatch`/`getQueueResult`; cron with `createScheduledController`; Workflows with disposable introspectors that can mock steps and skip sleeps.
+- **Storage is isolated per test file, not per test.** Tests in one file share D1 state, so each test creates its own workspace and IDs, or resets in `afterEach`. Isolation tests must not pass by accident because another test's data happens to be absent.
+- Vitest `coverage.thresholds.autoUpdate` takes a rounding function, which implements the ratchet.
+- Stryker runs only on `packages/domain` and requires Vitest 4 until stryker-js #6210 is fixed.
+- Outbound HTTP is tested through injected `fetch`. `fetchMock` no longer exists in `cloudflare:test`; MSW with `@msw/cloudflare` is the fallback if needed.
