@@ -11,6 +11,10 @@ Start with:
 - `docs/domain-model.md` for terminology and invariants.
 - `docs/integrations.md` for provider contracts and webhook rules.
 - `docs/implementation-plan.md` for delivery order and acceptance criteria.
+- `docs/testing-strategy.md` for test layers, scenarios, and the coverage ratchet.
+- `docs/decisions/` for architecture decisions, including pinned stack versions.
+- `docs/plans/` for the detailed plan of the current phase.
+- `docs/research/` for verified provider and tooling findings.
 
 If code and documentation disagree, stop and make the conflict explicit. Do not silently reinterpret the domain model.
 
