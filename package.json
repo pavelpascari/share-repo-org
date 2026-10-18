@@ -13,10 +13,14 @@
     "format": "biome check --write .",
     "typecheck": "pnpm -r --if-present typecheck && tsc -p scripts && tsc -p .",
     "test": "vitest run",
-    "test:coverage": "vitest run --coverage",
+    "test:coverage": "vitest run --coverage && node scripts/coverage-ratchet.ts update",
+    "coverage:update": "node scripts/coverage-ratchet.ts update",
+    "coverage:check": "node scripts/coverage-ratchet.ts check",
     "test:mutation": "pnpm --filter @sharerepo/domain test:mutation",
+    "mutation:update": "node scripts/coverage-ratchet.ts update --mutation packages/domain/reports/mutation/mutation.json",
     "test:e2e": "playwright test",
-    "test:sandbox": "node -e \"console.log('No sandbox suites until Phase 2.')\""
+    "test:sandbox": "node -e \"console.log('No sandbox suites until Phase 2.')\"",
+    "check:scenarios": "node scripts/scenario-catalog.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.15",

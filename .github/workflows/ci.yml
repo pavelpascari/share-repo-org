@@ -32,7 +32,7 @@ jobs:
       - run: pnpm lint
       - run: pnpm typecheck
       - name: Tests with coverage floors
-        run: pnpm test:coverage
+        run: pnpm exec vitest run --coverage
       - name: Coverage ratchet
         if: github.event_name == 'pull_request'
         env:
@@ -82,6 +82,9 @@ jobs:
         run: pnpm install --frozen-lockfile
       - if: steps.changes.outputs.domain == 'true'
         run: pnpm test:mutation
+      - name: Mutation ratchet
+        if: steps.changes.outputs.domain == 'true'
+        run: pnpm coverage:check --mutation packages/domain/reports/mutation/mutation.json
 
   e2e:
     name: End-to-end

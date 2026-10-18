@@ -75,7 +75,7 @@ Why each package exists now:
   - `users(id, created_at, updated_at)`. This table is deliberately minimal; Better Auth table ownership is decided in Phase 1.
   - `workspaces(id, slug UNIQUE CHECK(format), name CHECK(length), status CHECK IN ('active','suspended'), created_at, updated_at)`.
   - `workspace_memberships(workspace_id FK, user_id FK, role CHECK IN ('owner','member'), created_at, PRIMARY KEY(workspace_id, user_id))`.
-- **Vitest:** a root `vitest.config.ts` with `test.projects` covering `domain` and `platform` (Node), `db`, `testing`, `web` and `jobs` (Workers, through `cloudflareTest()`). Coverage uses Istanbul, merged at the root, with per-package `thresholds` that `autoUpdate` rounds down to one decimal.
+- **Vitest:** a root `vitest.config.ts` with `test.projects` covering `domain` and `platform` (Node), `db`, `testing`, `web` and `jobs` (Workers, through `cloudflareTest()`). Coverage uses Istanbul, merged at the root, with per-package thresholds read from `coverage-thresholds.json`, which `scripts/coverage-ratchet.ts update` raises (rounded down to 0.1).
 - **Logging:** JSON lines through `console`, with key-based redaction from a denylist. Fields are `ts, level, msg, correlationId, workspaceId?, …`. The correlation ID comes from an `x-request-id` header when present and valid, otherwise it is generated. It is echoed in the response header.
 
 ## Tasks and parallelisation
@@ -195,7 +195,7 @@ Each task is test-first: write the failing tests listed, then implement.
 | `lint` / `format` | Biome check / write |
 | `typecheck` | `tsc -b` across the workspace plus React Router typegen |
 | `test` | All Vitest projects |
-| `test:coverage` | Merged Istanbul coverage with thresholds and auto-update |
+| `test:coverage` | Merged Istanbul coverage with thresholds, then raises committed thresholds |
 | `test:mutation` | Stryker on `packages/domain` |
 | `test:e2e` | Playwright against local Workers |
 | `test:sandbox` | Placeholder that exits cleanly until Phase 2 |
