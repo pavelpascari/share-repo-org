@@ -21,6 +21,26 @@ describe("redactString", () => {
     );
   });
 
+  it("scrubs sensitive keys regardless of how long the surrounding key name is", () => {
+    const prefix = "x".repeat(200);
+    expect(redactString(`${prefix}_token=abc`)).toBe(`${prefix}_token=${REDACTED}`);
+    expect(redactString(`token_${prefix}: abc`)).toBe(`token_${prefix}: ${REDACTED}`);
+  });
+
+  it("scrubs sensitive query parameters inside URLs", () => {
+    expect(redactString("GET https://x.test/a?page=1&access_token=abc")).toBe(
+      `GET https://x.test/a?page=1&access_token=${REDACTED}`,
+    );
+  });
+
+  it("scrubs a bearer scheme value after a sensitive key", () => {
+    expect(redactString("authorization: Bearer abc.def")).toBe(`authorization: ${REDACTED}`);
+  });
+
+  it("leaves a sensitive key with an empty value unchanged and keeps scanning", () => {
+    expect(redactString("token=; secret=abc")).toBe(`token=; secret=${REDACTED}`);
+  });
+
   it("truncates very long strings before scanning them", () => {
     const out = redactString("x".repeat(100_000));
     expect(out.length).toBeLessThan(20_000);

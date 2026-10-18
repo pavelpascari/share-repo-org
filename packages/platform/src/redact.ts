@@ -49,16 +49,35 @@ const STRING_PATTERNS: readonly (readonly [RegExp, string])[] = [
   [/\bpdl_[A-Za-z0-9_]{10,}/g, REDACTED],
 ];
 
-// `key=value`, `key: value`, `"key":"value"`, including an optional auth scheme. The key is
-// anchored at a non-key character and every quantifier around the sensitive word is bounded.
-const KEY_VALUE_PATTERN =
-  /(?<![A-Za-z0-9_-])([A-Za-z0-9_-]{0,32}?(?:token|secret|password|authorization|cookie|api[_-]?key|private[_-]?key|signature|credential|session|jwt|pem|encryption[_-]?key|master[_-]?key|signing[_-]?key|access[_-]?key)[A-Za-z0-9_-]{0,32})(["']?[ \t]{0,8}[:=][ \t]{0,8}["']?)(?:(?:bearer|basic)[ \t]{1,8})?[^\s"'&,;]+/gi;
+// `key=value`, `key: value`, `"key":"value"`. A key is a whole run of key characters (the
+// lookbehind gives each run one start, keeping the scan linear) and is judged by `isSensitiveKey`,
+// so key length never limits redaction. Only the key and separator are consumed by this pattern,
+// so a non-sensitive match such as `https:` does not hide a sensitive key later in a URL.
+const KEY_SEPARATOR_SOURCE = String.raw`(?<![A-Za-z0-9_-])([A-Za-z0-9_-]+)(["']?[ \t]*[:=][ \t]*["']?)`;
+const VALUE_PATTERN = /(?:(?:bearer|basic)[ \t]+)?[^\s"'&,;]+/iy;
+
+function redactKeyValues(input: string): string {
+  const keySeparator = new RegExp(KEY_SEPARATOR_SOURCE, "g");
+  let out = "";
+  let copiedUpTo = 0;
+  for (let match = keySeparator.exec(input); match !== null; match = keySeparator.exec(input)) {
+    if (!isSensitiveKey(match[1] ?? "")) continue;
+    const valueStart = match.index + match[0].length;
+    VALUE_PATTERN.lastIndex = valueStart;
+    const value = VALUE_PATTERN.exec(input);
+    if (value === null) continue;
+    out += `${input.slice(copiedUpTo, valueStart)}${REDACTED}`;
+    copiedUpTo = valueStart + value[0].length;
+    keySeparator.lastIndex = copiedUpTo;
+  }
+  return out + input.slice(copiedUpTo);
+}
 
 export function redactString(value: string): string {
   let out =
     value.length > MAX_STRING_LENGTH ? `${value.slice(0, MAX_STRING_LENGTH)}${TRUNCATED}` : value;
   for (const [pattern, replacement] of STRING_PATTERNS) out = out.replace(pattern, replacement);
-  return out.replace(KEY_VALUE_PATTERN, `$1$2${REDACTED}`);
+  return redactKeyValues(out);
 }
 
 export interface RedactOptions {
