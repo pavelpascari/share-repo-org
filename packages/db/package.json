@@ -8,7 +8,10 @@
   },
   "scripts": {
     "typecheck": "tsc -p .",
-    "db:generate": "drizzle-kit generate"
+    "db:generate": "drizzle-kit generate",
+    "db:migrate:local": "wrangler d1 migrations apply DB --local -c ../../apps/web/wrangler.jsonc",
+    "db:migrate:dev": "wrangler d1 migrations apply DB --remote -c ../../apps/web/wrangler.jsonc",
+    "db:migrate:prod": "wrangler d1 migrations apply DB --remote -c ../../apps/web/wrangler.jsonc --env production"
   },
   "dependencies": {
     "@sharerepo/domain": "workspace:*",
