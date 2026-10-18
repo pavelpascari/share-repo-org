@@ -37,6 +37,25 @@ describe("redactString", () => {
     expect(redactString("authorization: Bearer abc.def")).toBe(`authorization: ${REDACTED}`);
   });
 
+  it.each([
+    ["newline after the separator", "password:\n  hunter2", `password:\n  ${REDACTED}`],
+    ["newline before the separator", "secret\n= hunter2", `secret\n= ${REDACTED}`],
+    ["CRLF and tabs", "token:\r\n\thunter2", `token:\r\n\t${REDACTED}`],
+    ["scheme split across lines", "authorization:\nBearer\nabc", `authorization:\n${REDACTED}`],
+  ])("scrubs values separated by any whitespace: %s", (_name, input, expected) => {
+    expect(redactString(input)).toBe(expected);
+  });
+
+  // Found by differential fuzzing against the original implementation: token-shaped patterns
+  // must not consume a sensitive key name before its value is redacted.
+  it.each([
+    ["Paddle key glued to the key name", "pdl_bbbbbbbbbbbbclient_secret=hunter2"],
+    ["GitHub token glued to the key name", `ghp_${"A".repeat(22)}xsecret= hunter2`],
+    ["auth scheme before the key name", "basic SESSIONx:hunter2"],
+  ])("scrubs the value when %s", (_name, input) => {
+    expect(redactString(input)).not.toContain("hunter2");
+  });
+
   it("leaves a sensitive key with an empty value unchanged and keeps scanning", () => {
     expect(redactString("token=; secret=abc")).toBe(`token=; secret=${REDACTED}`);
   });

@@ -38,12 +38,13 @@ export function isSensitiveKey(key: string): boolean {
 // Defence in depth for secrets embedded in free text; key-based redaction is the primary control.
 // Every pattern must run in linear time: no unbounded quantifier may precede an alternation, and a
 // lazy scan must always have a fallback that consumes the rest of the input.
-const STRING_PATTERNS: readonly (readonly [RegExp, string])[] = [
-  // A key cut off before its END marker is redacted to the end of the string.
-  [
-    /-----BEGIN [A-Z ]{0,40}PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]{0,40}PRIVATE KEY-----|$)/g,
-    REDACTED,
-  ],
+// Order matters: token-shaped patterns run after key=value redaction so their replacements can
+// never consume a sensitive key name before its value has been redacted.
+// A key cut off before its END marker is redacted to the end of the string.
+const PRIVATE_KEY_PATTERN =
+  /-----BEGIN [A-Z ]{0,40}PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]{0,40}PRIVATE KEY-----|$)/g;
+
+const TOKEN_PATTERNS: readonly (readonly [RegExp, string])[] = [
   [/\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]+/gi, `$1 ${REDACTED}`],
   [/\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})/g, REDACTED],
   [/\bpdl_[A-Za-z0-9_]{10,}/g, REDACTED],
@@ -52,9 +53,10 @@ const STRING_PATTERNS: readonly (readonly [RegExp, string])[] = [
 // `key=value`, `key: value`, `"key":"value"`. A key is a whole run of key characters (the
 // lookbehind gives each run one start, keeping the scan linear) and is judged by `isSensitiveKey`,
 // so key length never limits redaction. Only the key and separator are consumed by this pattern,
-// so a non-sensitive match such as `https:` does not hide a sensitive key later in a URL.
-const KEY_SEPARATOR_SOURCE = String.raw`(?<![A-Za-z0-9_-])([A-Za-z0-9_-]+)(["']?[ \t]*[:=][ \t]*["']?)`;
-const VALUE_PATTERN = /(?:(?:bearer|basic)[ \t]+)?[^\s"'&,;]+/iy;
+// so a non-sensitive match such as `https:` does not hide a sensitive key later in a URL. Any
+// whitespace, including newlines, may surround the separator, as in the original pattern.
+const KEY_SEPARATOR_SOURCE = String.raw`(?<![A-Za-z0-9_-])([A-Za-z0-9_-]+)(["']?\s*[:=]\s*["']?)`;
+const VALUE_PATTERN = /(?:(?:bearer|basic)\s+)?[^\s"'&,;]+/iy;
 
 function redactKeyValues(input: string): string {
   const keySeparator = new RegExp(KEY_SEPARATOR_SOURCE, "g");
@@ -76,8 +78,9 @@ function redactKeyValues(input: string): string {
 export function redactString(value: string): string {
   let out =
     value.length > MAX_STRING_LENGTH ? `${value.slice(0, MAX_STRING_LENGTH)}${TRUNCATED}` : value;
-  for (const [pattern, replacement] of STRING_PATTERNS) out = out.replace(pattern, replacement);
-  return redactKeyValues(out);
+  out = redactKeyValues(out.replace(PRIVATE_KEY_PATTERN, REDACTED));
+  for (const [pattern, replacement] of TOKEN_PATTERNS) out = out.replace(pattern, replacement);
+  return out;
 }
 
 export interface RedactOptions {
