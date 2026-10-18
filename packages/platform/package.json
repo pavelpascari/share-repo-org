@@ -7,7 +7,7 @@
     ".": "./src/index.ts"
   },
   "scripts": {
-    "typecheck": "tsc -p ."
+    "typecheck": "tsc -p . && tsc -p test"
   },
   "dependencies": {
     "zod": "4.6.7"
