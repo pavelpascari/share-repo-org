@@ -18,7 +18,11 @@ export {
 export type { WorkspaceMembership, WorkspacePermission, WorkspaceScope } from "./authorization.ts";
 export { authorizeMembership, roleAllows, WORKSPACE_PERMISSIONS } from "./authorization.ts";
 export type { ConnectableAccountType, ConnectionStatus } from "./connection.ts";
-export { CONNECTABLE_ACCOUNT_TYPES, CONNECTION_STATUSES } from "./connection.ts";
+export {
+  CONNECTABLE_ACCOUNT_TYPES,
+  CONNECTION_STATUSES,
+  connectionStatusFor,
+} from "./connection.ts";
 export type { ExternalEventState, OutboxKind } from "./external-event.ts";
 export { EXTERNAL_EVENT_STATES, OUTBOX_KINDS } from "./external-event.ts";
 export type {
@@ -35,8 +39,22 @@ export {
 } from "./identity.ts";
 export type { IdGenerator } from "./ids.ts";
 export { randomIds } from "./ids.ts";
-export type { ResourceSelection, ResourceType } from "./resource.ts";
-export { RESOURCE_SELECTIONS, RESOURCE_TYPES } from "./resource.ts";
+export type { ResourceCapabilities, ResourceSelection, ResourceType } from "./resource.ts";
+export {
+  GITHUB_PERSONAL_REPOSITORY_CAPABILITIES,
+  isSellable,
+  parseResourceCapabilities,
+  RESOURCE_SELECTIONS,
+  RESOURCE_TYPES,
+} from "./resource.ts";
+export type {
+  Change,
+  CurrentResource,
+  ObservedRepository,
+  ResourceChanges,
+  ResourceSyncPlan,
+} from "./resource-sync.ts";
+export { planResourceSync } from "./resource-sync.ts";
 export type { Clock, Instant } from "./time.ts";
 export { systemClock } from "./time.ts";
 export type {
