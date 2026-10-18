@@ -46,7 +46,7 @@ Paddle, GitHub App, Better Auth, Queues, Workflows, provisioning, and UI beyond 
 ├── scripts/
 │   ├── coverage-ratchet.ts      # CI checks 2 and 3 from decision 0005
 │   └── scenario-catalog.ts      # checks scenario names in testing-strategy.md exist as tests
-├── .github/workflows/ci.yml, deploy.yml
+├── .github/workflows/ci.yml   (checks, then gated deploys)
 ├── biome.json, tsconfig.base.json, vitest.config.ts, playwright.config.ts
 ├── pnpm-workspace.yaml, package.json, .nvmrc
 └── docs/
