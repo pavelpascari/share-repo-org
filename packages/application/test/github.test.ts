@@ -195,7 +195,12 @@ describe("connection/install-callback-bound-to-intent", () => {
     const state = await startedState(github, owner);
     await expect(
       completeGitHubConnection(serviceContext(), owner, { state, installationId }, github),
-    ).resolves.toEqual({ ok: true, workspaceSlug: owner.slug, connectionId: connection.id });
+    ).resolves.toEqual({
+      ok: true,
+      workspaceId: owner.workspaceId,
+      workspaceSlug: owner.slug,
+      connectionId: connection.id,
+    });
   });
 
   it.each([

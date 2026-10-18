@@ -118,6 +118,23 @@ describe("createFetchHandler", () => {
     });
   });
 
+  describe("/webhooks/github", () => {
+    it("is answered before React Router and only accepts POST", async () => {
+      let rendered = 0;
+      const { fetch } = harness(async () => {
+        rendered += 1;
+        return new Response("app");
+      });
+      const get = await fetch(request("/webhooks/github"));
+      expect(get.status).toBe(405);
+      expect(get.headers.get("allow")).toBe("POST");
+      // Not configured in the test environment: the endpoint answers itself, not the app.
+      const post = await fetch(request("/webhooks/github", { method: "POST", body: "{}" }));
+      expect(post.status).toBe(503);
+      expect(rendered).toBe(0);
+    });
+  });
+
   describe("request IDs", () => {
     it("never adopts an incoming x-request-id, but logs a valid one as clientRequestId", async () => {
       const { fetch, logs } = harness();
@@ -229,6 +246,7 @@ describe("createFetchHandler", () => {
           errorCode: "configuration_error",
           issues: [
             { path: "DB", code: "custom" },
+            { path: "EVENTS", code: "custom" },
             { path: "ENVIRONMENT", code: "invalid_value" },
           ],
         });

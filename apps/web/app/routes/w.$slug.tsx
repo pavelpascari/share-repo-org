@@ -22,6 +22,9 @@ export default function WorkspaceLayout({ loaderData }: Route.ComponentProps) {
         <Link to={`/w/${workspace.slug}`} className="underline">
           Overview
         </Link>
+        <Link to={`/w/${workspace.slug}/repositories`} className="underline">
+          Repositories
+        </Link>
         {workspace.role === "owner" && (
           <Link to={`/w/${workspace.slug}/settings`} className="underline">
             Settings

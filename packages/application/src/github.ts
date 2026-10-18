@@ -117,7 +117,12 @@ export type CompleteConnectionFailure =
   | "installation_taken";
 
 export type CompleteConnectionResult =
-  | { readonly ok: true; readonly workspaceSlug: string; readonly connectionId: string }
+  | {
+      readonly ok: true;
+      readonly workspaceId: string;
+      readonly workspaceSlug: string;
+      readonly connectionId: string;
+    }
   | { readonly ok: false; readonly reason: CompleteConnectionFailure };
 
 const INSTALLATION_ID = /^[1-9][0-9]{0,19}$/;
@@ -177,7 +182,7 @@ export async function completeGitHubConnection(
   const existing = await repo.findConnectionByInstallationId(ctx.db, installation.id);
   if (existing?.workspaceId === intent.workspaceId) {
     // GitHub calls the setup URL again after the owner changes the repository selection.
-    return { ok: true, workspaceSlug, connectionId: existing.id };
+    return { ok: true, workspaceId: intent.workspaceId, workspaceSlug, connectionId: existing.id };
   }
   // An installation attached to another workspace is refused by the unique installation ID.
 
@@ -233,12 +238,14 @@ export async function completeGitHubConnection(
   if (!result.ok) {
     return fail(result.reason === "installation_taken" ? "installation_taken" : "invalid_state");
   }
-  return { ok: true, workspaceSlug, connectionId };
+  return { ok: true, workspaceId: intent.workspaceId, workspaceSlug, connectionId };
 }
 
 export type WebhookIngestResult =
   | { readonly status: "rejected" }
-  | { readonly status: "accepted" | "duplicate"; readonly eventId: string };
+  /** Recorded; `outboxId` is the processing intent to hand to the queue. */
+  | { readonly status: "accepted"; readonly eventId: string; readonly outboxId: string }
+  | { readonly status: "duplicate"; readonly eventId: string };
 
 /**
  * Receives a GitHub webhook. The signature is verified on the raw body before anything is parsed
@@ -267,6 +274,7 @@ export async function ingestGitHubWebhook(
   const ctx = atOneInstant(context);
   const now = ctx.clock.now();
   const eventId = ctx.ids.next();
+  const outboxId = ctx.ids.next();
   const result = await repo.recordExternalEvent(
     ctx.db,
     {
@@ -281,7 +289,7 @@ export async function ingestGitHubWebhook(
     },
     [
       {
-        id: ctx.ids.next(),
+        id: outboxId,
         kind: "process_external_event",
         subjectId: eventId,
         createdAt: now,
@@ -289,7 +297,9 @@ export async function ingestGitHubWebhook(
       },
     ],
   );
-  return { status: result.inserted ? "accepted" : "duplicate", eventId: result.eventId };
+  return result.inserted
+    ? { status: "accepted", eventId, outboxId }
+    : { status: "duplicate", eventId: result.eventId };
 }
 
 /** Events that can change an installation's status or repositories; all others are ignored. */

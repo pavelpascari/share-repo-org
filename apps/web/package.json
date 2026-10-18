@@ -15,6 +15,7 @@
     "@sharerepo/application": "workspace:*",
     "@sharerepo/db": "workspace:*",
     "@sharerepo/domain": "workspace:*",
+    "@sharerepo/integrations": "workspace:*",
     "@sharerepo/platform": "workspace:*",
     "better-auth": "1.7.10",
     "drizzle-orm": "0.45.4",
