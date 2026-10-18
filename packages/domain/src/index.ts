@@ -23,8 +23,21 @@ export {
   CONNECTION_STATUSES,
   connectionStatusFor,
 } from "./connection.ts";
+export type {
+  AccessLevel,
+  EntitlementSourceType,
+  EntitlementState,
+} from "./entitlement.ts";
+export {
+  ACCESS_LEVELS,
+  ACCESS_POLICY_VERSION,
+  ENTITLEMENT_SOURCE_TYPES,
+  ENTITLEMENT_STATES,
+} from "./entitlement.ts";
 export type { ExternalEventState, OutboxKind } from "./external-event.ts";
 export { EXTERNAL_EVENT_STATES, OUTBOX_KINDS } from "./external-event.ts";
+export type { GrantState, RetryClass, SubjectType } from "./grant.ts";
+export { GRANT_STATES, RETRY_CLASSES, SUBJECT_TYPES } from "./grant.ts";
 export type {
   GitHubLogin,
   GitHubLoginError,
@@ -39,6 +52,14 @@ export {
 } from "./identity.ts";
 export type { IdGenerator } from "./ids.ts";
 export { randomIds } from "./ids.ts";
+export type { CommercialSource, OfferStatus } from "./offer.ts";
+export {
+  COMMERCIAL_SOURCES,
+  GRACE_PERIOD_DAYS_DEFAULT,
+  GRACE_PERIOD_DAYS_MAX,
+  GRACE_PERIOD_DAYS_MIN,
+  OFFER_STATUSES,
+} from "./offer.ts";
 export type { ResourceCapabilities, ResourceSelection, ResourceType } from "./resource.ts";
 export {
   GITHUB_PERSONAL_REPOSITORY_CAPABILITIES,
@@ -55,6 +76,8 @@ export type {
   ResourceSyncPlan,
 } from "./resource-sync.ts";
 export { planResourceSync } from "./resource-sync.ts";
+export type { SubscriptionState } from "./subscription.ts";
+export { SUBSCRIPTION_STATES } from "./subscription.ts";
 export type { Clock, Instant } from "./time.ts";
 export { systemClock } from "./time.ts";
 export type {

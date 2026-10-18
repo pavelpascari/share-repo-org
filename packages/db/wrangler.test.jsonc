@@ -9,6 +9,12 @@
       "database_name": "sharerepo-test",
       "database_id": "00000000-0000-0000-0000-000000000000",
       "migrations_dir": "./migrations"
+    },
+    {
+      // Left unmigrated by the setup file: upgrade tests apply migrations to it step by step.
+      "binding": "UPGRADE_DB",
+      "database_name": "sharerepo-upgrade-test",
+      "database_id": "00000000-0000-0000-0000-000000000001"
     }
   ]
 }
