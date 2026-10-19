@@ -5,14 +5,14 @@ import { insertWhere, runBatch, type Statement } from "./batch.ts";
 import type { Db } from "./client.ts";
 import type { Customer } from "./customer-repository.ts";
 import { isUniqueViolation } from "./errors.ts";
-import { conditionalOutboxInsert, type NewOutboxRow } from "./outbox-repository.ts";
 import {
-  customers,
-  entitlements,
-  outbox,
-  subscriptionItems,
-  subscriptions,
-} from "./schema/index.ts";
+  assertReconcileRows,
+  conditionalOutboxInsert,
+  dedupedOutboxInsert,
+  type NewOutboxRow,
+  pendingOutbox,
+} from "./outbox-repository.ts";
+import { customers, entitlements, subscriptionItems, subscriptions } from "./schema/index.ts";
 
 /** Domain `Subscription`: normalized commercial facts observed from a source. Not access. */
 export type Subscription = typeof subscriptions.$inferSelect;
@@ -63,6 +63,12 @@ export interface SubscriptionRefresh {
   offers: readonly OfferVersionRef[];
   entitlements: EntitlementPlanWrite;
   outbox?: readonly NewOutboxRow[];
+  /**
+   * `reconcile_resource` rows (keyed `<workspaceId>:<resourceId>`) for every resource whose
+   * entitlements the plan creates, updates or ends. Each is inserted only if no row with its key
+   * is pending.
+   */
+  reconcile: readonly NewOutboxRow[];
 }
 
 export type ApplySubscriptionRefreshResult =
@@ -179,6 +185,7 @@ export async function listLiveEntitlementsForWorkspace(
 /** Rows a refresh writes must belong to the refreshed subscription; anything else is a bug. */
 function assertRefreshScoped(input: SubscriptionRefresh): void {
   const { workspaceId, subscription } = input;
+  assertReconcileRows(input.reconcile, workspaceId, "applySubscriptionRefresh");
   const scoped =
     subscription.workspaceId === workspaceId &&
     subscription.version === input.expectedVersion + 1 &&
@@ -211,7 +218,8 @@ function offersUnchanged(input: SubscriptionRefresh): SQL {
 
 /**
  * Writes one refresh decision in one atomic batch (decision 0003): the customer (created or
- * linked), the subscription and its items, the entitlement plan, outbox rows and audit events.
+ * linked), the subscription and its items, the entitlement plan, outbox rows (`reconcile` rows
+ * deduplicated against pending ones) and audit events.
  *
  * Concurrency. D1 runs a batch as one transaction, so a guard evaluated by one statement still
  * holds for every later statement until a statement in the batch changes it.
@@ -338,6 +346,7 @@ export async function applySubscriptionRefresh(
     ),
     ...input.entitlements.create.map((row) => insertWhere(db, entitlements, row, guard)),
     ...(input.outbox ?? []).map((row) => conditionalOutboxInsert(db, row, guard)),
+    ...input.reconcile.map((row) => dedupedOutboxInsert(db, row, guard)),
     ...conditionalAuditInserts(db, audit, guard),
   );
   if (!creating) {
@@ -367,10 +376,6 @@ export async function applySubscriptionRefresh(
  * application's sweep tests queue rows with that encoder and check this lookup finds them.
  */
 const refreshKeyOfRow = sql`${subscriptions.workspaceId} || ':' || ${subscriptions.source} || ':' || ${subscriptions.externalSubscriptionId}`;
-
-/** An unsent, unfailed outbox row of this kind and key: the work is already queued. */
-const pending = (kind: NewOutboxRow["kind"], subjectId: SQL) =>
-  sql`EXISTS (SELECT 1 FROM ${outbox} WHERE ${outbox.kind} = ${kind} AND ${outbox.subjectId} = ${subjectId} AND ${outbox.sentAt} IS NULL AND ${outbox.failedAt} IS NULL)`;
 
 /**
  * Queues a `refresh_subscription` (built by `makeOutboxRow`) for up to `limit` subscriptions, in
@@ -430,7 +435,7 @@ export async function claimDueEvaluations(
             and(
               lapsed,
               sql`NOT (${isDue})`,
-              sql`NOT ${pending(OutboxKind.RefreshSubscription, refreshKeyOfRow)}`,
+              sql`NOT ${pendingOutbox(OutboxKind.RefreshSubscription, refreshKeyOfRow)}`,
             ),
           )
           .orderBy(asc(subscriptions.id))
@@ -451,10 +456,7 @@ export async function claimDueEvaluations(
         ),
       conditionalOutboxInsert(db, input.makeOutboxRow(subscription), sql`changes() = 1`),
     ]),
-    ...repair.map((subscription) => {
-      const row = input.makeOutboxRow(subscription);
-      return conditionalOutboxInsert(db, row, sql`NOT ${pending(row.kind, sql`${row.subjectId}`)}`);
-    }),
+    ...repair.map((subscription) => dedupedOutboxInsert(db, input.makeOutboxRow(subscription))),
   ]);
   const queuedDue = changes.slice(0, 2 * due.length).filter((_, index) => index % 2 === 1);
   return [...queuedDue, ...changes.slice(2 * due.length)].reduce((sum, n) => sum + n, 0);

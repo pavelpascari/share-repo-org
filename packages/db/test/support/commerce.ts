@@ -241,6 +241,7 @@ export async function subscribedWorkspace(
       subscription,
       items: [item],
       offers: [{ offerId: offer.offer.id, version: 1 }],
+      reconcile: [],
       entitlements: { create: [entitlement], update: [], end: [] },
     },
     [workspaceEvent(ws.workspaceId)],

@@ -63,6 +63,7 @@ export {
 } from "./offer-repository.ts";
 export {
   claimOutbox,
+  dedupedOutboxInsert,
   enqueueOutbox,
   enqueueOutboxRows,
   markOutboxFailed,
@@ -70,7 +71,34 @@ export {
   type NewOutboxRow,
   type OutboxRow,
   outboxInsert,
+  pendingOutbox,
 } from "./outbox-repository.ts";
+export {
+  applyGrantObservation,
+  type BeginMutation,
+  beginMutation,
+  claimDueReconciles,
+  claimReconcileLease,
+  type FinishMutation,
+  finishMutation,
+  type GrantObservation,
+  type GrantUpdate,
+  type GrantWritable,
+  type LeaseGuardedResult,
+  type LeaseKey,
+  latestMutationOperations,
+  listGrantsForResource,
+  listInviteStarts,
+  listLiveEntitlementsForResource,
+  listOpenMutations,
+  type ProviderMutation,
+  type ResetGrantRetryResult,
+  reconcileKey,
+  reconcileKeyOfRow,
+  releaseReconcileLease,
+  requestReconcile,
+  resetGrantRetry,
+} from "./reconcile-repository.ts";
 export {
   type ApplyResourceSyncResult,
   applyResourceSync,

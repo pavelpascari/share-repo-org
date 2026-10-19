@@ -1,5 +1,5 @@
-import type { Instant } from "@sharerepo/domain";
-import { and, asc, eq, inArray, isNull, lt, lte, sql } from "drizzle-orm";
+import { type Instant, OutboxKind } from "@sharerepo/domain";
+import { and, asc, eq, inArray, isNull, lt, lte, type SQL, sql } from "drizzle-orm";
 import { runBatch } from "./batch.ts";
 import { chunked } from "./chunks.ts";
 import type { Db } from "./client.ts";
@@ -40,6 +40,46 @@ export function conditionalOutboxInsert(
     .select(
       sql`SELECT ${r.id}, ${r.kind}, ${r.subjectId}, ${r.createdAt}, ${r.availableAt}, ${r.attempts}, ${r.sentAt}, ${r.failedAt}, ${r.lastErrorCode} WHERE ${condition}`,
     );
+}
+
+/**
+ * "An unsent, unfailed outbox row of this kind and key exists": the work is already queued.
+ * `subjectId` is SQL so a sweep can match the key of each row it scans.
+ */
+export function pendingOutbox(kind: NewOutboxRow["kind"], subjectId: SQL): SQL {
+  return sql`EXISTS (SELECT 1 FROM ${outbox} WHERE ${outbox.kind} = ${kind} AND ${outbox.subjectId} = ${subjectId} AND ${outbox.sentAt} IS NULL AND ${outbox.failedAt} IS NULL)`;
+}
+
+/**
+ * An outbox insert that writes only if no row of the same kind and key is pending (and
+ * `condition`, when given, holds), so work that is already queued is not queued twice. Rows that
+ * were sent or failed for good do not count: the work is queued again.
+ */
+export function dedupedOutboxInsert(db: Db, row: NewOutboxRow, condition?: SQL) {
+  const absent = sql`NOT ${pendingOutbox(row.kind, sql`${row.subjectId}`)}`;
+  return conditionalOutboxInsert(
+    db,
+    row,
+    condition === undefined ? absent : sql`${condition} AND ${absent}`,
+  );
+}
+
+/**
+ * Throws unless every row is a `reconcile_resource` keyed in `workspaceId` (`<workspaceId>:…`):
+ * a write must never queue work for another workspace.
+ */
+export function assertReconcileRows(
+  rows: readonly NewOutboxRow[],
+  workspaceId: string,
+  operation: string,
+): void {
+  const scoped = rows.every(
+    (row) =>
+      row.kind === OutboxKind.ReconcileResource && row.subjectId.startsWith(`${workspaceId}:`),
+  );
+  if (!scoped) {
+    throw new Error(`${operation}: expected reconcile_resource rows of the workspace`);
+  }
 }
 
 /** Adds work on its own, outside any other change. */

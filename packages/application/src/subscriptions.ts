@@ -424,6 +424,8 @@ async function attemptRefresh(
       // retry plans from the new configuration: its recompute may already have run.
       offers: offers.map(({ offerId, version }) => ({ offerId, version })),
       entitlements: { create: created, update: plan.update, end: plan.end },
+      // T5 fills this
+      reconcile: [],
     },
     audit as [AuditEvent, ...AuditEvent[]],
   );
