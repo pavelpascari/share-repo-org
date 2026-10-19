@@ -14,3 +14,4 @@ Each record has: **Status**, **Context**, **Decision**, **Consequences**.
 | [0006](0006-authentication-with-better-auth.md) | Better Auth tables, GitHub sign-in via `genericOAuth`, E2E seam | Accepted |
 | [0007](0007-audit-events.md) | Append-only audit events written in the same batch | Accepted |
 | [0008](0008-v1-personal-account-repositories.md) | v1 sells personal-account repositories, with write access | Accepted |
+| [0009](0009-entitlement-policy-v1.md) | Entitlement policy v1: creator-set grace period, derived entitlements, simulated source | Accepted |

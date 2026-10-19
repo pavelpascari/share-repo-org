@@ -1,5 +1,6 @@
 import { createExecutionContext, createScheduledController } from "cloudflare:test";
 import { env } from "cloudflare:workers";
+import { simulatedEntitlementSource } from "@sharerepo/application";
 import { createFakeGitHubApp } from "@sharerepo/integrations/testing";
 import { REQUEST_ID_HEADER } from "@sharerepo/platform";
 import {
@@ -20,6 +21,7 @@ function testWorker(clock = new FakeClock("2026-10-18T12:00:01.500Z")) {
     ids: new SequentialIds({ prefix: "corr-" }),
     clock,
     github: () => createFakeGitHubApp(),
+    simulatedSource: simulatedEntitlementSource,
   });
 }
 

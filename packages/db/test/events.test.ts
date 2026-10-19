@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   claimOutbox,
   enqueueOutbox,
+  enqueueOutboxRows,
   getExternalEvent,
   listExternalEventsByState,
   markExternalEvent,
@@ -235,6 +236,30 @@ describe("outbox", () => {
     expect(
       await env.DB.prepare("SELECT failed_at FROM outbox WHERE id = ?").bind(sent.id).first(),
     ).toEqual({ failed_at: null });
+  });
+
+  it("queues many rows in bounded batches, few D1 calls for a large fan-out", async () => {
+    const prefix = uniqueId("fan");
+    // Never due, so other tests' claims in this file do not see them.
+    const rows = Array.from({ length: 120 }, (_, i) =>
+      work(`${prefix}-${i}`, { availableAt: T0 + 1e13 }),
+    );
+    let batches = 0;
+    const counting = new Proxy(db, {
+      get: (target, property, receiver) => {
+        const value = Reflect.get(target, property, receiver);
+        if (property !== "batch") return value;
+        return (statements: unknown[]) => {
+          batches += 1;
+          expect(statements.length).toBeLessThanOrEqual(50);
+          return value.call(target, statements);
+        };
+      },
+    });
+    await enqueueOutboxRows(counting, rows);
+    expect(batches).toBe(3);
+    expect(await count("outbox", "subject_id LIKE ?", `${prefix}-%`)).toBe(120);
+    await enqueueOutboxRows(db, []);
   });
 
   it("rejects an unknown kind", async () => {

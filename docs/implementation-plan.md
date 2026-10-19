@@ -230,7 +230,7 @@ Resolve these with evidence at the named phase rather than guessing now:
 - Better Auth schema ownership and mapping to domain users — Phase 1;
 - exact GitHub App permissions and viable repository ownership models — Phase 2;
 - access ownership policy for pre-existing or indirect grants — Phase 2–4;
-- fixed versus creator-configurable grace period — Phase 3 or private beta;
+- fixed versus creator-configurable grace period — Phase 3 or private beta (resolved: per offer, decision 0009);
 - Paddle OAuth availability and approval path versus temporary credentials — Phase 5;
 - Workflows versus database-scheduled jobs for each timer — Phase 6;
 - public pricing, quotas, and self-hosting — after private beta.

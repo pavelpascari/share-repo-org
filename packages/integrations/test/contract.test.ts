@@ -7,6 +7,7 @@ import suspendedInstallation from "./fixtures/installation-suspended.json";
 import page1 from "./fixtures/repositories-page-1.json";
 import page2 from "./fixtures/repositories-page-2.json";
 import suspendedToken from "./fixtures/suspended-token.json";
+import user from "./fixtures/user.json";
 import { appKey } from "./support/keys.ts";
 import { API, jsonResponse, on, stubFetch, tokenRoute } from "./support/stub-fetch.ts";
 
@@ -40,12 +41,14 @@ const REPOSITORIES = [
     archived: false,
   },
 ] as const;
+const SUBSCRIBER = { id: "6001", login: "octo-subscriber", type: "User" } as const;
 const SUSPENDED_AT = Date.parse("2026-10-10T12:00:00Z");
 
 function fakePort(): GitHubAppPort {
   const fake = createFakeGitHubApp();
   fake.addInstallation({ id: "42", account: ACCOUNT, repositories: REPOSITORIES });
   fake.addInstallation({ id: "43", account: ACCOUNT, suspendedAt: SUSPENDED_AT });
+  fake.addUser(SUBSCRIBER);
   return fake;
 }
 
@@ -55,6 +58,11 @@ async function realPort(): Promise<GitHubAppPort> {
     on("GET", "/app/installations/43", () => jsonResponse(200, suspendedInstallation)),
     tokenRoute("42"),
     on("POST", "/app/installations/43/access_tokens", () => jsonResponse(403, suspendedToken)),
+    // GitHub matches logins case-insensitively and answers with the canonical spelling.
+    ({ method, url }) =>
+      method === "GET" && url.pathname.toLowerCase() === "/users/octo-subscriber"
+        ? jsonResponse(200, user)
+        : undefined,
     ({ url }) => {
       if (url.pathname !== "/installation/repositories") return undefined;
       return url.searchParams.get("page") === "2"
@@ -104,6 +112,36 @@ describe.each([
     const port = await make();
     await expect(port.getInstallation("43")).resolves.toMatchObject({ suspendedAt: SUSPENDED_AT });
     await expect(port.listInstallationRepositories("43")).rejects.toMatchObject({
+      kind: "suspended",
+    });
+  });
+
+  it("resolves a login to the immutable user ID and canonical login", async () => {
+    const port = await make();
+    await expect(port.getUserByLogin("42", "octo-subscriber")).resolves.toEqual(SUBSCRIBER);
+    await expect(port.getUserByLogin("42", "Octo-Subscriber")).resolves.toEqual(SUBSCRIBER);
+  });
+
+  it("reports an unknown login as not_found", async () => {
+    const port = await make();
+    const error = await port.getUserByLogin("42", "nobody-here").catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(GitHubApiError);
+    expect(error).toMatchObject({ kind: "not_found" });
+  });
+
+  it("refuses an invalid login as rejected, without echoing it", async () => {
+    const port = await make();
+    for (const login of ["", "..", "a/b", "x".repeat(40)]) {
+      const error = await port.getUserByLogin("42", login).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(GitHubApiError);
+      expect(error).toMatchObject({ kind: "rejected" });
+      if (login !== "") expect((error as Error).message).not.toContain(login);
+    }
+  });
+
+  it("cannot resolve logins through a suspended installation", async () => {
+    const port = await make();
+    await expect(port.getUserByLogin("43", "octo-subscriber")).rejects.toMatchObject({
       kind: "suspended",
     });
   });

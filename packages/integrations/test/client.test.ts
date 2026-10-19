@@ -350,6 +350,63 @@ describe("collaborators and invitations", () => {
   });
 });
 
+describe("getUserByLogin", () => {
+  it("looks the login up with the installation token and maps the account type", async () => {
+    const { app, calls } = await client([
+      tokenRoute("42"),
+      on("GET", "/users/octo-bot", () =>
+        jsonResponse(200, { id: 7001, login: "octo-bot", type: "Bot" }),
+      ),
+      on("GET", "/users/acme", () =>
+        jsonResponse(200, { id: 7002, login: "acme", type: "Organization" }),
+      ),
+    ]);
+    expect(await app.getUserByLogin("42", "octo-bot")).toEqual({
+      id: "7001",
+      login: "octo-bot",
+      type: "Bot",
+    });
+    expect((await app.getUserByLogin("42", "acme")).type).toBe("Organization");
+    expect(calls.map((call) => [call.method, call.url, call.authorization])).toEqual([
+      ["POST", `${API}/app/installations/42/access_tokens`, expect.stringMatching(/^Bearer /)],
+      ["GET", `${API}/users/octo-bot`, "Bearer ghs_token_42"],
+      ["GET", `${API}/users/acme`, "Bearer ghs_token_42"],
+    ]);
+  });
+
+  it("validates the login before making any request", async () => {
+    const { app, calls } = await client([tokenRoute("42")]);
+    for (const login of ["..", "octo/../x", "a b", "", "x".repeat(40)]) {
+      const error = await failure(app.getUserByLogin("42", login));
+      expect(error.kind).toBe("rejected");
+      expect(error.message).toBe("GitHub request refused: invalid login");
+    }
+    expect(calls).toEqual([]);
+  });
+
+  it("rejects a user response with a bad ID or an unknown type", async () => {
+    const { app } = await client([
+      tokenRoute("42"),
+      on("GET", "/users/zero", () => jsonResponse(200, { id: 0, login: "zero", type: "User" })),
+      on("GET", "/users/odd", () => jsonResponse(200, { id: 1, login: "odd", type: "Mannequin" })),
+    ]);
+    expect((await failure(app.getUserByLogin("42", "zero"))).kind).toBe("malformed_response");
+    expect((await failure(app.getUserByLogin("42", "odd"))).kind).toBe("malformed_response");
+  });
+
+  it("never puts the installation token into a lookup error", async () => {
+    const canaries = createSecretCanaries(["token"]);
+    const { app } = await client([
+      on("POST", "/app/installations/42/access_tokens", () =>
+        jsonResponse(201, { token: canaries.token, expires_at: "2099-01-01T00:00:00Z" }),
+      ),
+    ]);
+    const error = await failure(app.getUserByLogin("42", "missing"));
+    expect(error).toMatchObject({ kind: "not_found", status: 404 });
+    expectNoCanaryLeak(error, canaries);
+  });
+});
+
 describe("pathSegment", () => {
   it.each([
     ["login", "octo-creator", true],

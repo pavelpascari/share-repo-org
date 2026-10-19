@@ -273,14 +273,18 @@ Provider-specific details can live in validated metadata or integration tables w
 ### Entitlement
 
 ```text
-pending -> active -> expiring -> expired
-              |                    ^
-              +----> revoked ------+
-pending/active/expiring -> blocked
-blocked -> active | expired | revoked
+active -> expired    (validity ended: grace ran out, cancellation took effect, subscription expired)
+active -> revoked    (the source stopped mapping it: paused, offer access removed or archived, customer unlinked, subscription gone)
 ```
 
-Keep the exact state set minimal. Validity timestamps and decision reason carry more meaning than a proliferation of states.
+Stored states are only `active`, `expired` and `revoked` ([decision 0009](decisions/0009-entitlement-policy-v1.md)):
+
+- An ended entitlement is never reopened; a reactivation creates a new entitlement.
+- An active entitlement whose `validUntil` has passed has already ended, even if no sweep has recorded it yet. The next plan ends it as `expired` and never extends it.
+- "Expiring" is an active entitlement with `validUntil` set.
+- "Pending" and "blocked" are reconciliation planner decisions about a subject and resource, not entitlement states.
+
+Validity timestamps and the decision reason carry the rest of the meaning.
 
 ### Grant
 
@@ -312,7 +316,7 @@ linked GitHub ExternalIdentity
 GitHub Subject
 ```
 
-Do not grant repository access from an unverified email match alone. Define a claim process for purchases made before sign-in, protect against account takeover, and audit linking changes.
+Do not grant repository access from an unverified email match alone. In Phase 3, only the simulated source links a customer to a subject, and only because the workspace owner names the GitHub account explicitly (decision 0009). Phase 5 replaces this with the claim flow. Define a claim process for purchases made before sign-in, protect against account takeover, and audit linking changes.
 
 ## Abstraction boundary
 

@@ -8,6 +8,10 @@ export function TextField(props: {
   defaultValue?: string;
   error?: string | undefined;
   isRequired?: boolean;
+  type?: "text" | "number";
+  min?: number;
+  max?: number;
+  className?: string;
 }) {
   return (
     <AriaTextField
@@ -16,10 +20,15 @@ export function TextField(props: {
       isRequired={props.isRequired ?? false}
       isInvalid={props.error !== undefined}
       validationBehavior="aria"
-      className="flex flex-col gap-1"
+      className={`flex flex-col gap-1 ${props.className ?? ""}`}
     >
       <Label className="text-sm font-medium">{props.label}</Label>
-      <Input className="rounded border border-gray-300 px-3 py-2 data-[invalid]:border-red-600" />
+      <Input
+        type={props.type ?? "text"}
+        {...(props.min === undefined ? {} : { min: props.min })}
+        {...(props.max === undefined ? {} : { max: props.max })}
+        className="rounded border border-gray-300 px-3 py-2 data-[invalid]:border-red-600"
+      />
       {props.description !== undefined && (
         <Text slot="description" className="text-sm text-gray-600">
           {props.description}

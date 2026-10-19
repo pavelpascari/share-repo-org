@@ -6,7 +6,12 @@ import { parseWebEnv } from "../../workers/env.ts";
 
 /** A router context as the Worker entry builds it, from the test Worker's validated env. */
 export function requestContext(
-  options: { correlationId?: string; sink?: LogSink; rawEnv?: unknown } = {},
+  options: {
+    correlationId?: string;
+    sink?: LogSink;
+    rawEnv?: unknown;
+    ctx?: ExecutionContext;
+  } = {},
 ): RouterContextProvider {
   const correlationId = options.correlationId ?? `corr-${crypto.randomUUID()}`;
   const logger = createLogger(
@@ -16,7 +21,7 @@ export function requestContext(
   const context = new RouterContextProvider();
   context.set(cloudflareContext, {
     env: parseWebEnv(options.rawEnv ?? env),
-    ctx: {} as ExecutionContext,
+    ctx: options.ctx ?? ({} as ExecutionContext),
     correlationId,
     logger,
   });

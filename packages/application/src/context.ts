@@ -1,5 +1,5 @@
 import type { Db } from "@sharerepo/db";
-import type { AuditContext, AuditEvent } from "@sharerepo/domain";
+import type { AUDIT_ACTIONS, AuditAction, AuditContext, AuditEvent } from "@sharerepo/domain";
 
 /** What every service call needs: storage, time, IDs, and the request's correlation ID. */
 export interface ServiceContext extends AuditContext {
@@ -24,3 +24,8 @@ export function atOneInstant(ctx: ServiceContext): ServiceContext {
   const now = ctx.clock.now();
   return { ...ctx, clock: { now: () => now } };
 }
+
+/** Audit actions about one workspace (as opposed to a user's account). */
+export type WorkspaceAuditAction = {
+  [A in AuditAction]: (typeof AUDIT_ACTIONS)[A]["scope"] extends "workspace" ? A : never;
+}[AuditAction];

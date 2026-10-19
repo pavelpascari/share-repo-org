@@ -14,6 +14,9 @@ export default [
       index("routes/w.$slug._index.tsx"),
       route("settings", "routes/w.$slug.settings.tsx"),
       route("repositories", "routes/w.$slug.repositories.tsx"),
+      route("offers", "routes/w.$slug.offers.tsx"),
+      route("access", "routes/w.$slug.access.tsx"),
+      route("simulator", "routes/w.$slug.simulator.tsx"),
     ]),
   ]),
 ] satisfies RouteConfig;

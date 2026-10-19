@@ -1,4 +1,4 @@
-import type { Clock, Instant } from "@sharerepo/domain";
+import { type Clock, type Instant, parseGitHubLogin } from "@sharerepo/domain";
 import { z } from "zod";
 import { GitHubApiError } from "./errors.ts";
 import { importPrivateKey, signAppJwt } from "./jwt.ts";
@@ -7,10 +7,12 @@ import type {
   GitHubAppPort,
   GitHubInstallation,
   GitHubRepository,
+  GitHubUser,
 } from "./port.ts";
 
 // The GitHub App's REST client. Every response is Zod-parsed; IDs become decimal strings.
 // https://docs.github.com/en/rest/apps/apps and https://docs.github.com/en/rest/collaborators
+// and https://docs.github.com/en/rest/users/users
 
 export interface GitHubAppOptions {
   readonly appId: string;
@@ -89,6 +91,12 @@ const accountType = z
   .transform((type): GitHubAccountType => type ?? "Enterprise");
 const account = z.object({ id, login: z.string().min(1), type: accountType });
 const user = z.object({ id, login: z.string().min(1) });
+
+const userResponse = z.object({
+  id,
+  login: z.string().min(1),
+  type: z.enum(["User", "Organization", "Bot"]),
+});
 
 const tokenResponse = z.object({ token: z.string().min(1), expires_at: timestamp });
 const installationResponse = z.object({
@@ -252,6 +260,22 @@ export function createGitHubApp(options: GitHubAppOptions): GitHubAppClient {
       );
       url.searchParams.set("state", state);
       return url.toString();
+    },
+
+    async getUserByLogin(installationId, login) {
+      const operation = "get user";
+      const parsed = parseGitHubLogin(login);
+      if (!parsed.ok) {
+        throw new GitHubApiError("rejected", "GitHub request refused: invalid login");
+      }
+      const response = await request(
+        operation,
+        "GET",
+        `/users/${pathSegment("login", parsed.value)}`,
+        installation(installationId),
+      );
+      const body = parse(operation, userResponse, await json(response));
+      return { id: body.id, login: body.login, type: body.type } satisfies GitHubUser;
     },
 
     async listCollaborators(installationId, owner, repo) {

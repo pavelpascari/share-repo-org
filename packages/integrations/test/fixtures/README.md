@@ -12,3 +12,4 @@ recordings**. Replace them with sanitised recordings from the Phase 2 live spike
 | `repositories-page-1.json` | `GET /installation/repositories?per_page=100`, first page (served with a `Link: rel="next"` header) |
 | `repositories-page-2.json` | second and last page |
 | `suspended-token.json` | `POST /app/installations/{id}/access_tokens` → 403 for a suspended installation |
+| `user.json` | `GET /users/{username}` ("Get a user", a personal account's public profile; docs.github.com/en/rest/users/users) |

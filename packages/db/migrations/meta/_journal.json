@@ -29,6 +29,13 @@
       "when": 1792352712352,
       "tag": "0003_resync_versions_and_outbox_failures",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1792360622834,
+      "tag": "0004_entitlements_core",
+      "breakpoints": true
     }
   ]
 }

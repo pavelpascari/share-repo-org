@@ -49,6 +49,47 @@ const VALID_DETAILS = {
     previousSelection: "selected",
     selection: "removed",
   },
+  "offer.created": { name: "Pro", version: 1, gracePeriodDays: 7, items: 1, accesses: 2 },
+  "offer.updated": { version: 3, previousVersion: 2, changes: ["name", "accesses"] },
+  "offer.archived": { version: 4 },
+  "subject.created": { provider: "github", externalSubjectId: "583231", login: "octocat" },
+  "subject.login_updated": {
+    provider: "github",
+    externalSubjectId: "583231",
+    previousLogin: "octocat",
+    login: "octocat-renamed",
+  },
+  "customer.created": { source: "simulated", externalCustomerId: "ctm_1" },
+  "customer.linked": { previousSubjectId: "s1", subjectId: "s2" },
+  "subscription.recorded": {
+    source: "simulated",
+    externalSubscriptionId: "sub_1",
+    state: "active",
+  },
+  "subscription.updated": {
+    previousState: "active",
+    state: "past_due",
+    sourceUpdatedAt: 1_700_000_000_000,
+  },
+  "entitlement.created": {
+    subjectId: "s1",
+    resourceId: "r1",
+    accessLevel: "write",
+    subscriptionId: "sub1",
+    offerId: "o1",
+    offerVersion: 2,
+    policyVersion: 1,
+    validUntil: 1_700_000_000_000,
+    reason: "cancel_scheduled",
+  },
+  "entitlement.updated": {
+    validUntil: { from: null, to: 1_700_000_000_000 },
+    reason: "cancel_scheduled",
+    offerVersion: 2,
+    policyVersion: 1,
+  },
+  "entitlement.ended": { state: "expired", reason: "grace_expired" },
+  "simulation.subscription_changed": { action: "cancel_now", state: "canceled" },
 } as const satisfies { [A in AuditAction]: AuditDetails<A> };
 
 const ACTIONS = Object.keys(VALID_DETAILS) as AuditAction[];
@@ -75,6 +116,19 @@ describe("audit action catalog", () => {
     ["resource.discovered", "workspace", "resource"],
     ["resource.updated", "workspace", "resource"],
     ["resource.selection_changed", "workspace", "resource"],
+    ["offer.created", "workspace", "offer"],
+    ["offer.updated", "workspace", "offer"],
+    ["offer.archived", "workspace", "offer"],
+    ["subject.created", "workspace", "subject"],
+    ["subject.login_updated", "workspace", "subject"],
+    ["customer.created", "workspace", "customer"],
+    ["customer.linked", "workspace", "customer"],
+    ["subscription.recorded", "workspace", "subscription"],
+    ["subscription.updated", "workspace", "subscription"],
+    ["entitlement.created", "workspace", "entitlement"],
+    ["entitlement.updated", "workspace", "entitlement"],
+    ["entitlement.ended", "workspace", "entitlement"],
+    ["simulation.subscription_changed", "workspace", "simulated_subscription"],
   ] as const)("%s is %s-scoped and targets a %s", (action, scope, targetType) => {
     expect(AUDIT_ACTIONS[action].scope).toBe(scope);
     expect(AUDIT_ACTIONS[action].targetType).toBe(targetType);
@@ -131,6 +185,46 @@ describe("audit action catalog", () => {
     ["resource.updated", "changes", { private: { from: true, to: "false" } }],
     ["resource.updated", "changes", { archived: { from: 0, to: 1 } }],
     ["resource.updated", "changes", { ownerExternalId: { from: "1", to: 2 } }],
+    ["offer.created", "version", 0],
+    ["offer.created", "gracePeriodDays", -1],
+    ["offer.created", "gracePeriodDays", 31],
+    ["offer.created", "gracePeriodDays", 1.5],
+    ["offer.created", "items", -1],
+    ["offer.created", "accesses", 0.5],
+    ["offer.updated", "changes", []],
+    ["offer.updated", "changes", ["price"]],
+    ["offer.updated", "version", 2],
+    ["offer.updated", "version", 4],
+    ["offer.updated", "previousVersion", 0],
+    ["offer.archived", "version", 0],
+    ["offer.archived", "version", 1.5],
+    ["subject.created", "provider", "gitlab"],
+    ["subject.login_updated", "provider", "gitlab"],
+    ["subject.login_updated", "login", "octocat"],
+    ["subject.login_updated", "previousLogin", ""],
+    ["customer.created", "source", "stripe"],
+    ["customer.linked", "subjectId", "s1"],
+    ["customer.linked", "subjectId", ""],
+    ["subscription.recorded", "source", "stripe"],
+    ["subscription.recorded", "state", "unpaid"],
+    ["subscription.updated", "previousState", "unpaid"],
+    ["subscription.updated", "state", "unpaid"],
+    ["subscription.updated", "sourceUpdatedAt", -1],
+    ["subscription.updated", "sourceUpdatedAt", 1.5],
+    ["entitlement.created", "accessLevel", "admin"],
+    ["entitlement.created", "offerVersion", 0],
+    ["entitlement.created", "policyVersion", 0],
+    ["entitlement.created", "validUntil", -1],
+    ["entitlement.created", "reason", "because"],
+    ["entitlement.updated", "validUntil", { from: null }],
+    ["entitlement.updated", "validUntil", { from: null, to: 1.5 }],
+    ["entitlement.updated", "validUntil", { from: null, to: 1, token: "x" }],
+    ["entitlement.updated", "reason", "because"],
+    ["entitlement.updated", "offerVersion", 0],
+    ["entitlement.updated", "policyVersion", 0],
+    ["entitlement.ended", "state", "active"],
+    ["entitlement.ended", "reason", "because"],
+    ["simulation.subscription_changed", "state", "unpaid"],
   ] as const)("%s rejects %s %j", (action, key, value) => {
     const details = { ...VALID_DETAILS[action], [key]: value };
     expect(AUDIT_ACTIONS[action].details.safeParse(details).success).toBe(false);
@@ -167,6 +261,61 @@ describe("resource and connection details", () => {
     ],
   ] as const)("%s accepts any real transition %j", (action, details) => {
     expect(AUDIT_ACTIONS[action].details.parse(details)).toEqual(details);
+  });
+});
+
+describe("offer, commerce and entitlement details", () => {
+  it.each([
+    ["offer.created", { name: "Pro", version: 1, gracePeriodDays: 0, items: 0, accesses: 1 }],
+    ["offer.created", { name: "Pro", version: 1, gracePeriodDays: 30, items: 2, accesses: 1 }],
+    ["offer.updated", { version: 2, previousVersion: 1, changes: ["gracePeriodDays", "items"] }],
+    ["customer.linked", { previousSubjectId: null, subjectId: "s1" }],
+    ["customer.linked", { previousSubjectId: "s1", subjectId: null }],
+    ["subscription.updated", { previousState: "active", state: "active", sourceUpdatedAt: 0 }],
+    [
+      "entitlement.created",
+      { ...VALID_DETAILS["entitlement.created"], validUntil: null, accessLevel: "read" },
+    ],
+    [
+      "entitlement.updated",
+      { ...VALID_DETAILS["entitlement.updated"], validUntil: { from: 5, to: null } },
+    ],
+    ["entitlement.ended", { state: "revoked", reason: "paused" }],
+  ] as const)("%s accepts %j", (action, details) => {
+    expect(AUDIT_ACTIONS[action].details.parse(details)).toEqual(details);
+  });
+
+  it("customer.linked refuses an unchanged link, unlinked included", () => {
+    const schema = AUDIT_ACTIONS["customer.linked"].details;
+    expect(schema.safeParse({ previousSubjectId: null, subjectId: null }).success).toBe(false);
+  });
+
+  it("names the field of a refused transition", () => {
+    const system = { type: "system", id: null } as const;
+    expect(() =>
+      auditEvent(
+        "offer.updated",
+        {
+          workspaceId: "w1",
+          actor: system,
+          targetId: "o1",
+          details: { version: 3, previousVersion: 3, changes: ["name"] },
+        },
+        context(),
+      ),
+    ).toThrow("invalid details for offer.updated: version");
+    expect(() =>
+      auditEvent(
+        "customer.linked",
+        {
+          workspaceId: "w1",
+          actor: system,
+          targetId: "c1",
+          details: { previousSubjectId: "s1", subjectId: "s1" },
+        },
+        context(),
+      ),
+    ).toThrow("invalid details for customer.linked: subjectId");
   });
 });
 

@@ -31,6 +31,17 @@ The web Worker refuses to start requests without its auth configuration ([decisi
 
 Connecting GitHub needs a development GitHub App: follow [the runbook](runbooks/github-app-setup.md) and add its values to `apps/web/.dev.vars` and `apps/jobs/.dev.vars`. Without them the Repositories page says GitHub is not configured; everything else works.
 
+### Simulated billing (Phase 3)
+
+Outside production, each workspace has a **Simulator** page ([decision 0009](decisions/0009-entitlement-policy-v1.md)). It stands in for Paddle, so you can try offers and access before Phase 5:
+
+1. Connect GitHub (above) so repositories exist.
+2. On **Offers**, create an offer: pick repositories, set a grace period, and give it a commercial item ID such as `sim_monthly`.
+3. On **Simulator**, add a subscriber by GitHub login with that item ID, then drive their subscription: activate, mark past due, cancel, expire, reactivate.
+4. On **Access**, see the desired access for each subscriber and repository, and what ShareRepo would do. Observed access says "Not checked yet" until Phase 4 starts inspecting GitHub.
+
+Simulator actions are processed by the jobs Worker, which `pnpm dev` runs alongside the web Worker. Nothing on GitHub changes in Phase 3. In production the Simulator page and its jobs are disabled.
+
 Tests never need these values. Workers-pool tests use test-only secrets from `apps/web/vitest.config.ts`, and `pnpm test:e2e` signs in through a local fake GitHub (`apps/web/e2e/support/fake-github.ts`) with the wrangler `e2e` environment, which is the only one that accepts GitHub endpoint overrides.
 
 pnpm blocks dependency build scripts by default; `pnpm-workspace.yaml` allows only `workerd` and `esbuild`, which the Workers runtime needs.
