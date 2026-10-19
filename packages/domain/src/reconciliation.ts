@@ -26,7 +26,9 @@ export type ReconciliationAction = (typeof RECONCILIATION_ACTIONS)[number];
  * - `invitation_expired` (provision): the pending invitation lapsed and is reissued;
  * - `grant_active` (verify): the grant is active at the desired level or higher, or the access
  *   is indirect (indirect access is never changed);
- * - `intermediate_state` (verify): the grant is provisioning or revoking, so re-observe it;
+ * - `intermediate_state` (verify): the grant is provisioning or revoking, so re-observe it
+ *   (also when access is not desired: a provisioning grant is settled by observation before it
+ *   can be revoked);
  * - `invitation_pending` (wait): an invitation is pending and has not lapsed;
  * - `transient_error` / `rate_limited` (retry): the last attempt failed and can be retried now;
  *   (wait) the same, but the grant's `nextAttemptAt` has not come yet;
@@ -271,6 +273,9 @@ function undesired(grant: ReconciliationGrant, connectionActive: (id: string) =>
   if (grant.indirect) return { action: "noop", reason: "indirect_access" };
   if (!grant.managed) return { action: "noop", reason: "unmanaged_access" };
   if (grant.state === "revoking") return { action: "verify", reason: "revocation_in_progress" };
+  // ShareRepo's invitation may not be listed yet: revoking now would remove no collaborator and
+  // leave that invitation looking like the creator's. Observation settles it first (0010).
+  if (grant.state === "provisioning") return { action: "verify", reason: "intermediate_state" };
   return connectionActive(grant.connectionId)
     ? { action: "revoke", reason: "not_entitled" }
     : blocked("connection_inactive");

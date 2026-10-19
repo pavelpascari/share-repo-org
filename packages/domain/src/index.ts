@@ -129,6 +129,7 @@ export type {
   RepositoryObservation,
 } from "./provisioning.ts";
 export {
+  CLOCK_SKEW_MS,
   classifyMutationFailure,
   classifyObservationFailure,
   GRANT_ERROR_CODES,
@@ -136,6 +137,7 @@ export {
   INVITATION_LIFETIME_MS,
   INVITATION_WINDOW_MS,
   invitationBudget,
+  inviteMayStillAppear,
   MAX_MUTATIONS_PER_RUN,
   MUTATION_STOP_REASONS,
   nextReconcileAt,

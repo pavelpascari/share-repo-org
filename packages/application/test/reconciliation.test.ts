@@ -890,6 +890,136 @@ describe("reconcileResource", () => {
     expect((await mutationsOf(s)).map((m) => m.operation)).toEqual(["invite"]);
   });
 
+  it("leaves an invitation sent by hand after a retry stopped on a suspension unmanaged", async () => {
+    const s = await sold();
+    const sub = await subscriber(s);
+    s.github.failNext("addCollaborator", githubError("rejected", { status: 422 }));
+    await reconcile(s);
+    const errored = await grantFor(s, sub.subjectId);
+    expect(errored).toMatchObject({ state: "error", lastErrorCode: "invitation_rejected" });
+    // The owner retries; the invitation stops on a suspension before reaching the repository,
+    // and the grant is restored as it was.
+    await retryGrant(serviceContext(), s, s.slug, errored.id);
+    s.github.failNext("addCollaborator", githubError("suspended", { status: 403 }));
+    clock.advance(1);
+    await reconcile(s);
+    expect((await mutationsOf(s)).at(-1)).toMatchObject({
+      operation: "invite",
+      status: "failed",
+      error_code: "suspended",
+      retry_class: "retryable",
+    });
+    expect(await grantFor(s, sub.subjectId)).toMatchObject({ state: "error", managed: true });
+
+    // The creator invites the person by hand: GitHub never had ShareRepo's request.
+    await s.github.addCollaborator(s.installationId, repoName(s), sub.login);
+    clock.advance(MINUTE);
+    await reconcile(s);
+    expect(await grantFor(s, sub.subjectId)).toMatchObject({
+      state: "pending_invitation",
+      managed: false,
+    });
+    await act(s, sub.id, "cancel_now");
+    await drain(s.workspaceId);
+    clock.advance(MINUTE);
+    await reconcile(s);
+    expect(callsOf(s.github, "cancelInvitation")).toBe(0);
+    expect(accessOf(s).invitations).toMatchObject([{ inviteeId: sub.userId }]);
+  });
+
+  it("leaves an invitation sent by hand after a lapsed one was cancelled and the reissue stopped unmanaged", async () => {
+    const s = await sold();
+    const sub = await subscriber(s);
+    await reconcile(s);
+    const [first] = accessOf(s).invitations;
+    s.github.expireInvitation(repoName(s), first?.id as string);
+    // The cancel succeeds; while the reissue stops on a suspension, the creator invites by hand.
+    const stopped = withHooks(s.github, {
+      addCollaborator: async () => {
+        await s.github.addCollaborator(s.installationId, repoName(s), sub.login);
+        throw githubError("suspended", { status: 403 });
+      },
+    });
+    clock.advance(MINUTE);
+    await reconcile(s, stopped);
+    expect((await mutationsOf(s)).map((m) => [m.operation, m.status, m.error_code])).toEqual([
+      ["invite", "succeeded", null],
+      ["cancel_invitation", "succeeded", null],
+      ["invite", "failed", "suspended"],
+    ]);
+    expect(await grantFor(s, sub.subjectId)).toMatchObject({ state: "revoking", managed: true });
+
+    clock.advance(RECONCILE_POLL_MS);
+    await reconcile(s);
+    expect(await grantFor(s, sub.subjectId)).toMatchObject({
+      state: "pending_invitation",
+      managed: false,
+    });
+    await act(s, sub.id, "cancel_now");
+    await drain(s.workspaceId);
+    clock.advance(MINUTE);
+    await reconcile(s);
+    expect(callsOf(s.github, "cancelInvitation")).toBe(1);
+    expect(accessOf(s).invitations).toHaveLength(1);
+  });
+
+  it("does not revoke blind while ShareRepo's lost invitation may still be listed", async () => {
+    const s = await sold();
+    const sub = await subscriber(s);
+    // The invitation lands, its response is lost, and GitHub's lists lag it.
+    const lagging = withHooks(s.github, { listInvitations: async () => [] });
+    s.github.loseNextResponse("addCollaborator");
+    await reconcile(s, lagging);
+    expect(await grantFor(s, sub.subjectId)).toMatchObject({ state: "error", managed: true });
+
+    // The subscription ends within the invitation's grace window, the lists still lagging:
+    // removing a collaborator would not cancel the invitation.
+    await act(s, sub.id, "cancel_now");
+    await drain(s.workspaceId);
+    clock.advance(MINUTE);
+    await reconcile(s, lagging);
+    expect(callsOf(s.github, "removeCollaborator")).toBe(0);
+    expect(callsOf(s.github, "cancelInvitation")).toBe(0);
+
+    // The invitation shows: it is ShareRepo's, and it is cancelled.
+    clock.advance(MINUTE);
+    await reconcile(s);
+    expect(accessOf(s).invitations).toEqual([]);
+    expect((await mutationsOf(s)).map((m) => [m.operation, m.status])).toEqual([
+      ["invite", "failed"],
+      ["cancel_invitation", "succeeded"],
+    ]);
+  });
+
+  it("does not revoke a provisioning grant blind when its run crashed", async () => {
+    const s = await sold();
+    const sub = await subscriber(s);
+    const crashing = withHooks(s.github, {
+      addCollaborator: async (...args) => {
+        await s.github.addCollaborator(...args);
+        throw new Error("worker crashed");
+      },
+    });
+    await expect(reconcile(s, crashing)).rejects.toThrow("worker crashed");
+    await act(s, sub.id, "cancel_now");
+    await drain(s.workspaceId);
+    // The lease expires within the grace window, and GitHub's lists lag the invitation.
+    clock.advance(RECONCILE_LEASE_MS);
+    await reconcile(s, withHooks(s.github, { listInvitations: async () => [] }));
+    expect(await grantFor(s, sub.subjectId)).toMatchObject({ state: "provisioning" });
+    expect(callsOf(s.github, "removeCollaborator")).toBe(0);
+    const [row] = (await listAccess(serviceContext(), s, s.slug)).rows;
+    expect(row?.planned).toEqual({ action: "verify", reason: "intermediate_state" });
+
+    clock.advance(MINUTE);
+    await reconcile(s);
+    expect(accessOf(s).invitations).toEqual([]);
+    expect((await mutationsOf(s)).map((m) => [m.operation, m.status])).toEqual([
+      ["invite", "resolved"],
+      ["cancel_invitation", "succeeded"],
+    ]);
+  });
+
   it("a subscription that ends while a run holds the repository is reconciled again at once", async () => {
     const s = await sold();
     const sub = await subscriber(s);

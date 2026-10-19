@@ -279,6 +279,8 @@ export interface LatestMutation {
   operation: MutationOperation;
   status: MutationStatus;
   retryClass: RetryClass | null;
+  /** Why it failed: a grant error code, or a stop reason when the request never left. */
+  errorCode: string | null;
   startedAt: Instant;
 }
 
@@ -297,6 +299,7 @@ export async function latestMutations(
       operation: providerMutations.operation,
       status: providerMutations.status,
       retryClass: providerMutations.retryClass,
+      errorCode: providerMutations.errorCode,
       startedAt: providerMutations.startedAt,
       rank: sql<number>`row_number() OVER (PARTITION BY ${providerMutations.grantId} ORDER BY ${providerMutations.startedAt} DESC, ${providerMutations.id} DESC)`.as(
         "rank",
@@ -316,6 +319,7 @@ export async function latestMutations(
       operation: ranked.operation,
       status: ranked.status,
       retryClass: ranked.retryClass,
+      errorCode: ranked.errorCode,
       startedAt: ranked.startedAt,
     })
     .from(ranked)

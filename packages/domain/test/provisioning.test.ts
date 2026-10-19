@@ -1,6 +1,7 @@
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 import {
+  CLOCK_SKEW_MS,
   classifyMutationFailure,
   classifyObservationFailure,
   GRANT_STATES,
@@ -10,9 +11,11 @@ import {
   INVITATION_LIFETIME_MS,
   INVITATION_WINDOW_MS,
   invitationBudget,
+  inviteMayStillAppear,
   type LatestMutation,
   MUTATION_OPERATIONS,
   MUTATION_STATUSES,
+  MUTATION_STOP_REASONS,
   type MutationOperation,
   nextReconcileAt,
   OBSERVATION_GRACE_MS,
@@ -49,6 +52,7 @@ const stored = (overrides: Partial<ObservableGrant> = {}): ObservableGrant => ({
   retryClass: null,
   nextAttemptAt: null,
   updatedAt: LONG_AGO,
+  observedAt: null,
   lastMutation: null,
   ...overrides,
 });
@@ -62,6 +66,7 @@ const mutation = (
   operation,
   status,
   retryClass: status === "failed" ? "retryable" : null,
+  errorCode: status === "failed" ? "provider_unavailable" : null,
   startedAt: LONG_AGO + MINUTE,
   ...overrides,
 });
@@ -490,12 +495,25 @@ describe("observeGrants: pending invitations", () => {
       fields: { ...fieldsOf(pending), ...refreshed, managed: false },
       settlesIntent: false,
     });
-    // A managed grant that has not recorded its invitation yet takes the first one listed.
-    const unrecorded = stored({ ...pending, externalGrantId: null });
+    // Even one stamped within its invite's window: it recorded another.
+    const invited = mutation("invite", "succeeded", { startedAt: NOW - MINUTE });
+    expect(update(stored({ ...pending, lastMutation: invited }), listed)?.fields.managed).toBe(
+      false,
+    );
+    // A managed grant that has not recorded its invitation yet takes the one its own invite
+    // could have created, and no other.
+    const unrecorded = stored({
+      ...pending,
+      externalGrantId: null,
+      lastMutation: mutation("invite", "succeeded", { startedAt: NOW - MINUTE }),
+    });
     expect(update(unrecorded, listed)).toEqual({
       fields: { ...fieldsOf(unrecorded), ...refreshed, managed: true },
       settlesIntent: false,
     });
+    expect(update(stored({ ...unrecorded, lastMutation: null }), listed)?.fields.managed).toBe(
+      false,
+    );
     // An unmanaged grant never becomes managed.
     for (const externalGrantId of ["i2", null]) {
       const unmanaged = stored({ ...pending, managed: false, externalGrantId });
@@ -616,12 +634,14 @@ describe("observeGrants: revoking (ShareRepo's intent)", () => {
     }
     // A collaborator may be ShareRepo's that the DELETE never removed.
     expect(update(pending, { collaborators: [collaborator()] })?.fields.managed).toBe(true);
-    // With no revoke on record, the stored ownership stands.
-    for (const lastMutation of [null, mutation("invite", "succeeded")]) {
-      const unknown = stored({ ...revoking, lastMutation });
-      const listed = { invitations: [invitation({ createdAt: NOW })] };
-      expect(update(unknown, listed)?.fields.managed).toBe(true);
-    }
+    // With no mutation on record, the stored ownership stands for a collaborator and the
+    // recorded invitation only.
+    const unknown = stored({ ...revoking, lastMutation: null });
+    const listed = { invitations: [invitation({ createdAt: NOW })] };
+    expect(update(unknown, listed)?.fields.managed).toBe(false);
+    const recorded = stored({ ...unknown, externalGrantId: "i1" });
+    expect(update(recorded, listed)?.fields.managed).toBe(true);
+    expect(update(unknown, { collaborators: [collaborator()] })?.fields.managed).toBe(true);
   });
 
   it.each(["remove_collaborator", "cancel_invitation"] as const)(
@@ -749,6 +769,163 @@ describe("observeGrants: errors", () => {
   });
 });
 
+describe("observeGrants: what ShareRepo's own request could have created (decision 0010)", () => {
+  const STARTED = LONG_AGO + MINUTE;
+  const ERROR = {
+    state: "error",
+    managed: true,
+    lastErrorCode: "provider_unavailable",
+    retryClass: "retryable",
+    nextAttemptAt: NOW + MINUTE,
+  } as const;
+  const managedOf = (grant: ObservableGrant, listed: Omit<Observe, "grants">) =>
+    update(grant, listed)?.fields.managed ?? grant.managed;
+  const invitedAt = (createdAt: number) => ({ invitations: [invitation({ createdAt })] });
+  const listedCollaborator = { collaborators: [collaborator()] };
+
+  it.each(MUTATION_STOP_REASONS)(
+    "an invite that stopped the run on %s never reached GitHub: listed access is the creator's",
+    (errorCode) => {
+      // Stored `retryable` only because the CHECK needs a class; the grant was restored.
+      const grant = stored({
+        ...ERROR,
+        lastMutation: mutation("invite", "failed", { retryClass: "retryable", errorCode }),
+      });
+      expect(managedOf(grant, invitedAt(STARTED))).toBe(false);
+      expect(managedOf(grant, listedCollaborator)).toBe(false);
+    },
+  );
+
+  it("adopts an invitation after a retryable invite failure only within the invite's window", () => {
+    const grant = stored({ ...ERROR, lastMutation: mutation("invite", "failed") });
+    expect(managedOf(grant, invitedAt(STARTED - CLOCK_SKEW_MS))).toBe(true);
+    expect(managedOf(grant, invitedAt(STARTED + OBSERVATION_GRACE_MS))).toBe(true);
+    // Sent by hand before ShareRepo's request, or long after it.
+    expect(managedOf(grant, invitedAt(STARTED - CLOCK_SKEW_MS - 1))).toBe(false);
+    expect(managedOf(grant, invitedAt(STARTED + OBSERVATION_GRACE_MS + 1))).toBe(false);
+  });
+
+  it("adopts a collaborator after a retryable invite failure only until an observation past the window saw nothing", () => {
+    const at = (observedAt: number | null) =>
+      stored({ ...ERROR, observedAt, lastMutation: mutation("invite", "failed") });
+    expect(managedOf(at(null), listedCollaborator)).toBe(true);
+    expect(managedOf(at(STARTED + OBSERVATION_GRACE_MS - 1), listedCollaborator)).toBe(true);
+    // The invite did not land: what is listed later was added by hand.
+    expect(managedOf(at(STARTED + OBSERVATION_GRACE_MS), listedCollaborator)).toBe(false);
+    // The error stands while nothing is listed, so the retry still goes out.
+    expect(update(at(STARTED + OBSERVATION_GRACE_MS))).toBeNull();
+  });
+
+  it("adopts on a provisioning grant only an invitation its own invite could have created", () => {
+    const provisioning = stored({
+      state: "provisioning",
+      managed: true,
+      lastMutation: mutation("invite"),
+    });
+    const older = invitation({ createdAt: STARTED - CLOCK_SKEW_MS - 1 });
+    expect(update(provisioning, { invitations: [older] })).toEqual({
+      fields: {
+        ...fieldsOf(provisioning),
+        ...PENDING,
+        expiresAt: lapse(older.createdAt),
+        managed: false,
+      },
+      settlesIntent: true,
+    });
+    expect(managedOf(provisioning, invitedAt(STARTED + OBSERVATION_GRACE_MS + 1))).toBe(false);
+    expect(managedOf(provisioning, invitedAt(STARTED))).toBe(true);
+    expect(managedOf(stored({ ...provisioning, lastMutation: null }), invitedAt(STARTED))).toBe(
+      false,
+    );
+    // A collaborator has no time: it may be ShareRepo's accepted invitation.
+    expect(managedOf(provisioning, listedCollaborator)).toBe(true);
+  });
+
+  it.each(["remove_collaborator", "cancel_invitation"] as const)(
+    "after a %s that failed, keeps managed only the grant's own invitation or one older than the revoke",
+    (operation) => {
+      const retryable = stored({ ...ERROR, lastMutation: mutation(operation, "failed") });
+      expect(managedOf(retryable, invitedAt(STARTED - 1))).toBe(true);
+      expect(managedOf(retryable, invitedAt(STARTED))).toBe(false);
+      expect(managedOf(retryable, listedCollaborator)).toBe(true);
+      // GitHub refused the revoke: only what the grant recorded is its own.
+      const refused = stored({
+        ...ERROR,
+        retryClass: "terminal",
+        lastMutation: mutation(operation, "failed", {
+          retryClass: "terminal",
+          errorCode: "provider_rejected",
+        }),
+      });
+      expect(managedOf(refused, invitedAt(STARTED - 1))).toBe(false);
+      const own = stored({ ...refused, externalGrantId: "i1" });
+      expect(managedOf(own, invitedAt(STARTED - 1))).toBe(true);
+      expect(managedOf(own, invitedAt(STARTED + 1))).toBe(true);
+    },
+  );
+
+  it("after a lapsed invitation was cancelled and the reissue stopped, listed access is the creator's", () => {
+    // The cancel succeeded, the invite stopped on a suspension, and the grant was restored to
+    // `revoking`, its latest mutation the invite.
+    const restored = stored({
+      state: "revoking",
+      managed: true,
+      externalGrantId: "i1",
+      lastMutation: mutation("invite", "failed", { errorCode: "suspended" }),
+    });
+    const byHand = invitation({ invitationId: "i2", createdAt: STARTED + MINUTE });
+    expect(update(restored, { invitations: [byHand] })).toEqual({
+      fields: {
+        ...fieldsOf(restored),
+        ...PENDING,
+        externalGrantId: "i2",
+        expiresAt: lapse(byHand.createdAt),
+        managed: false,
+      },
+      settlesIntent: true,
+    });
+    expect(managedOf(restored, listedCollaborator)).toBe(false);
+  });
+});
+
+describe("inviteMayStillAppear", () => {
+  const STARTED = LONG_AGO + MINUTE;
+  const at = (
+    lastMutation: LatestMutation | null,
+    now: number,
+    state: ObservableGrant["state"] = "error",
+  ) => inviteMayStillAppear({ state, lastMutation }, now);
+
+  it("holds while ShareRepo's invite may have landed and its window is open", () => {
+    // A revoke now would be blind: removing a collaborator does not cancel an invitation.
+    for (const [state, invite] of [
+      ["provisioning", mutation("invite")],
+      ["error", mutation("invite", "failed")],
+    ] as const) {
+      expect(at(invite, STARTED, state)).toBe(true);
+      expect(at(invite, STARTED + OBSERVATION_GRACE_MS - 1, state)).toBe(true);
+      expect(at(invite, STARTED + OBSERVATION_GRACE_MS, state)).toBe(false);
+    }
+  });
+
+  it("does not hold once the invitation was recorded or accepted", () => {
+    for (const state of ["pending_invitation", "active", "revoking", "absent"] as const) {
+      expect(at(mutation("invite", "succeeded"), STARTED, state)).toBe(false);
+    }
+  });
+
+  it("does not hold for an invite GitHub refused or that never left, nor for anything else", () => {
+    const refused = mutation("invite", "failed", {
+      retryClass: "user_action_required",
+      errorCode: "invitation_rejected",
+    });
+    const stopped = mutation("invite", "failed", { errorCode: "suspended" });
+    for (const last of [refused, stopped, mutation("remove_collaborator"), null]) {
+      expect(at(last, STARTED)).toBe(false);
+    }
+  });
+});
+
 // Property tests over any stored grant and any listing.
 
 const USERS = ["101", "202", "303"] as const;
@@ -770,11 +947,13 @@ const grantArb: fc.Arbitrary<ObservableGrant> = fc
     retryClass: fc.constantFrom(...RETRY_CLASSES),
     nextAttemptAt: fc.option(instantArb),
     updatedAt: instantArb,
+    observedAt: fc.option(instantArb),
     lastMutation: fc.option(
       fc.record({
         operation: fc.constantFrom(...MUTATION_OPERATIONS),
         status: fc.constantFrom(...MUTATION_STATUSES),
         retryClass: fc.option(fc.constantFrom(...RETRY_CLASSES)),
+        errorCode: fc.option(fc.constantFrom("provider_unavailable", ...MUTATION_STOP_REASONS)),
         startedAt: instantArb,
       }),
     ),
@@ -804,7 +983,11 @@ const observationArb: fc.Arbitrary<RepositoryObservation> = fc.record({
       invitationId: fc.constantFrom("i1", "i2", "i3"),
       userId: fc.constantFrom(...USERS),
       login: fc.constant("someone"),
-      createdAt: fc.integer({ min: NOW - INVITATION_LIFETIME_MS - 1, max: NOW }),
+      // Mostly near the mutations' instants, so both sides of each window are exercised.
+      createdAt: fc.oneof(
+        fc.integer({ min: NOW - 3 * OBSERVATION_GRACE_MS, max: NOW }),
+        fc.integer({ min: NOW - INVITATION_LIFETIME_MS - 1, max: NOW }),
+      ),
       expired: fc.boolean(),
     }),
     { maxLength: 3, selector: (i) => i.invitationId },
@@ -841,7 +1024,8 @@ function applied(
       byId.get(change.grantId) ?? stored({ id: change.grantId, subjectId: change.subjectId });
     byId.set(change.grantId, { ...base, ...change.set, updatedAt: NOW });
   }
-  return [...byId.values()];
+  // Every grant of the repository is stamped as observed.
+  return [...byId.values()].map((g) => ({ ...g, observedAt: NOW }));
 }
 
 const PROPERTY_TIMEOUT = 60_000;
@@ -858,15 +1042,69 @@ describe("observeGrants properties", () => {
               expect(change.set.managed).toBe(false);
               continue;
             }
-            if (change.set.managed !== true) continue;
+            // Only ShareRepo's invite write-ahead sets `managed`; observation only keeps or
+            // clears it.
             const before = byId.get(change.grantId) as ObservableGrant;
-            const intended =
-              before.managed ||
-              before.state === "provisioning" ||
-              (before.state === "error" &&
-                before.lastMutation?.operation === "invite" &&
-                before.lastMutation.retryClass === "retryable");
-            expect(intended).toBe(true);
+            if (!before.managed) expect(change.set.managed ?? false).toBe(false);
+          }
+        }),
+      );
+    },
+    PROPERTY_TIMEOUT,
+  );
+
+  it(
+    "never adopts an invitation created before ShareRepo's invite could have created it",
+    () => {
+      fc.assert(
+        fc.property(scenarioArb, ({ grants, observation }) => {
+          const byId = new Map(grants.map((g) => [g.id, g]));
+          for (const change of run(grants, observation)) {
+            if (change.kind === "create") continue;
+            const before = byId.get(change.grantId) as ObservableGrant;
+            const after = { ...change.from, ...change.set };
+            const last = before.lastMutation;
+            // Its recorded invitation, or a pending invitation's refresh, is the grant's own.
+            if (!after.managed || after.state !== "pending_invitation") continue;
+            if (after.externalGrantId === before.externalGrantId) continue;
+            const listed = observation.invitations.find(
+              (i) => i.invitationId === after.externalGrantId,
+            ) as ObservedInvitation;
+            if (last === null || last.operation === "invite") {
+              expect(last).not.toBeNull();
+              expect(listed.createdAt).toBeGreaterThanOrEqual(
+                (last as LatestMutation).startedAt - CLOCK_SKEW_MS,
+              );
+              expect(listed.createdAt).toBeLessThanOrEqual(
+                (last as LatestMutation).startedAt + OBSERVATION_GRACE_MS,
+              );
+            } else {
+              // A revoke's: never one created once the revoke started, nor after it succeeded.
+              expect(last.status).not.toBe("succeeded");
+              expect(listed.createdAt).toBeLessThan(last.startedAt);
+            }
+          }
+        }),
+      );
+    },
+    PROPERTY_TIMEOUT,
+  );
+
+  it(
+    "never keeps access managed that is listed after ShareRepo's revoke succeeded",
+    () => {
+      fc.assert(
+        fc.property(scenarioArb, ({ grants, observation }) => {
+          const byId = new Map(grants.map((g) => [g.id, g]));
+          for (const change of run(grants, observation)) {
+            if (change.kind === "create") continue;
+            const before = byId.get(change.grantId) as ObservableGrant;
+            const last = before.lastMutation;
+            const revoked =
+              before.state === "revoking" &&
+              last !== null &&
+              (last.operation === "invite" || last.status === "succeeded");
+            if (revoked) expect(change.set.managed ?? before.managed).toBe(false);
           }
         }),
       );

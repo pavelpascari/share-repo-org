@@ -356,6 +356,8 @@ describe("reconcile reads", () => {
         startedAt: T0 + 5,
         operation: "cancel_invitation",
         ...failed,
+        // A stop reason: observation must tell it from a retryable failure.
+        errorCode: "suspended",
         finishedAt: T0 + 5,
       }),
     );
@@ -367,15 +369,23 @@ describe("reconcile reads", () => {
         operation: "cancel_invitation",
         status: "succeeded",
         retryClass: null,
+        errorCode: null,
         startedAt: T0 + 3,
       },
       [b.id]: {
         operation: "cancel_invitation",
         status: "failed",
         retryClass: "retryable",
+        errorCode: "suspended",
         startedAt: T0 + 5,
       },
-      [c.id]: { operation: "invite", status: "resolved", retryClass: null, startedAt: T0 },
+      [c.id]: {
+        operation: "invite",
+        status: "resolved",
+        retryClass: null,
+        errorCode: null,
+        startedAt: T0,
+      },
     });
     const other = await leasedWorkspace();
     await expect(

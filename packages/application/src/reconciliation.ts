@@ -13,6 +13,7 @@ import {
   INVITATION_WINDOW_MS,
   type InvitationBudget,
   invitationBudget,
+  inviteMayStillAppear,
   MAX_MUTATIONS_PER_RUN,
   type MutationOperation,
   nextReconcileAt,
@@ -800,6 +801,10 @@ async function act(
       // A revocation that failed waits for its retry time; the owner's "Retry" makes it due.
       const g = grant as repo.Grant;
       if (g.state === "error" && g.nextAttemptAt !== null && g.nextAttemptAt > run.now) continue;
+      // ShareRepo's lost invitation may not be listed yet; a revoke now could not cancel it.
+      // The scheduled poll revokes once observation settles the grant (decision 0010).
+      const lastMutation = state.mutations.get(g.id);
+      if (inviteMayStillAppear({ state: g.state, lastMutation }, run.now)) continue;
       if (mutations + 1 > MAX_MUTATIONS_PER_RUN) {
         leftover = true;
         break;

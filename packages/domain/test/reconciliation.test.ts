@@ -254,7 +254,7 @@ describe("planReconciliation: access not desired", () => {
   const undesired = (g: ReconciliationGrant, overrides: Partial<ReconciliationInput> = {}) =>
     outcome({ entitlements: [], grants: [g], ...overrides });
 
-  it.each(["active", "pending_invitation", "provisioning", "error"] as const)(
+  it.each(["active", "pending_invitation", "error"] as const)(
     "revokes a managed grant that is %s",
     (state) => {
       expect(undesired(grant("g1", { state }))).toBe("revoke/not_entitled");
@@ -290,6 +290,17 @@ describe("planReconciliation: access not desired", () => {
 
   it("verifies a managed grant being revoked", () => {
     expect(undesired(grant("g1", { state: "revoking" }))).toBe("verify/revocation_in_progress");
+  });
+
+  it("waits for observation to settle a provisioning grant, never revoking it blind", () => {
+    // Its invitation may not be listed yet: removing a collaborator would not cancel it, and the
+    // invitation would then look like the creator's (decision 0010).
+    expect(undesired(grant("g1", { state: "provisioning" }))).toBe("verify/intermediate_state");
+    expect(
+      undesired(grant("g1", { state: "provisioning" }), {
+        connections: [{ id: "c1", status: "deleted" }],
+      }),
+    ).toBe("verify/intermediate_state");
   });
 
   it.each(["active", "pending_invitation", "provisioning", "revoking", "error"] as const)(

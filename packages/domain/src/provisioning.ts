@@ -17,6 +17,12 @@ export const INVITATION_WINDOW_MS = 24 * HOUR_MS;
  * observation believes the lists over the stored intent.
  */
 export const OBSERVATION_GRACE_MS = 5 * MINUTE_MS;
+/**
+ * How far the provider's clock may lag ShareRepo's when it stamps an invitation's `created_at`.
+ * An invitation ShareRepo's invite created is stamped within `[startedAt - CLOCK_SKEW_MS,
+ * startedAt + OBSERVATION_GRACE_MS]` of the invite's write-ahead (decision 0010).
+ */
+export const CLOCK_SKEW_MS = MINUTE_MS;
 /** Provider mutations one reconciliation run performs at most. */
 export const MAX_MUTATIONS_PER_RUN = 10;
 /** How soon a repository is reconciled again while anything on it is in flight. */
@@ -61,6 +67,8 @@ export interface LatestMutation {
   readonly operation: MutationOperation;
   readonly status: MutationStatus;
   readonly retryClass: RetryClass | null;
+  /** Why it failed: a grant error code, or a stop reason (the request never reached GitHub). */
+  readonly errorCode: string | null;
   readonly startedAt: Instant;
 }
 
@@ -78,6 +86,8 @@ export interface ObservableGrant {
   readonly retryClass: RetryClass | null;
   readonly nextAttemptAt: Instant | null;
   readonly updatedAt: Instant;
+  /** When an observation last read the grant's access, or null if none has. */
+  readonly observedAt: Instant | null;
   /**
    * The grant's latest mutation, so an `error` or intermediate grant knows what it was doing and
    * how that ended: whether listed access is ShareRepo's or was granted by hand.
@@ -158,12 +168,12 @@ interface Next {
  * Turns one repository's observation into grant changes (decision 0010), sorted by subject ID.
  * Pure. Each subject has at most one grant: when several are stored, the one with the highest
  * level, then the lowest ID, is updated (keeping its level if another holds the listed one) and
- * the rest are left alone. Observation sets `managed` only while ShareRepo's own invitation intent
- * is outstanding (`provisioning`, an error from an `invite` whose response may have been lost, or
- * a managed grant keeping its own invitation), and clears it whenever the access is gone. Access
- * listed after ShareRepo's revoke succeeded, or after GitHub refused its invitation, was granted
- * by hand and is unmanaged. Applying the changes and observing the same lists again changes
- * nothing.
+ * the rest are left alone. Observation never makes an unmanaged grant managed: only ShareRepo's
+ * invite write-ahead does. It keeps `managed` only for access ShareRepo's own request could have
+ * created (see {@link adoptsInvite}, {@link keepsManagedAfterRevoke}), and clears it whenever the
+ * access is gone. Access listed after ShareRepo's revoke succeeded, after GitHub refused its
+ * invitation, or after an invite that never reached GitHub, was granted by hand and is
+ * unmanaged. Applying the changes and observing the same lists again changes nothing.
  */
 export function observeGrants(input: GrantObservationInput): GrantObservationChange[] {
   const { now, observation } = input;
@@ -222,7 +232,8 @@ function transition(
     case "provisioning":
       // Nothing listed yet: the PUT may not show for a moment, or it never landed.
       if (presence.kind === "none" && fresh) return null;
-      return to(true, true);
+      // An invitation older than the write-ahead is the creator's, and settles the intent too.
+      return to(grant.managed && adoptsInvite(grant, presence), true);
     case "pending_invitation":
       if (presence.kind === "none" && grant.managed && invitedRecently(grant, now)) return null;
       return to(keepsManaged(grant, presence));
@@ -243,20 +254,22 @@ function transition(
 
 /** An errored grant settles by what its failed mutation was doing. */
 function fromError(grant: ObservableGrant, from: GrantFields, presence: Presence): Next | null {
-  switch (grant.lastMutation?.operation ?? null) {
-    case "invite": {
+  const last = grant.lastMutation;
+  switch (last?.operation ?? null) {
+    case "invite":
       // While nothing is listed, it is still to be retried.
       if (presence.kind === "none") return null;
-      // A retryable failure (an outage, a lost response) may have landed after all; any other
-      // means GitHub refused it, so what is listed was granted by hand.
-      const landed = (grant.lastMutation as LatestMutation).retryClass === "retryable";
-      return { fields: fieldsFor(presence, from, landed), settlesIntent: true };
-    }
+      // Managed only if the failed invite may have landed after all, and could have made it.
+      return {
+        fields: fieldsFor(presence, from, grant.managed && adoptsInvite(grant, presence)),
+        settlesIntent: true,
+      };
     case "remove_collaborator":
     case "cancel_invitation": {
       if (presence.kind === "none") return { fields: absent(from), settlesIntent: true };
       // Still listed: the error stands, with the details refreshed.
-      const listed = fieldsFor(presence, from, keepsManaged(grant, presence));
+      const managed = keepsManagedAfterRevoke(grant, last, presence);
+      const listed = fieldsFor(presence, from, managed);
       return { fields: { ...listed, state: "error", ...errorOf(from) }, settlesIntent: false };
     }
     case null:
@@ -267,31 +280,105 @@ function fromError(grant: ObservableGrant, from: GrantFields, presence: Presence
 }
 
 /**
- * Whether a managed grant stays managed for what is listed: an invitation must be its own (the
- * stored ID, or the first one seen after ShareRepo invited); a collaborator is the accepted
- * invitation. Never makes an unmanaged grant managed.
+ * Whether a mutation may have changed access on GitHub: it is outstanding, settled by an
+ * observation, succeeded, or failed retryably (an outage or a lost response may hide a success).
+ * A refusal changed nothing, and neither did a failure that stopped the run (a stop reason): that
+ * request never reached the repository. Its failed row is stored `retryable` only because the
+ * CHECK needs a class.
  */
-function keepsManaged(grant: ObservableGrant, presence: Presence): boolean {
-  if (presence.kind !== "invitation") return grant.managed;
+function mayHaveTakenEffect(mutation: LatestMutation): boolean {
+  if (mutation.status !== "failed") return true;
+  const stopped = (MUTATION_STOP_REASONS as readonly (string | null)[]).includes(
+    mutation.errorCode,
+  );
+  return mutation.retryClass === "retryable" && !stopped;
+}
+
+/**
+ * Whether listed access may be what the grant's latest mutation, an invite, created (decision
+ * 0010). The invite must possibly have taken effect. An invitation must be stamped within
+ * `[startedAt - CLOCK_SKEW_MS, startedAt + OBSERVATION_GRACE_MS]`: one sent earlier, or long
+ * after, was sent by hand. A collaborator carries no time, so it may be ShareRepo's accepted
+ * invitation, until an observation past that window found the grant still waiting: then the
+ * invite did not land, and nothing listed later comes from it.
+ */
+function adoptsInvite(grant: ObservableGrant, presence: Presence): boolean {
+  const invite = grant.lastMutation;
+  if (invite?.operation !== "invite" || !mayHaveTakenEffect(invite)) return false;
+  const closes = invite.startedAt + OBSERVATION_GRACE_MS;
+  if (presence.kind === "invitation") {
+    return presence.createdAt >= invite.startedAt - CLOCK_SKEW_MS && presence.createdAt <= closes;
+  }
+  return (grant.observedAt ?? Number.NEGATIVE_INFINITY) < closes;
+}
+
+/**
+ * Whether the invitation of ShareRepo's latest invite (a `provisioning` grant, or an `error` from
+ * a lost response) may still show up in the provider's lists: the invite may have taken effect
+ * and its window is open. Until it closes, such a grant is not revoked: with no invitation ID
+ * recorded, a revoke could only remove a collaborator, which does not cancel the invitation, and
+ * the invitation would then look like the creator's. Observation settles the grant first.
+ */
+export function inviteMayStillAppear(
+  grant: {
+    readonly state: GrantState;
+    /** Missing or null when the grant has no mutation on record. */
+    readonly lastMutation?: LatestMutation | null | undefined;
+  },
+  now: Instant,
+): boolean {
+  const invite = grant.lastMutation;
   return (
-    grant.managed &&
-    (presence.invitationId === grant.externalGrantId || grant.externalGrantId === null)
+    (grant.state === "provisioning" || grant.state === "error") &&
+    invite?.operation === "invite" &&
+    mayHaveTakenEffect(invite) &&
+    now < invite.startedAt + OBSERVATION_GRACE_MS
   );
 }
 
 /**
+ * Whether a pending invitation's grant stays managed for what is listed: its recorded invitation;
+ * one its invite could have created when none is recorded yet; or a collaborator, the accepted
+ * invitation. Never makes an unmanaged grant managed.
+ */
+function keepsManaged(grant: ObservableGrant, presence: Presence): boolean {
+  if (!grant.managed) return false;
+  if (presence.kind !== "invitation" || presence.invitationId === grant.externalGrantId) {
+    return true;
+  }
+  return grant.externalGrantId === null && adoptsInvite(grant, presence);
+}
+
+/**
+ * Whether a managed grant stays managed for what is listed after ShareRepo's revoke (decision
+ * 0010). Once the revoke succeeded, anything listed was granted again by hand. Otherwise a
+ * collaborator, and the grant's recorded invitation, may be ShareRepo's that the DELETE never
+ * removed, so they stay managed and the planner revokes again; another invitation stays managed
+ * only if it was created before the revoke started and the revoke may not have taken effect
+ * (outstanding, or failed retryably). After a refusal, only what the grant recorded is its own.
+ */
+function keepsManagedAfterRevoke(
+  grant: ObservableGrant,
+  revoke: LatestMutation | null,
+  presence: Presence,
+): boolean {
+  if (!grant.managed || revoke?.status === "succeeded") return false;
+  if (presence.kind !== "invitation" || presence.invitationId === grant.externalGrantId) {
+    return true;
+  }
+  return revoke !== null && mayHaveTakenEffect(revoke) && presence.createdAt < revoke.startedAt;
+}
+
+/**
  * Whether a revoking grant whose access is still listed (after the grace window) stays managed.
- * Once its revoke succeeded, the access is the creator's, granted again by hand. While the
- * revoke's outcome is unknown, the access may be ShareRepo's that the DELETE never removed, so it
- * stays as it was, and the planner revokes again; but an invitation created after the revoke
- * started cannot be ShareRepo's.
+ * A revoking grant whose latest mutation is an invite was restored after a lapsed invitation's
+ * cancel succeeded and the reissue stopped the run (only that path invites from `revoking`), so
+ * the cancel succeeded: anything listed is the creator's.
  */
 function keepsManagedWhileRevoking(grant: ObservableGrant, presence: Presence): boolean {
-  const revoke = grant.lastMutation?.operation === "invite" ? null : grant.lastMutation;
-  if (revoke == null) return grant.managed;
-  if (revoke.status === "succeeded") return false;
-  if (presence.kind !== "invitation") return grant.managed;
-  return grant.managed && presence.createdAt < revoke.startedAt;
+  const last = grant.lastMutation;
+  if (last?.operation === "invite") return false;
+  return keepsManagedAfterRevoke(grant, last, presence);
 }
 
 /** A managed invitation sent within the grace window may not be listed yet. */
