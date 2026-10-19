@@ -297,8 +297,10 @@ export interface GrantObservation extends LeaseKey {
  * the observation resolved (`resolved`, `finished_at = now`), and the audit events.
  *
  * An observation that changes nothing only stamps `observed_at`, which is bookkeeping, like a
- * schedule: `grant.observed` is audited on a change only, so `audit` may then be empty. Any
- * created, changed or resolved row requires an audit event.
+ * schedule. `grant.observed` is audited only when a grant's state, ownership, indirectness or
+ * level changes, so an update of details alone (a pending invitation's lapse instant or ID, or an
+ * error's refreshed details) is bookkeeping too, and `audit` may then be empty. Any created grant
+ * or resolved mutation requires an audit event.
  */
 export async function applyGrantObservation(
   db: Db,
@@ -310,9 +312,11 @@ export async function applyGrantObservation(
     input.creates.every((grant) => grantOfResource(input, grant)),
     "applyGrantObservation",
   );
-  const changes = input.creates.length + input.updates.length + input.resolve.mutationIds.length;
+  const changes = input.creates.length + input.resolve.mutationIds.length;
   if (changes > 0 && audit.length === 0) {
-    throw new Error("applyGrantObservation: a grant or mutation change requires an audit event");
+    throw new Error(
+      "applyGrantObservation: a new grant or resolved mutation requires an audit event",
+    );
   }
   const held = leaseHeld(input);
   return runLeased(db, input, [

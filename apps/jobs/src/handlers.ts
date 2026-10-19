@@ -1,6 +1,7 @@
 import {
   type EntitlementSourcePort,
   queueDueEvaluations,
+  queueDueReconciles,
   type ServiceContext,
 } from "@sharerepo/application";
 import {
@@ -58,6 +59,8 @@ export const OUTBOX_DRAIN_BUDGET_MS = 20_000;
 export const OUTBOX_MAX_ATTEMPTS = 10;
 /** Subscriptions whose next policy boundary passed, queued per minute (phase-3 plan § Time). */
 export const DUE_EVALUATION_BATCH = 100;
+/** Repositories due for reconciliation, queued per minute (phase-4 plan § Reconciliation job). */
+export const DUE_RECONCILE_BATCH = 100;
 
 class MethodNotAllowedError extends AppError {
   constructor() {
@@ -199,6 +202,20 @@ export function createJobsWorker(deps: JobsWorkerDeps) {
   }
 
   /**
+   * Scheduled reconciliation: queues a `reconcile_resource` for every repository that is due (or
+   * has live access and nothing scheduled), for the drain that follows in the same tick. Like the
+   * evaluation sweep, a failure is logged by its classification only and stops nothing else.
+   */
+  async function sweepDueReconciles(db: Db, logger: Logger): Promise<void> {
+    try {
+      const queued = await queueDueReconciles(services(db), { limit: DUE_RECONCILE_BATCH });
+      logger.info("due reconciles queued", { queued });
+    } catch (error) {
+      logger.error("due reconcile sweep failed", classify(error));
+    }
+  }
+
+  /**
    * The daily repair path: queue a resync of every connection that is not deleted. The outbox
    * drain runs them a batch at a time, so one cron run never does every connection's GitHub calls.
    */
@@ -237,8 +254,8 @@ export function createJobsWorker(deps: JobsWorkerDeps) {
     },
 
     /**
-     * Crons: heartbeat; every minute, the due-evaluation sweep then the outbox drain (which runs
-     * even when the sweep fails); daily resync. Invalid configuration fails the run.
+     * Crons: heartbeat; every minute, the due-evaluation and due-reconcile sweeps then the outbox
+     * drain (each runs even when another fails); daily resync. Invalid configuration fails the run.
      */
     async scheduled(controller: ScheduledController, env: Env): Promise<void> {
       const logger = createLogger(
@@ -267,6 +284,7 @@ export function createJobsWorker(deps: JobsWorkerDeps) {
         return;
       }
       await sweepDueEvaluations(db, logger);
+      await sweepDueReconciles(db, logger);
       await drainOutbox(db, jobDeps(config, config.github), logger);
     },
 

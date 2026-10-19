@@ -1,6 +1,7 @@
 export {
   type AccessEntitlement,
   type AccessRow,
+  type AccessView,
   ENDED_ACCESS_VISIBLE_MS,
   listAccess,
 } from "./access.ts";
@@ -8,11 +9,14 @@ export { asAuditActor, type ServiceContext, type UserActor } from "./context.ts"
 export {
   type CustomerLink,
   decodeOfferKey,
+  decodeReconcileKey,
   decodeRefreshKey,
   type EntitlementSourcePort,
   encodeOfferKey,
+  encodeReconcileKey,
   encodeRefreshKey,
   type OfferRef,
+  type ReconcileRef,
   type SourceSubscription,
   type SubscriptionRef,
   simulatedEntitlementSource,
@@ -55,6 +59,15 @@ export {
   type OfferSummary,
   updateOffer,
 } from "./offers.ts";
+export {
+  queueDueReconciles,
+  RECONCILE_LEASE_MS,
+  type ReconcileOutcome,
+  type ReconcileRequest,
+  reconcileResource,
+  requestReconcileNow,
+  retryGrant,
+} from "./reconciliation.ts";
 export {
   applySimulationAction,
   createSimulatedSubscriber,

@@ -631,7 +631,7 @@ describe("time-based evaluation", () => {
 
     clock.set(effective);
     // Before the sweep, the access view already treats the access as over.
-    const [row] = await listAccess(serviceContext(), s, s.slug);
+    const [row] = (await listAccess(serviceContext(), s, s.slug)).rows;
     expect(row?.planned).toBeNull();
     const { queued, ours } = await sweep(s);
     expect([queued >= 1, ours]).toEqual([true, 1]);
@@ -650,7 +650,7 @@ describe("time-based evaluation", () => {
     expect(live(await entitlementsOf(s.workspaceId))).toMatchObject([
       { decisionReason: "past_due_in_grace" },
     ]);
-    const [row] = await listAccess(serviceContext(), s, s.slug);
+    const [row] = (await listAccess(serviceContext(), s, s.slug)).rows;
     expect(row?.planned).toEqual({ action: "provision", reason: "grant_missing" });
   });
 

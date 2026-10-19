@@ -17,9 +17,11 @@ export function meta(_: Route.MetaArgs) {
 
 export async function loader({ request, params, context }: Route.LoaderArgs) {
   const { user } = await loadWorkspace(request, context, params.slug, "workspace.read");
-  const rows = await listAccess(servicesFor(context), user, params.slug).catch((error: unknown) => {
-    throw asResponse(error);
-  });
+  const { rows } = await listAccess(servicesFor(context), user, params.slug).catch(
+    (error: unknown) => {
+      throw asResponse(error);
+    },
+  );
   return { rows, slug: params.slug, simulatorEnabled: simulatorEnabled(context) };
 }
 
