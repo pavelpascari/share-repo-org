@@ -9,6 +9,18 @@ import {
   type IdGenerator,
 } from "../src/index.ts";
 
+/** The fields every `provider.mutation_*` event carries. */
+const MUTATION = {
+  mutationId: "m1",
+  operation: "invite",
+  resourceId: "r1",
+  subjectId: "s1",
+  resourceExternalId: "1296269",
+  subjectExternalId: "583231",
+  accessLevel: "write",
+  entitlementIds: ["e1"],
+} as const;
+
 // Local doubles: the domain package has no dependency on @sharerepo/testing.
 function context(correlationId = "corr-1"): AuditContext {
   let n = 0;
@@ -90,6 +102,21 @@ const VALID_DETAILS = {
   },
   "entitlement.ended": { state: "expired", reason: "grace_expired" },
   "simulation.subscription_changed": { action: "cancel_now", state: "canceled" },
+  "grant.observed": {
+    resourceId: "r1",
+    subjectId: "s1",
+    from: { state: "provisioning", managed: true, indirect: false, accessLevel: "write" },
+    to: { state: "pending_invitation", managed: true, indirect: false, accessLevel: "write" },
+  },
+  "provider.mutation_attempted": MUTATION,
+  "provider.mutation_succeeded": MUTATION,
+  "provider.mutation_failed": {
+    ...MUTATION,
+    errorCode: "rate_limited",
+    retryClass: "rate_limited",
+  },
+  "provider.mutation_resolved": { ...MUTATION, state: "pending_invitation" },
+  "reconciliation.requested": { resourceId: "r1", kind: "check" },
 } as const satisfies { [A in AuditAction]: AuditDetails<A> };
 
 const ACTIONS = Object.keys(VALID_DETAILS) as AuditAction[];
@@ -129,6 +156,12 @@ describe("audit action catalog", () => {
     ["entitlement.updated", "workspace", "entitlement"],
     ["entitlement.ended", "workspace", "entitlement"],
     ["simulation.subscription_changed", "workspace", "simulated_subscription"],
+    ["grant.observed", "workspace", "grant"],
+    ["provider.mutation_attempted", "workspace", "grant"],
+    ["provider.mutation_succeeded", "workspace", "grant"],
+    ["provider.mutation_failed", "workspace", "grant"],
+    ["provider.mutation_resolved", "workspace", "grant"],
+    ["reconciliation.requested", "workspace", "resource"],
   ] as const)("%s is %s-scoped and targets a %s", (action, scope, targetType) => {
     expect(AUDIT_ACTIONS[action].scope).toBe(scope);
     expect(AUDIT_ACTIONS[action].targetType).toBe(targetType);
@@ -225,6 +258,38 @@ describe("audit action catalog", () => {
     ["entitlement.ended", "state", "active"],
     ["entitlement.ended", "reason", "because"],
     ["simulation.subscription_changed", "state", "unpaid"],
+    ["grant.observed", "from", { state: "active", managed: true, indirect: false }],
+    ["grant.observed", "from", { ...VALID_DETAILS["grant.observed"].to }],
+    [
+      "grant.observed",
+      "to",
+      { state: "granted", managed: true, indirect: false, accessLevel: "write" },
+    ],
+    [
+      "grant.observed",
+      "to",
+      { state: "active", managed: 1, indirect: false, accessLevel: "write" },
+    ],
+    [
+      "grant.observed",
+      "to",
+      { state: "active", managed: true, indirect: false, accessLevel: "admin" },
+    ],
+    [
+      "grant.observed",
+      "to",
+      { state: "active", managed: true, indirect: false, accessLevel: "write", login: "x" },
+    ],
+    ["provider.mutation_attempted", "operation", "delete_repository"],
+    ["provider.mutation_attempted", "accessLevel", "admin"],
+    ["provider.mutation_attempted", "entitlementIds", [""]],
+    ["provider.mutation_attempted", "entitlementIds", "e1"],
+    ["provider.mutation_succeeded", "operation", "delete_repository"],
+    ["provider.mutation_failed", "errorCode", "boom"],
+    ["provider.mutation_failed", "retryClass", "later"],
+    ["provider.mutation_resolved", "state", "granted"],
+    ["reconciliation.requested", "kind", "sync"],
+    ["reconciliation.requested", "grantId", ""],
   ] as const)("%s rejects %s %j", (action, key, value) => {
     const details = { ...VALID_DETAILS[action], [key]: value };
     expect(AUDIT_ACTIONS[action].details.safeParse(details).success).toBe(false);
@@ -316,6 +381,77 @@ describe("offer, commerce and entitlement details", () => {
         context(),
       ),
     ).toThrow("invalid details for customer.linked: subjectId");
+  });
+});
+
+describe("provisioning details", () => {
+  const observed = (state: string, managed: boolean, indirect: boolean, accessLevel: string) => ({
+    state,
+    managed,
+    indirect,
+    accessLevel,
+  });
+
+  it.each([
+    ["a new grant", null, observed("active", false, true, "write")],
+    [
+      "a state change",
+      observed("active", true, false, "write"),
+      observed("absent", true, false, "write"),
+    ],
+    [
+      "an ownership change",
+      observed("active", true, false, "write"),
+      observed("active", false, false, "write"),
+    ],
+    [
+      "an indirectness change",
+      observed("active", false, false, "write"),
+      observed("active", false, true, "write"),
+    ],
+    [
+      "a level change",
+      observed("active", false, false, "read"),
+      observed("active", false, false, "write"),
+    ],
+  ])("grant.observed accepts %s", (_, from, to) => {
+    const details = { resourceId: "r1", subjectId: "s1", from, to };
+    expect(AUDIT_ACTIONS["grant.observed"].details.parse(details)).toEqual(details);
+  });
+
+  it.each([
+    [
+      "provider.mutation_attempted",
+      { ...MUTATION, operation: "cancel_invitation", entitlementIds: [] },
+    ],
+    ["provider.mutation_failed", { ...MUTATION, errorCode: "suspended", retryClass: null }],
+    [
+      "provider.mutation_failed",
+      { ...MUTATION, errorCode: "repository_not_found", retryClass: null },
+    ],
+    [
+      "provider.mutation_failed",
+      { ...MUTATION, errorCode: "provider_unavailable", retryClass: "retryable" },
+    ],
+    ["reconciliation.requested", { resourceId: "r1", grantId: "g1", kind: "retry" }],
+  ] as const)("%s accepts %j", (action, details) => {
+    expect(AUDIT_ACTIONS[action].details.parse(details)).toEqual(details);
+  });
+
+  it("names the field of an unchanged observation", () => {
+    const same = observed("active", true, false, "write");
+    expect(() =>
+      auditEvent(
+        "grant.observed",
+        {
+          workspaceId: "w1",
+          actor: { type: "system", id: null },
+          targetId: "g1",
+          details: { resourceId: "r1", subjectId: "s1", from: same, to: same } as never,
+        },
+        context(),
+      ),
+    ).toThrow("invalid details for grant.observed: to");
   });
 });
 

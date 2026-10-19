@@ -14,10 +14,17 @@ import {
   GRACE_PERIOD_DAYS_DEFAULT,
   GRACE_PERIOD_DAYS_MAX,
   GRACE_PERIOD_DAYS_MIN,
+  GRANT_ERROR_CODES,
   GRANT_STATES,
   IDENTITY_PROVIDERS,
+  INVITATION_BUDGET,
+  INVITATION_LIFETIME_MS,
+  INVITATION_WINDOW_MS,
+  MAX_MUTATIONS_PER_RUN,
   MUTATION_OPERATIONS,
   MUTATION_STATUSES,
+  MUTATION_STOP_REASONS,
+  OBSERVATION_GRACE_MS,
   OFFER_ACCESSES_MAX,
   OFFER_CHANGES,
   OFFER_ITEMS_MAX,
@@ -25,10 +32,15 @@ import {
   OFFER_STATUSES,
   OUTBOX_KINDS,
   OutboxKind,
+  PROVIDER_FAILURE_KINDS,
+  RECONCILE_IDLE_MS,
+  RECONCILE_POLL_MS,
   RECONCILIATION_ACTIONS,
   RECONCILIATION_REASONS,
+  RECONCILIATION_REQUEST_KINDS,
   RESOURCE_SELECTIONS,
   RESOURCE_TYPES,
+  RETRY_BACKOFF_MS,
   RETRY_CLASSES,
   SIGN_IN_REFUSAL_REASONS,
   SUBJECT_TYPES,
@@ -161,6 +173,53 @@ describe("stable decision codes", () => {
       "invitation_quota",
       "indirect_access",
     ]));
+  it("grant error codes", () =>
+    expect(GRANT_ERROR_CODES).toEqual([
+      "provider_unavailable",
+      "rate_limited",
+      "invitation_rejected",
+      "app_permission_missing",
+      "account_not_found",
+      "provider_rejected",
+    ]));
+  it("mutation stop reasons", () =>
+    expect(MUTATION_STOP_REASONS).toEqual(["suspended", "repository_not_found"]));
+  it("reconciliation request kinds", () =>
+    expect(RECONCILIATION_REQUEST_KINDS).toEqual(["check", "retry"]));
   it("offer limits", () =>
     expect([OFFER_NAME_MAX_LENGTH, OFFER_ITEMS_MAX, OFFER_ACCESSES_MAX]).toEqual([100, 100, 100]));
+});
+
+// Provider-neutral failure kinds that adapters map their errors to.
+describe("provider failure kinds", () => {
+  it("lists them", () =>
+    expect(PROVIDER_FAILURE_KINDS).toEqual([
+      "not_found",
+      "suspended",
+      "rate_limited",
+      "transient",
+      "rejected",
+      "malformed_response",
+    ]));
+});
+
+// Provisioning limits and timing (decision 0010, phase 4 plan).
+describe("provisioning constants", () => {
+  const MINUTE = 60_000;
+  const HOUR = 60 * MINUTE;
+  it("invitations", () =>
+    expect([INVITATION_LIFETIME_MS, INVITATION_BUDGET, INVITATION_WINDOW_MS]).toEqual([
+      7 * 24 * HOUR,
+      40,
+      24 * HOUR,
+    ]));
+  it("runs", () =>
+    expect([
+      OBSERVATION_GRACE_MS,
+      MAX_MUTATIONS_PER_RUN,
+      RECONCILE_POLL_MS,
+      RECONCILE_IDLE_MS,
+    ]).toEqual([5 * MINUTE, 10, 15 * MINUTE, 6 * HOUR]));
+  it("retry backoff", () =>
+    expect(RETRY_BACKOFF_MS).toEqual([1 * MINUTE, 5 * MINUTE, 15 * MINUTE, 60 * MINUTE]));
 });
