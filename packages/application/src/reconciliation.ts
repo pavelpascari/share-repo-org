@@ -6,6 +6,7 @@ import {
   type AuditEventInput,
   auditEvent,
   classifyMutationFailure,
+  classifyObservationFailure,
   type GrantFields,
   type GrantObservationChange,
   INVITATION_LIFETIME_MS,
@@ -20,13 +21,11 @@ import {
   observeGrants,
   type ProviderFailure,
   planReconciliation,
-  RECONCILE_IDLE_MS,
-  RECONCILE_POLL_MS,
   RETRY_BACKOFF_MS,
   type ReconciliationDecision,
   type RepositoryObservation,
 } from "@sharerepo/domain";
-import { GitHubApiError, type GitHubAppPort } from "@sharerepo/integrations";
+import { GitHubApiError, type GitHubAppPort, REQUEST_TIMEOUT_MS } from "@sharerepo/integrations";
 import { ConflictError, NotFoundError } from "@sharerepo/platform";
 import {
   asAuditActor,
@@ -50,6 +49,14 @@ const SYSTEM = { type: "system", id: null } as const;
 export const RECONCILE_LEASE_MS = 2 * 60_000;
 
 /**
+ * The lease a mutation needs left before it is sent: the requests one mutation may make (the
+ * login lookup, the change, and the repository check after a 404), each bounded by the client's
+ * timeout, plus a margin. With less left, a slow request could outlive the lease, and another run
+ * could take the repository over and act on it while the request is still in flight.
+ */
+export const MUTATION_LEASE_RESERVE_MS = 3 * REQUEST_TIMEOUT_MS + 10_000;
+
+/**
  * `done`: the run finished (or stopped early and scheduled its next run); `busy`: another run
  * holds the repository, or took it over mid-run; `out_of_scope`: the workspace has no such
  * repository.
@@ -70,8 +77,14 @@ export function reconcileOutboxRow(ctx: ServiceContext, ref: ReconcileRef): repo
 
 /** One run's fixed facts. */
 interface Run {
+  /** Frozen at the run's start, for observation, planning and scheduling. */
   readonly ctx: ServiceContext;
+  /** On the real clock: mutations are stamped when they are sent and when they finish. */
+  readonly live: ServiceContext;
+  /** When the run started and took the lease. */
   readonly now: number;
+  /** When the run's lease ends. */
+  readonly leaseUntil: number;
   readonly lease: repo.LeaseKey;
   readonly resource: repo.Resource;
   readonly connection: repo.Connection;
@@ -83,7 +96,7 @@ interface State {
   readonly entitlements: repo.Entitlement[];
   readonly grants: repo.Grant[];
   readonly subjects: Map<string, repo.Subject>;
-  readonly operations: Map<string, MutationOperation>;
+  readonly mutations: Map<string, repo.LatestMutation>;
   readonly open: repo.ProviderMutation[];
   readonly budget: InvitationBudget;
 }
@@ -91,10 +104,10 @@ interface State {
 async function load(run: Run): Promise<State> {
   const { db } = run.ctx;
   const key = { workspaceId: run.lease.workspaceId, resourceId: run.lease.resourceId };
-  const [entitlements, grants, operations, open, starts] = await Promise.all([
+  const [entitlements, grants, mutations, open, starts] = await Promise.all([
     repo.listLiveEntitlementsForResource(db, key),
     repo.listGrantsForResource(db, key),
-    repo.latestMutationOperations(db, key),
+    repo.latestMutations(db, key),
     repo.listOpenMutations(db, key),
     repo.listInviteStarts(db, { ...key, since: run.now - INVITATION_WINDOW_MS }),
   ]);
@@ -104,18 +117,19 @@ async function load(run: Run): Promise<State> {
     entitlements,
     grants,
     subjects: new Map(subjects.map((subject) => [subject.id, subject])),
-    operations,
+    mutations,
     open,
     budget: invitationBudget(starts, run.now),
   };
 }
 
-/** A workspace-scoped audit event by the system, at the run's instant. */
+/** A workspace-scoped audit event by the system, at the run's instant (or `ctx`'s). */
 function systemEvent<A extends WorkspaceAuditAction>(
   run: Run,
   action: A,
   targetId: string,
   details: AuditDetails<A>,
+  ctx: ServiceContext = run.ctx,
 ): AuditEvent {
   return auditEvent(
     action,
@@ -126,7 +140,7 @@ function systemEvent<A extends WorkspaceAuditAction>(
       targetId,
       details,
     } as unknown as AuditEventInput<A>,
-    run.ctx,
+    ctx,
   );
 }
 
@@ -201,7 +215,7 @@ async function observe(run: Run, state: State): Promise<ObserveResult> {
     })),
     grants: state.grants.map((grant) => ({
       ...grant,
-      lastOperation: state.operations.get(grant.id) ?? null,
+      lastMutation: state.mutations.get(grant.id) ?? null,
     })),
     observation,
     newGrantId: () => run.ctx.ids.next(),
@@ -322,6 +336,8 @@ type MutationResult =
   | { readonly status: "failed"; readonly stopRun: boolean }
   /** A failure that stops the run and leaves the grant as it was. */
   | { readonly status: "stopped" }
+  /** Too little of the lease is left to send it: nothing was written or sent. */
+  | { readonly status: "out_of_time" }
   | { readonly status: "lease_lost" };
 
 /**
@@ -377,13 +393,21 @@ function restored(before: repo.Grant | null): Partial<repo.GrantWritable> {
   };
 }
 
+/** Whether enough of the run's lease is left, on the real clock, to send one more mutation. */
+const leaseLeft = (run: Run): boolean =>
+  run.live.clock.now() + MUTATION_LEASE_RESERVE_MS <= run.leaseUntil;
+
 /**
  * One provider mutation: the write-ahead (grant intent, `started` row, `attempted` event), the
- * request, and its recorded outcome. A `GitHubApiError` is classified; anything else propagates
- * and leaves the mutation `started` for the next observation to resolve.
+ * request, and its recorded outcome, each stamped with the real time it is written. A
+ * `GitHubApiError` is classified; anything else propagates and leaves the mutation `started` for
+ * the next observation to resolve. Nothing is sent when too little of the lease is left.
  */
 async function mutate(run: Run, input: MutationInput): Promise<MutationResult> {
-  const { ctx, now } = run;
+  if (!leaseLeft(run)) return { status: "out_of_time" };
+  const ctx = atOneInstant(run.live);
+  // The attempt's instant: `last_attempt_at`, `started_at`, and the base of its backoff.
+  const now = ctx.clock.now();
   const before = input.grant;
   const grant: repo.Grant =
     before === null
@@ -441,25 +465,34 @@ async function mutate(run: Run, input: MutationInput): Promise<MutationResult> {
           : { update: { id: grant.id, set: { ...input.intent, lastAttemptAt: now } } },
       mutation,
     },
-    [systemEvent(run, "provider.mutation_attempted", grant.id, details)],
+    [systemEvent(run, "provider.mutation_attempted", grant.id, details, ctx)],
   );
   if (!begun.ok) return { status: "lease_lost" };
 
+  // The outcome is recorded at the real time it is known, after the request.
   const finish = async (
     result: repo.FinishMutation["result"],
     set: Partial<repo.GrantWritable>,
-    event: AuditEvent,
-  ) =>
-    repo.finishMutation(
-      ctx.db,
-      { ...run.lease, now, mutationId: mutation.id, result, grant: { id: grant.id, set } },
-      [event],
+    event: (at: ServiceContext) => AuditEvent,
+  ) => {
+    const at = atOneInstant(run.live);
+    return repo.finishMutation(
+      at.db,
+      {
+        ...run.lease,
+        now: at.clock.now(),
+        mutationId: mutation.id,
+        result,
+        grant: { id: grant.id, set },
+      },
+      [event(at)],
     );
+  };
   const succeeded = async (sent: Sent): Promise<MutationResult> => {
     const written = await finish(
       { status: "succeeded", errorCode: null, retryClass: null, externalId: sent.externalId },
       sent.grant,
-      systemEvent(run, "provider.mutation_succeeded", grant.id, details),
+      (at) => systemEvent(run, "provider.mutation_succeeded", grant.id, details, at),
     );
     return written.ok
       ? { status: "succeeded", grant: { ...grant, ...sent.grant } }
@@ -494,11 +527,14 @@ async function mutate(run: Run, input: MutationInput): Promise<MutationResult> {
             retryClass: outcome.retryClass,
             nextAttemptAt: outcome.nextAttemptAt,
           },
-          systemEvent(run, "provider.mutation_failed", grant.id, {
-            ...details,
-            errorCode: outcome.errorCode,
-            retryClass: outcome.retryClass,
-          }),
+          (at) =>
+            systemEvent(
+              run,
+              "provider.mutation_failed",
+              grant.id,
+              { ...details, errorCode: outcome.errorCode, retryClass: outcome.retryClass },
+              at,
+            ),
         );
         return written.ok
           ? { status: "failed", stopRun: outcome.stopRun }
@@ -514,14 +550,18 @@ async function mutate(run: Run, input: MutationInput): Promise<MutationResult> {
             externalId: null,
           },
           restored(before),
-          systemEvent(run, "provider.mutation_failed", grant.id, {
-            ...details,
-            errorCode: outcome.reason,
-            retryClass: null,
-          }),
+          (at) =>
+            systemEvent(
+              run,
+              "provider.mutation_failed",
+              grant.id,
+              { ...details, errorCode: outcome.reason, retryClass: null },
+              at,
+            ),
         );
         if (!written.ok) return { status: "lease_lost" };
-        // The repository is gone or renamed, or the installation suspended: a resync finds out.
+        // The repository is gone or renamed, or the installation suspended or gone: a resync
+        // finds out.
         await queueResync(run);
         return { status: "stopped" };
       }
@@ -574,8 +614,8 @@ async function currentLogin(run: Run, subject: repo.Subject): Promise<string> {
   return user.login;
 }
 
-/** What acting on one decision did. */
-type Acted = "continue" | "stop" | "lease_lost";
+/** What acting on one decision did. `out_of_time`: too little lease was left to act. */
+type Acted = "continue" | "stop" | "out_of_time" | "lease_lost";
 
 const settled = (result: MutationResult): Acted => {
   switch (result.status) {
@@ -585,14 +625,21 @@ const settled = (result: MutationResult): Acted => {
       return result.stopRun ? "stop" : "continue";
     case "stopped":
       return "stop";
+    case "out_of_time":
+      return "out_of_time";
     case "lease_lost":
       return "lease_lost";
   }
 };
 
-/** A managed invitation that lapsed: cancelled before it is reissued (decision 0010). */
+/**
+ * A managed invitation that lapsed: cancelled before it is reissued (decision 0010). An unmanaged
+ * one is the creator's, and is left alone.
+ */
 const lapsedInvitation = (grant: repo.Grant | null, decision: ReconciliationDecision) =>
-  decision.reason === "invitation_expired" && grant?.externalGrantId != null;
+  decision.reason === "invitation_expired" &&
+  grant?.managed === true &&
+  grant.externalGrantId !== null;
 
 /** Provision (or retry): cancel a lapsed invitation first, then invite. */
 async function provision(
@@ -655,8 +702,9 @@ async function provision(
           login,
         );
         if (result.outcome === "already_collaborator") {
-          // Observed absent moments ago, so the access is ShareRepo's own (decision 0010).
-          return { externalId: null, grant: { state: "active", managed: true } };
+          // GitHub created nothing: the person already had access, granted outside this
+          // invitation (by hand since the observation), which is unmanaged (decision 0010).
+          return { externalId: null, grant: { state: "active", managed: false } };
         }
         return {
           externalId: result.invitationId,
@@ -774,6 +822,11 @@ async function act(
       continue;
     }
     if (acted === "lease_lost") return "lease_lost";
+    if (acted === "out_of_time") {
+      // Too little lease left: the rest is for a run that starts now.
+      leftover = true;
+      break;
+    }
     if (acted === "stop") break;
   }
   return { mutated: mutations > 0, leftover };
@@ -781,35 +834,39 @@ async function act(
 
 // The run ---------------------------------------------------------------------------------------
 
-/** Ends the run: schedules the next one and releases the lease. */
-async function release(run: Run, next: number): Promise<ReconcileOutcome> {
+/**
+ * Ends the run: schedules the next one (at once if a reconcile was requested after the run
+ * started) and releases the lease, recording how the observation went.
+ */
+async function release(
+  run: Run,
+  next: number,
+  observation?: repo.ReleaseReconcileLease["observation"],
+): Promise<ReconcileOutcome> {
   const released = await repo.releaseReconcileLease(run.ctx.db, {
     ...run.lease,
-    now: run.now,
+    runStart: run.now,
+    now: run.live.clock.now(),
     nextReconcileAt: next,
+    ...(observation === undefined ? {} : { observation }),
   });
   return released ? "done" : "busy";
 }
 
 /**
- * An observation GitHub refused. An outage or rate limit retries after GitHub's wait or the first
- * backoff. A suspended installation, or a repository that is gone or renamed, queues a resync of
- * the connection; its changes queue the next run, and a suspended connection then blocks.
+ * An observation GitHub refused. It is retried with a backoff by the repository's consecutive
+ * failures, and its classified code is recorded for the access page. A suspended or missing
+ * installation, or a repository that is gone or renamed, queues a resync of the connection; its
+ * changes queue the next run, and a suspended connection then blocks.
  */
 async function observationFailed(run: Run, error: GitHubApiError): Promise<ReconcileOutcome> {
-  switch (error.kind) {
-    case "suspended":
-      await queueResync(run);
-      return release(run, run.now + RECONCILE_IDLE_MS);
-    case "not_found":
-      await queueResync(run);
-      return release(run, run.now + RECONCILE_POLL_MS);
-    default:
-      return release(
-        run,
-        run.now + Math.max(error.retryAfterMs ?? 0, RETRY_BACKOFF_MS[0] as number),
-      );
-  }
+  const outcome = classifyObservationFailure({
+    failure: providerFailure(error),
+    failures: run.resource.reconcileFailures + 1,
+    now: run.now,
+  });
+  if (outcome.resync) await queueResync(run);
+  return release(run, outcome.nextReconcileAt, { ok: false, errorCode: outcome.errorCode });
 }
 
 /**
@@ -841,7 +898,16 @@ export async function reconcileResource(
     workspaceId: ref.workspaceId,
     connectionId: resource.connectionId,
   })) as repo.Connection;
-  const run: Run = { ctx, now, lease, resource, connection, github };
+  const run: Run = {
+    ctx,
+    live: context,
+    now,
+    leaseUntil: now + RECONCILE_LEASE_MS,
+    lease,
+    resource,
+    connection,
+    github,
+  };
 
   const observed = await observe(run, await load(run));
   if (observed === "lease_lost") return "busy";
@@ -873,6 +939,8 @@ export async function reconcileResource(
   return release(
     run,
     nextReconcileAt({ now, grants: final.grants, budget: final.budget, leftover }),
+    // A skipped observation (inactive connection, unselected repository) says nothing.
+    observed === "observed" ? { ok: true } : undefined,
   );
 }
 
@@ -953,7 +1021,11 @@ export async function retryGrant(
   if (!reset.ok) throw new ConflictError("grant is not in error; reload and retry");
   const row = reconcileOutboxRow(ctx, { workspaceId, resourceId: grant.resourceId });
   // Queueing is bookkeeping: the request itself is audited above.
-  const queued = await repo.enqueueOutboxOnce(ctx.db, row);
+  const queued = await repo.enqueueReconcile(ctx.db, {
+    workspaceId,
+    resourceId: grant.resourceId,
+    outboxRow: row,
+  });
   return { outboxId: queued ? row.id : null, subjectId: row.subjectId };
 }
 

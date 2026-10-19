@@ -108,6 +108,9 @@ export function resourceRow(
     lastReconciledAt: null,
     reconcileToken: null,
     reconcileLeaseUntil: null,
+    reconcileRequestedAt: null,
+    reconcileFailures: 0,
+    lastReconcileError: null,
     ...overrides,
   };
 }

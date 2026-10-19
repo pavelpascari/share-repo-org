@@ -12,6 +12,7 @@ import {
   type NewOutboxRow,
   pendingOutbox,
 } from "./outbox-repository.ts";
+import { reconcileRequest } from "./reconcile-repository.ts";
 import { customers, entitlements, subscriptionItems, subscriptions } from "./schema/index.ts";
 
 /** Domain `Subscription`: normalized commercial facts observed from a source. Not access. */
@@ -66,7 +67,7 @@ export interface SubscriptionRefresh {
   /**
    * `reconcile_resource` rows (keyed `<workspaceId>:<resourceId>`) for every resource whose
    * entitlements the plan creates, updates or ends. Each is inserted only if no row with its key
-   * is pending.
+   * is pending, and stamps the resource's reconcile request either way.
    */
   reconcile: readonly NewOutboxRow[];
 }
@@ -346,7 +347,7 @@ export async function applySubscriptionRefresh(
     ),
     ...input.entitlements.create.map((row) => insertWhere(db, entitlements, row, guard)),
     ...(input.outbox ?? []).map((row) => conditionalOutboxInsert(db, row, guard)),
-    ...input.reconcile.map((row) => dedupedOutboxInsert(db, row, guard)),
+    ...input.reconcile.flatMap((row) => reconcileRequest(db, workspaceId, row, guard)),
     ...conditionalAuditInserts(db, audit, guard),
   );
   if (!creating) {

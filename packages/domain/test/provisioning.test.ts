@@ -2,6 +2,7 @@ import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 import {
   classifyMutationFailure,
+  classifyObservationFailure,
   GRANT_STATES,
   type GrantFields,
   type GrantObservationChange,
@@ -9,7 +10,9 @@ import {
   INVITATION_LIFETIME_MS,
   INVITATION_WINDOW_MS,
   invitationBudget,
+  type LatestMutation,
   MUTATION_OPERATIONS,
+  MUTATION_STATUSES,
   type MutationOperation,
   nextReconcileAt,
   OBSERVATION_GRACE_MS,
@@ -46,7 +49,20 @@ const stored = (overrides: Partial<ObservableGrant> = {}): ObservableGrant => ({
   retryClass: null,
   nextAttemptAt: null,
   updatedAt: LONG_AGO,
-  lastOperation: null,
+  lastMutation: null,
+  ...overrides,
+});
+
+/** A grant's latest mutation, started a minute after LONG_AGO unless overridden. */
+const mutation = (
+  operation: MutationOperation,
+  status: LatestMutation["status"] = "started",
+  overrides: Partial<LatestMutation> = {},
+): LatestMutation => ({
+  operation,
+  status,
+  retryClass: status === "failed" ? "retryable" : null,
+  startedAt: LONG_AGO + MINUTE,
   ...overrides,
 });
 
@@ -383,7 +399,11 @@ describe("observeGrants: unknown and absent grants", () => {
 });
 
 describe("observeGrants: provisioning (ShareRepo's intent)", () => {
-  const provisioning = stored({ state: "provisioning", managed: true, lastOperation: "invite" });
+  const provisioning = stored({
+    state: "provisioning",
+    managed: true,
+    lastMutation: mutation("invite"),
+  });
 
   it("makes the access it finds managed and settles the intent", () => {
     expect(update(provisioning, { collaborators: [collaborator({ direct: false })] })).toEqual({
@@ -548,10 +568,11 @@ describe("observeGrants: active grants", () => {
 });
 
 describe("observeGrants: revoking (ShareRepo's intent)", () => {
+  // The DELETE was sent; its outcome is not known yet.
   const revoking = stored({
     state: "revoking",
     managed: true,
-    lastOperation: "remove_collaborator",
+    lastMutation: mutation("remove_collaborator"),
   });
 
   it("records the access gone as absent and settles the intent, at once", () => {
@@ -582,6 +603,46 @@ describe("observeGrants: revoking (ShareRepo's intent)", () => {
     expect(at(NOW - OBSERVATION_GRACE_MS + 1)).toBeNull();
     expect(at(NOW - OBSERVATION_GRACE_MS)?.fields.state).toBe("active");
   });
+
+  it("restores only an invitation created before the revoke started, while its outcome is unknown", () => {
+    const pending = stored({ ...revoking, lastMutation: mutation("cancel_invitation") });
+    const before = invitation({ createdAt: LONG_AGO + MINUTE - 1 });
+    expect(update(pending, { invitations: [before] })?.fields.managed).toBe(true);
+    for (const createdAt of [LONG_AGO + MINUTE, LONG_AGO + 2 * MINUTE]) {
+      expect(update(pending, { invitations: [invitation({ createdAt })] })).toEqual({
+        fields: { ...fieldsOf(pending), ...PENDING, expiresAt: lapse(createdAt), managed: false },
+        settlesIntent: true,
+      });
+    }
+    // A collaborator may be ShareRepo's that the DELETE never removed.
+    expect(update(pending, { collaborators: [collaborator()] })?.fields.managed).toBe(true);
+    // With no revoke on record, the stored ownership stands.
+    for (const lastMutation of [null, mutation("invite", "succeeded")]) {
+      const unknown = stored({ ...revoking, lastMutation });
+      const listed = { invitations: [invitation({ createdAt: NOW })] };
+      expect(update(unknown, listed)?.fields.managed).toBe(true);
+    }
+  });
+
+  it.each(["remove_collaborator", "cancel_invitation"] as const)(
+    "records access listed after a %s that succeeded as the creator's, unmanaged",
+    (operation) => {
+      const revoked = stored({ ...revoking, lastMutation: mutation(operation, "succeeded") });
+      expect(update(revoked, { collaborators: [collaborator()] })).toEqual({
+        fields: { ...fieldsOf(revoked), ...ACTIVE, managed: false },
+        settlesIntent: true,
+      });
+      expect(update(revoked, { invitations: [invitation({ createdAt: LONG_AGO })] })).toEqual({
+        fields: { ...fieldsOf(revoked), ...PENDING, managed: false },
+        settlesIntent: true,
+      });
+      // Within the grace window the lists may still lag the DELETE.
+      const fresh = stored({ ...revoked, updatedAt: NOW });
+      expect(update(fresh, { collaborators: [collaborator()] })).toBeNull();
+      // Gone: absent, as for any revoke.
+      expect(update(revoked)?.fields).toEqual({ ...fieldsOf(revoked), ...ABSENT });
+    },
+  );
 });
 
 describe("observeGrants: errors", () => {
@@ -591,10 +652,13 @@ describe("observeGrants: errors", () => {
     retryClass: "retryable",
     nextAttemptAt: NOW + MINUTE,
   } as const;
-  const failed = (
-    lastOperation: MutationOperation | null,
-    overrides: Partial<ObservableGrant> = {},
-  ) => stored({ ...ERROR, managed: true, lastOperation, ...overrides });
+  const failed = (operation: MutationOperation | null, overrides: Partial<ObservableGrant> = {}) =>
+    stored({
+      ...ERROR,
+      managed: true,
+      lastMutation: operation === null ? null : mutation(operation, "failed"),
+      ...overrides,
+    });
 
   it("settles a failed invitation that landed after all as managed access", () => {
     const grant = failed("invite");
@@ -607,6 +671,24 @@ describe("observeGrants: errors", () => {
       settlesIntent: true,
     });
   });
+
+  it.each(["rate_limited", "user_action_required", "terminal"] as const)(
+    "records access listed after an invitation that failed %s as unmanaged",
+    (retryClass) => {
+      // GitHub refused the invitation, so what is listed was made by hand.
+      const grant = failed("invite", {
+        lastMutation: mutation("invite", "failed", { retryClass }),
+      });
+      expect(update(grant, { collaborators: [collaborator()] })).toEqual({
+        fields: { ...fieldsOf(grant), ...ACTIVE, managed: false },
+        settlesIntent: true,
+      });
+      expect(update(grant, { invitations: [invitation()] })).toEqual({
+        fields: { ...fieldsOf(grant), ...PENDING, managed: false },
+        settlesIntent: true,
+      });
+    },
+  );
 
   it("keeps a failed invitation's error while nothing is listed", () => {
     expect(update(failed("invite"))).toBeNull();
@@ -688,7 +770,14 @@ const grantArb: fc.Arbitrary<ObservableGrant> = fc
     retryClass: fc.constantFrom(...RETRY_CLASSES),
     nextAttemptAt: fc.option(instantArb),
     updatedAt: instantArb,
-    lastOperation: fc.option(fc.constantFrom(...MUTATION_OPERATIONS)),
+    lastMutation: fc.option(
+      fc.record({
+        operation: fc.constantFrom(...MUTATION_OPERATIONS),
+        status: fc.constantFrom(...MUTATION_STATUSES),
+        retryClass: fc.option(fc.constantFrom(...RETRY_CLASSES)),
+        startedAt: instantArb,
+      }),
+    ),
   })
   .map((g) => ({
     ...g,
@@ -774,7 +863,9 @@ describe("observeGrants properties", () => {
             const intended =
               before.managed ||
               before.state === "provisioning" ||
-              (before.state === "error" && before.lastOperation === "invite");
+              (before.state === "error" &&
+                before.lastMutation?.operation === "invite" &&
+                before.lastMutation.retryClass === "retryable");
             expect(intended).toBe(true);
           }
         }),
@@ -957,6 +1048,72 @@ describe("classifyMutationFailure", () => {
       outcome: "stop_run",
       reason: "suspended",
     });
+  });
+
+  it.each(MUTATION_OPERATIONS)("stops the run for a missing installation on %s", (operation) => {
+    expect(classify(operation, { kind: "not_found", target: "installation" })).toEqual({
+      outcome: "stop_run",
+      reason: "installation_missing",
+    });
+  });
+});
+
+describe("classifyObservationFailure", () => {
+  const classify = (failure: ProviderFailure, failures = 1) =>
+    classifyObservationFailure({ failure, failures, now: NOW });
+
+  it.each([
+    ["transient", "provider_unavailable"],
+    ["rejected", "provider_rejected"],
+    ["malformed_response", "malformed_response"],
+  ] as const)("backs a %s failure off by the failure count as %s", (kind, errorCode) => {
+    expect([1, 2, 3, 4, 9].map((failures) => classify({ kind, status: 500 }, failures))).toEqual(
+      [1, 5, 15, 60, 60].map((minutes) => ({
+        errorCode,
+        nextReconcileAt: NOW + minutes * MINUTE,
+        resync: false,
+      })),
+    );
+  });
+
+  it("waits out a rate limit, and at least the backoff", () => {
+    expect(classify({ kind: "rate_limited", retryAfterMs: 30 * MINUTE }, 2)).toEqual({
+      errorCode: "rate_limited",
+      nextReconcileAt: NOW + 30 * MINUTE,
+      resync: false,
+    });
+    expect(classify({ kind: "rate_limited", retryAfterMs: MINUTE }, 3)).toEqual(
+      expect.objectContaining({ nextReconcileAt: NOW + 15 * MINUTE }),
+    );
+    expect(classify({ kind: "rate_limited" }, 2)).toEqual(
+      expect.objectContaining({ nextReconcileAt: NOW + 5 * MINUTE }),
+    );
+  });
+
+  it("queues a resync for a suspended or missing installation, and waits the idle interval", () => {
+    for (const [failure, errorCode] of [
+      [{ kind: "suspended" }, "suspended"],
+      [{ kind: "not_found", target: "installation" }, "installation_missing"],
+    ] as const) {
+      expect(classify(failure, 3)).toEqual({
+        errorCode,
+        nextReconcileAt: NOW + RECONCILE_IDLE_MS,
+        resync: true,
+      });
+    }
+  });
+
+  it("queues a resync for a repository that is gone or renamed, and polls", () => {
+    for (const failure of [
+      { kind: "not_found", target: "repository" },
+      { kind: "not_found" },
+    ] as const) {
+      expect(classify(failure, 5)).toEqual({
+        errorCode: "repository_not_found",
+        nextReconcileAt: NOW + RECONCILE_POLL_MS,
+        resync: true,
+      });
+    }
   });
 });
 

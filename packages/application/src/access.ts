@@ -7,6 +7,7 @@ import {
   type Instant,
   type InvitationBudget,
   invitationBudget,
+  type ObservationErrorCode,
   planReconciliation,
   type ReconciliationAction,
   type ReconciliationReason,
@@ -48,6 +49,11 @@ export interface AccessRow {
   readonly resourceLastReconciledAt: Instant | null;
   /** When the repository's next reconciliation is due, or null when none is scheduled. */
   readonly resourceNextReconcileAt: Instant | null;
+  /**
+   * Why the repository's last observation failed (an `ObservationErrorCode`), or null when it
+   * succeeded or was never tried. Cleared by the next successful observation.
+   */
+  readonly resourceLastReconcileError: ObservationErrorCode | null;
   /** Live entitlements first, then those that ended in the last 30 days, newest first. */
   readonly entitlements: readonly AccessEntitlement[];
   /** Observed access, or null when it has not been checked yet. */
@@ -137,6 +143,7 @@ export async function listAccess(
       ...pair,
       resourceLastReconciledAt: resource.lastReconciledAt,
       resourceNextReconcileAt: resource.nextReconcileAt,
+      resourceLastReconcileError: resource.lastReconcileError,
       entitlements: [],
       grant:
         grant === undefined

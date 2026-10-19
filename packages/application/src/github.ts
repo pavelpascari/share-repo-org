@@ -522,6 +522,9 @@ async function attemptResync(
       lastReconciledAt: null,
       reconcileToken: null,
       reconcileLeaseUntil: null,
+      reconcileRequestedAt: null,
+      reconcileFailures: 0,
+      lastReconcileError: null,
     };
   });
   const updates = new Map<string, repo.ResourceChanges>();

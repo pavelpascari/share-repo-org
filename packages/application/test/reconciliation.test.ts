@@ -29,6 +29,7 @@ import {
   type EntitlementSourcePort,
   encodeReconcileKey,
   listAccess,
+  MUTATION_LEASE_RESERVE_MS,
   queueDueReconciles,
   RECONCILE_LEASE_MS,
   reconcileResource,
@@ -84,10 +85,15 @@ const subjectOf = async (s: Shop, login: string) =>
     .bind(s.workspaceId, login)
     .first<SubjectRow>()) as SubjectRow;
 
-/** A subscriber to `sim_pro` whose refresh has run. */
+/**
+ * A subscriber to `sim_pro` whose refresh has run. The clock then moves on, so a run that starts
+ * next starts after the refresh's reconcile request (a run releases due now when a request was
+ * stamped at or after its start).
+ */
 async function subscriber(s: Shop) {
   const sub = await subscribe(s, { items: ["sim_pro"] });
   await drain(s.workspaceId);
+  clock.advance(1);
   const subject = await subjectOf(s, sub.login);
   return { ...sub, userId: subject.external_subject_id, subjectId: subject.id };
 }
@@ -562,16 +568,83 @@ describe("reconcileResource", () => {
   it("provider/rate-limit-backs-off-and-retries: an observation that is limited waits for the reset", async () => {
     const s = await sold();
     await subscriber(s);
+    const lastError = async () =>
+      (await listAccess(serviceContext(), s, s.slug)).rows[0]?.resourceLastReconcileError;
+    expect(await lastError()).toBeNull();
     s.github.failNext(
       "listInvitations",
       githubError("rate_limited", { status: 403, retryAfterMs: 3 * MINUTE }),
     );
     await expect(reconcile(s)).resolves.toBe("done");
     expect(await grantsOf(s)).toEqual([]);
-    expect((await resourceRow(s)).nextReconcileAt).toBe(clock.now() + 3 * MINUTE);
+    expect(await resourceRow(s)).toMatchObject({
+      nextReconcileAt: clock.now() + 3 * MINUTE,
+      reconcileFailures: 1,
+      lastReconcileError: "rate_limited",
+    });
+    expect(await lastError()).toBe("rate_limited");
+
+    // Consecutive failures back off (1, 5, 15, 60 minutes), however GitHub fails.
+    clock.advance(3 * MINUTE);
     s.github.failNext("listCollaborators", githubError("malformed_response"));
     await reconcile(s);
-    expect((await resourceRow(s)).nextReconcileAt).toBe(clock.now() + MINUTE);
+    expect(await resourceRow(s)).toMatchObject({
+      nextReconcileAt: clock.now() + 5 * MINUTE,
+      reconcileFailures: 2,
+      lastReconcileError: "malformed_response",
+    });
+    clock.advance(5 * MINUTE);
+    s.github.failNext("listCollaborators", githubError("rejected", { status: 401 }));
+    await reconcile(s);
+    expect(await resourceRow(s)).toMatchObject({
+      nextReconcileAt: clock.now() + 15 * MINUTE,
+      reconcileFailures: 3,
+      lastReconcileError: "provider_rejected",
+    });
+    expect(await lastError()).toBe("provider_rejected");
+
+    // A rate limit waits at least the backoff its failure count has reached.
+    clock.advance(15 * MINUTE);
+    s.github.failNext("listInvitations", githubError("rate_limited", { retryAfterMs: MINUTE }));
+    await reconcile(s);
+    expect((await resourceRow(s)).nextReconcileAt).toBe(clock.now() + 60 * MINUTE);
+
+    // A successful observation clears both.
+    clock.advance(60 * MINUTE);
+    await reconcile(s);
+    expect(await resourceRow(s)).toMatchObject({ reconcileFailures: 0, lastReconcileError: null });
+    expect(await lastError()).toBeNull();
+  });
+
+  it("connection/suspended-installation-surfaces-error: an installation that is gone resyncs and waits", async () => {
+    const s = await sold();
+    const sub = await subscriber(s);
+    await settleOutbox(s);
+    s.github.failNext(
+      "listCollaborators",
+      githubError("not_found", { status: 404, target: "installation" }),
+    );
+    await reconcile(s);
+    expect(await resourceRow(s)).toMatchObject({
+      nextReconcileAt: clock.now() + RECONCILE_IDLE_MS,
+      lastReconcileError: "installation_missing",
+    });
+    expect(await pendingOutbox("resync_connection", s.connection.id)).toBe(1);
+
+    // Gone between the observation and the invitation: the run stops and resyncs too.
+    await settleOutbox(s);
+    clock.advance(MINUTE);
+    s.github.failNext(
+      "addCollaborator",
+      githubError("not_found", { status: 404, target: "installation" }),
+    );
+    await reconcile(s);
+    expect(await mutationsOf(s)).toMatchObject([
+      { operation: "invite", status: "failed", error_code: "installation_missing" },
+    ]);
+    expect(await grantFor(s, sub.subjectId)).toMatchObject({ state: "absent", managed: false });
+    expect(await pendingOutbox("resync_connection", s.connection.id)).toBe(1);
+    expect((await resourceRow(s)).lastReconcileError).toBeNull();
   });
 
   it("provider/transient-error-retries", async () => {
@@ -731,7 +804,7 @@ describe("reconcileResource", () => {
     });
   });
 
-  it("records a collaborator added between the observation and the invitation as managed", async () => {
+  it("records a collaborator added by hand between the observation and the invitation as unmanaged", async () => {
     const s = await sold();
     const sub = await subscriber(s);
     const racing = withHooks(s.github, {
@@ -741,7 +814,223 @@ describe("reconcileResource", () => {
       },
     });
     await reconcile(s, racing);
+    // GitHub answered 204: it created nothing, so the access is the creator's (decision 0010).
+    expect(await grantFor(s, sub.subjectId)).toMatchObject({ state: "active", managed: false });
+    expect(await mutationsOf(s)).toMatchObject([{ operation: "invite", status: "succeeded" }]);
+
+    // When the subscription ends, ShareRepo leaves it alone.
+    await act(s, sub.id, "cancel_now");
+    await drain(s.workspaceId);
+    clock.advance(MINUTE);
+    await reconcile(s);
+    expect(callsOf(s.github, "removeCollaborator")).toBe(0);
+    expect(accessOf(s).collaborators.map((c) => c.id)).toContain(sub.userId);
+    await expectMutationAuditComplete(s);
+  });
+
+  it("leaves access the creator gives back by hand after ShareRepo removed it", async () => {
+    const s = await sold();
+    const sub = await subscriber(s);
+    await reconcile(s);
+    s.github.acceptInvitation(repoName(s), sub.userId);
+    clock.advance(MINUTE);
+    await reconcile(s);
     expect(await grantFor(s, sub.subjectId)).toMatchObject({ state: "active", managed: true });
+    await act(s, sub.id, "cancel_now");
+    await drain(s.workspaceId);
+    // The removal lands, then the creator adds the person back before GitHub's lists are read.
+    const readded = withHooks(s.github, {
+      removeCollaborator: async (...args) => {
+        const removed = await s.github.removeCollaborator(...args);
+        s.github.addCollaboratorByHand(repoName(s), { id: sub.userId, login: sub.login });
+        return removed;
+      },
+    });
+    clock.advance(MINUTE);
+    await reconcile(s, readded);
+    expect(await grantFor(s, sub.subjectId)).toMatchObject({ state: "revoking" });
+    // Past the grace window, the access listed is the creator's: never removed again.
+    clock.advance(RECONCILE_POLL_MS);
+    await reconcile(s);
+    expect(await grantFor(s, sub.subjectId)).toMatchObject({ state: "active", managed: false });
+    expect(callsOf(s.github, "removeCollaborator")).toBe(1);
+    clock.advance(RECONCILE_POLL_MS);
+    await reconcile(s);
+    expect(callsOf(s.github, "removeCollaborator")).toBe(1);
+    expect(accessOf(s).collaborators.map((c) => c.id)).toContain(sub.userId);
+  });
+
+  it("leaves an invitation GitHub accepted after refusing ShareRepo's unmanaged", async () => {
+    const s = await sold();
+    const sub = await subscriber(s);
+    s.github.failNext("addCollaborator", githubError("rejected", { status: 422 }));
+    await reconcile(s);
+    expect(await grantFor(s, sub.subjectId)).toMatchObject({
+      state: "error",
+      lastErrorCode: "invitation_rejected",
+    });
+    // The creator invites the person by hand.
+    await s.github.addCollaborator(s.installationId, repoName(s), sub.login);
+    clock.advance(MINUTE);
+    await reconcile(s);
+    expect(await grantFor(s, sub.subjectId)).toMatchObject({
+      state: "pending_invitation",
+      managed: false,
+    });
+  });
+
+  it("does not cancel a lapsed invitation the creator sent by hand", async () => {
+    const s = await sold();
+    const sub = await subscriber(s);
+    await s.github.addCollaborator(s.installationId, repoName(s), sub.login);
+    const [byHand] = accessOf(s).invitations;
+    s.github.expireInvitation(repoName(s), byHand?.id as string);
+    await reconcile(s);
+    expect(callsOf(s.github, "cancelInvitation")).toBe(0);
+    expect((await mutationsOf(s)).map((m) => m.operation)).toEqual(["invite"]);
+  });
+
+  it("a subscription that ends while a run holds the repository is reconciled again at once", async () => {
+    const s = await sold();
+    const sub = await subscriber(s);
+    const key = encodeReconcileKey(ref(s));
+    // The run's own row stays pending until its delivery completes.
+    expect(await pendingOutbox("reconcile_resource", key)).toBe(1);
+    let ended = false;
+    const midRun = withHooks(s.github, {
+      addCollaborator: async (...args) => {
+        const result = await s.github.addCollaborator(...args);
+        if (!ended) {
+          ended = true;
+          clock.advance(1);
+          await act(s, sub.id, "cancel_now");
+          await drain(s.workspaceId);
+        }
+        return result;
+      },
+    });
+    await reconcile(s, midRun);
+    // The refresh's reconcile row was deduplicated behind the run's ...
+    expect(await pendingOutbox("reconcile_resource", key)).toBe(1);
+    expect(accessOf(s).invitations).toHaveLength(1);
+    // ... but the run, which planned before it, schedules the repository now, not in 15 minutes.
+    expect((await resourceRow(s)).nextReconcileAt).toBe(clock.now());
+    await settleOutbox(s);
+    expect(await queueDueReconciles(serviceContext(), { limit: 1000 })).toBeGreaterThan(0);
+    expect(await pendingOutbox("reconcile_resource", key)).toBe(1);
+    await reconcile(s);
+    expect(accessOf(s).invitations).toEqual([]);
+  });
+
+  it("a request acked behind a run that crashed is swept once the lease expires", async () => {
+    const s = await sold();
+    const sub = await subscriber(s);
+    await reconcile(s);
+    await settleOutbox(s);
+    const key = encodeReconcileKey(ref(s));
+    // The next run is scheduled ahead; a run starts (early, by "Check now") and crashes.
+    expect((await resourceRow(s)).nextReconcileAt).toBeGreaterThan(clock.now());
+    clock.advance(1);
+    const crashing = withHooks(s.github, {
+      listCollaborators: async () => {
+        throw new Error("worker crashed");
+      },
+    });
+    await expect(reconcile(s, crashing)).rejects.toThrow("worker crashed");
+    // The subscription ends meanwhile; its reconcile is delivered, finds the lease, and is acked.
+    clock.advance(1);
+    await act(s, sub.id, "cancel_now");
+    await drain(s.workspaceId);
+    await expect(reconcile(s)).resolves.toBe("busy");
+    await settleOutbox(s);
+    await queueDueReconciles(serviceContext(), { limit: 1000 });
+    expect(await pendingOutbox("reconcile_resource", key)).toBe(0);
+    // Once the crashed run's lease expires, the sweep queues the repository.
+    clock.advance(RECONCILE_LEASE_MS);
+    await queueDueReconciles(serviceContext(), { limit: 1000 });
+    expect(await pendingOutbox("reconcile_resource", key)).toBe(1);
+    await reconcile(s);
+    expect(accessOf(s).invitations).toEqual([]);
+  });
+
+  it("stamps each mutation with the time it is sent and finished", async () => {
+    const s = await sold();
+    const sub = await subscriber(s);
+    // The observation takes a second, the invitation five.
+    const start = clock.now() + 1_000;
+    const slow = withHooks(s.github, {
+      listInvitations: async (...args) => {
+        clock.advance(1_000);
+        return s.github.listInvitations(...args);
+      },
+      addCollaborator: async (...args) => {
+        clock.advance(5_000);
+        return s.github.addCollaborator(...args);
+      },
+    });
+    await reconcile(s, slow);
+    const mutation = await env.DB.prepare(
+      "SELECT started_at AS startedAt, finished_at AS finishedAt FROM provider_mutations WHERE workspace_id = ?",
+    )
+      .bind(s.workspaceId)
+      .first<{ startedAt: number; finishedAt: number }>();
+    expect(mutation).toEqual({ startedAt: start, finishedAt: start + 5_000 });
+    const grant = await grantFor(s, sub.subjectId);
+    expect(grant.lastAttemptAt).toBe(start);
+    const events = await listAuditEventsForWorkspace(db, s.workspaceId);
+    const at = (action: string) => events.find((e) => e.action === action)?.occurredAt;
+    expect(at("provider.mutation_attempted")).toBe(start);
+    expect(at("provider.mutation_succeeded")).toBe(start + 5_000);
+
+    // A failure's backoff counts from the attempt, so consecutive failures still escalate.
+    const other = await subscriber(s);
+    const failing = withHooks(s.github, {
+      addCollaborator: async () => {
+        clock.advance(5_000);
+        throw githubError("transient", { status: 502 });
+      },
+    });
+    const attempt = clock.now();
+    await reconcile(s, failing);
+    expect(await grantFor(s, other.subjectId)).toMatchObject({
+      state: "error",
+      lastAttemptAt: attempt,
+      nextAttemptAt: attempt + MINUTE,
+    });
+    clock.advance(MINUTE);
+    const second = clock.now();
+    await reconcile(s, failing);
+    expect(await grantFor(s, other.subjectId)).toMatchObject({
+      lastAttemptAt: second,
+      nextAttemptAt: second + 5 * MINUTE,
+    });
+  });
+
+  it("sends nothing once too little of the lease is left, and schedules the rest now", async () => {
+    const s = await sold();
+    for (let i = 0; i < 3; i += 1) await subscriber(s);
+    const start = clock.now();
+    // After one slow invitation enough of the lease is left for another; after two, not.
+    const step = (RECONCILE_LEASE_MS - MUTATION_LEASE_RESERVE_MS) * 0.6;
+    const slow = withHooks(s.github, {
+      addCollaborator: async (...args) => {
+        clock.advance(step);
+        return s.github.addCollaborator(...args);
+      },
+    });
+    expect(start + 2 * step + MUTATION_LEASE_RESERVE_MS).toBeGreaterThan(
+      start + RECONCILE_LEASE_MS,
+    );
+    expect(start + step + MUTATION_LEASE_RESERVE_MS).toBeLessThanOrEqual(
+      start + RECONCILE_LEASE_MS,
+    );
+    await reconcile(s, slow);
+    expect(callsOf(s.github, "addCollaborator")).toBe(2);
+    expect((await mutationsOf(s)).map((m) => m.status)).toEqual(["succeeded", "succeeded"]);
+    // Due already: the run's own start.
+    expect((await resourceRow(s)).nextReconcileAt).toBe(start);
+    await reconcile(s);
+    expect(accessOf(s).invitations).toHaveLength(3);
   });
 
   it("re-resolves the login before inviting, recording a rename", async () => {

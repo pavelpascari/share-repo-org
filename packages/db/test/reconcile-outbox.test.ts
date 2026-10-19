@@ -5,9 +5,13 @@ import {
   applyResourceSync,
   applySubscriptionRefresh,
   claimDueReconciles,
+  claimReconcileLease,
+  enqueueReconcile,
   type NewOutboxRow,
   reconcileKey,
   reconcileKeyOfRow,
+  releaseReconcileLease,
+  requestReconcile,
   type SubscriptionRefresh,
   schema,
 } from "../src/index.ts";
@@ -39,6 +43,20 @@ const nextReconcile = async (id: string) =>
       .bind(id)
       .first<{ n: number | null }>()
   )?.n;
+
+const requestedAt = async (id: string) =>
+  (
+    await env.DB.prepare("SELECT reconcile_requested_at AS r FROM resources WHERE id = ?")
+      .bind(id)
+      .first<{ r: number | null }>()
+  )?.r;
+
+/** A reconcile row created at `at`, so its request stamp is recognisable. */
+const requestRow = (workspaceId: string, resourceId: string, at: number): NewOutboxRow => ({
+  ...reconcileRow(workspaceId, resourceId),
+  createdAt: at,
+  availableAt: at,
+});
 
 const makeOutboxRow = (resource: { workspaceId: string; id: string }) =>
   reconcileRow(resource.workspaceId, resource.id);
@@ -373,5 +391,165 @@ describe("claimDueReconciles", () => {
         },
       }),
     ).resolves.toBe(0);
+  });
+});
+
+describe("reconcile requests", () => {
+  it("every trigger stamps the request in its batch, even when the insert is deduplicated", async () => {
+    const ws = await subscribedWorkspace();
+    const key = { workspaceId: ws.workspaceId, resourceId: ws.resource.id };
+    expect(await requestedAt(ws.resource.id)).toBeNull();
+
+    await requestReconcile(
+      db,
+      { ...key, outboxRow: requestRow(ws.workspaceId, ws.resource.id, NOW + 1) },
+      [workspaceEvent(ws.workspaceId)],
+    );
+    expect(await requestedAt(ws.resource.id)).toBe(NOW + 1);
+    // Pending: the insert is skipped, the stamp is not.
+    await expect(
+      enqueueReconcile(db, {
+        ...key,
+        outboxRow: requestRow(ws.workspaceId, ws.resource.id, NOW + 2),
+      }),
+    ).resolves.toBe(false);
+    expect(await requestedAt(ws.resource.id)).toBe(NOW + 2);
+    await applySubscriptionRefresh(
+      db,
+      {
+        workspaceId: ws.workspaceId,
+        now: NOW,
+        expectedVersion: 1,
+        subscription: { ...ws.subscription, version: 2, updatedAt: NOW },
+        items: [ws.item],
+        offers: [{ offerId: ws.offer.offer.id, version: 1 }],
+        entitlements: { create: [], update: [], end: [] },
+        reconcile: [requestRow(ws.workspaceId, ws.resource.id, NOW + 3)],
+      },
+      [workspaceEvent(ws.workspaceId)],
+    );
+    expect(await requestedAt(ws.resource.id)).toBe(NOW + 3);
+    const sync = (at: number) =>
+      applyResourceSync(
+        db,
+        {
+          workspaceId: ws.workspaceId,
+          connectionId: ws.connection.id,
+          now: NOW,
+          expectedVersion: 0,
+          syncToken: crypto.randomUUID(),
+          inserts: [],
+          updates: [],
+          connection: {},
+          reconcile: [requestRow(ws.workspaceId, ws.resource.id, at)],
+        },
+        [workspaceEvent(ws.workspaceId)],
+      );
+    await expect(sync(NOW + 4)).resolves.toEqual({ ok: true });
+    expect(await requestedAt(ws.resource.id)).toBe(NOW + 4);
+    expect(await queued(ws.workspaceId, ws.resource.id)).toBe(1);
+
+    // A stale resync stamps nothing.
+    await expect(sync(NOW + 5)).resolves.toEqual({ ok: false, reason: "stale" });
+    expect(await requestedAt(ws.resource.id)).toBe(NOW + 4);
+  });
+
+  it("enqueueReconcile queues once while pending and rejects a row of another resource", async () => {
+    const ws = await subscribedWorkspace();
+    const key = { workspaceId: ws.workspaceId, resourceId: ws.resource.id };
+    await expect(
+      enqueueReconcile(db, { ...key, outboxRow: reconcileRow(ws.workspaceId, ws.resource.id) }),
+    ).resolves.toBe(true);
+    expect(await queued(ws.workspaceId, ws.resource.id)).toBe(1);
+    await expect(
+      enqueueReconcile(db, { ...key, outboxRow: reconcileRow(ws.workspaceId, "res_other") }),
+    ).rejects.toThrow(/name the resource/);
+    await expect(
+      enqueueReconcile(db, { ...key, outboxRow: reconcileRow("ws_other", ws.resource.id) }),
+    ).rejects.toThrow(/reconcile_resource rows/);
+  });
+
+  it("a run that started before a request is released due now", async () => {
+    const ws = await leasedWorkspace(NOW);
+    const key = { workspaceId: ws.workspaceId, resourceId: ws.resource.id };
+    // The run's own row is still pending, so a request mid-run is deduplicated away.
+    await requestReconcile(
+      db,
+      { ...key, outboxRow: requestRow(ws.workspaceId, ws.resource.id, NOW) },
+      [workspaceEvent(ws.workspaceId)],
+    );
+    await requestReconcile(
+      db,
+      { ...key, outboxRow: requestRow(ws.workspaceId, ws.resource.id, NOW + 10) },
+      [workspaceEvent(ws.workspaceId)],
+    );
+    expect(await queued(ws.workspaceId, ws.resource.id)).toBe(1);
+    await expect(
+      releaseReconcileLease(db, {
+        ...ws.lease,
+        runStart: NOW + 10,
+        now: NOW + 50,
+        nextReconcileAt: NOW + 6 * 3_600_000,
+      }),
+    ).resolves.toBe(true);
+    expect(await nextReconcile(ws.resource.id)).toBe(NOW + 50);
+
+    // A run that started after the request schedules as it computed.
+    await claimReconcileLease(db, { ...key, token: "later", now: NOW + 60, leaseMs: 120_000 });
+    await releaseReconcileLease(db, {
+      ...key,
+      token: "later",
+      runStart: NOW + 11,
+      now: NOW + 70,
+      nextReconcileAt: NOW + 9_000,
+    });
+    expect(await nextReconcile(ws.resource.id)).toBe(NOW + 9_000);
+  });
+
+  it("the sweep queues a resource requested after its last run once no lease is live", async () => {
+    await quiet();
+    const at = NOW + 7_000;
+    // A run holds the lease (and will crash); the resource is scheduled far ahead.
+    const ws = await leasedWorkspace(at);
+    const key = { workspaceId: ws.workspaceId, resourceId: ws.resource.id };
+    await env.DB.prepare(
+      "UPDATE resources SET next_reconcile_at = ?, last_reconciled_at = ? WHERE id = ?",
+    )
+      .bind(at + 6 * 3_600_000, at - 1_000, ws.resource.id)
+      .run();
+    // A request while the lease is live; its row is delivered (the run is busy) and acked.
+    const mid = requestRow(ws.workspaceId, ws.resource.id, at + 1);
+    await requestReconcile(db, { ...key, outboxRow: mid }, [workspaceEvent(ws.workspaceId)]);
+    await env.DB.prepare("UPDATE outbox SET sent_at = ? WHERE subject_id = ?")
+      .bind(at + 2, mid.subjectId)
+      .run();
+
+    // Other tests' leases expire meanwhile, so only this resource's rows are counted.
+    const pending = () => queued(ws.workspaceId, ws.resource.id, "sent_at IS NULL");
+    const sweep = (now: number) => claimDueReconciles(db, { now, limit: 10_000, makeOutboxRow });
+    // The lease is live: not yet.
+    await sweep(at + 60_000);
+    expect(await pending()).toBe(0);
+    // The holder crashed; once its lease expires, the request is honoured.
+    await sweep(at + 120_000);
+    expect(await pending()).toBe(1);
+    // Pending now: not twice.
+    await sweep(at + 120_000);
+    expect(await pending()).toBe(1);
+    // The request is kept; a completed run supersedes it.
+    expect(await requestedAt(ws.resource.id)).toBe(at + 1);
+    await env.DB.prepare("UPDATE outbox SET sent_at = ? WHERE subject_id = ?")
+      .bind(at + 3, mid.subjectId)
+      .run();
+    await claimReconcileLease(db, { ...key, token: "next", now: at + 130_000, leaseMs: 120_000 });
+    await releaseReconcileLease(db, {
+      ...key,
+      token: "next",
+      runStart: at + 130_000,
+      now: at + 130_000,
+      nextReconcileAt: at + 6 * 3_600_000,
+    });
+    await sweep(at + 140_000);
+    expect(await pending()).toBe(0);
   });
 });

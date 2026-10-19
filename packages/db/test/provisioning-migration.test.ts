@@ -73,10 +73,18 @@ describe("migration 0005 (provisioning)", () => {
     );
     expect(await columns("resources")).toEqual(
       expect.arrayContaining(
-        ["next_reconcile_at", "last_reconciled_at", "reconcile_token", "reconcile_lease_until"].map(
-          (name) => ({ name, required: 0, fallback: null }),
-        ),
+        [
+          "next_reconcile_at",
+          "last_reconciled_at",
+          "reconcile_token",
+          "reconcile_lease_until",
+          "reconcile_requested_at",
+          "last_reconcile_error",
+        ].map((name) => ({ name, required: 0, fallback: null })),
       ),
+    );
+    expect(await columns("resources")).toEqual(
+      expect.arrayContaining([{ name: "reconcile_failures", required: 1, fallback: "0" }]),
     );
   });
 });
