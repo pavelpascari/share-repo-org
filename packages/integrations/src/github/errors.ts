@@ -4,7 +4,8 @@
  *
  * | kind                 | cause                                                         |
  * |----------------------|---------------------------------------------------------------|
- * | `not_found`          | 404                                                           |
+ * | `not_found`          | 404; repository calls say whether the `target` is the repository |
+ * |                      | (resync it) or the account, collaborator or invitation        |
  * | `suspended`          | 403 saying the installation is suspended                      |
  * | `rate_limited`       | 429, or 403 with `x-ratelimit-remaining: 0` or `retry-after`  |
  * | `transient`          | 5xx or a network failure                                      |
@@ -27,13 +28,21 @@ export interface GitHubApiErrorDetails {
   readonly retryAfterMs?: number;
   /** For 422: GitHub's validation error codes (for example `custom`, `invalid`), never messages. */
   readonly githubErrorCodes?: readonly string[];
+  /**
+   * For `not_found` from repository calls: whether the repository itself is gone (or renamed),
+   * which needs a resync, or the account, collaborator or invitation (already gone).
+   */
+  readonly target?: GitHubNotFoundTarget;
 }
+
+export type GitHubNotFoundTarget = "repository" | "account";
 
 export class GitHubApiError extends Error {
   readonly kind: GitHubApiErrorKind;
   readonly status: number | undefined;
   readonly retryAfterMs: number | undefined;
   readonly githubErrorCodes: readonly string[];
+  readonly target: GitHubNotFoundTarget | undefined;
 
   constructor(kind: GitHubApiErrorKind, message: string, details: GitHubApiErrorDetails = {}) {
     super(message);
@@ -42,6 +51,7 @@ export class GitHubApiError extends Error {
     this.status = details.status;
     this.retryAfterMs = details.retryAfterMs;
     this.githubErrorCodes = details.githubErrorCodes ?? [];
+    this.target = details.target;
   }
 }
 
