@@ -1,3 +1,4 @@
+export { type AccessPair, type AccessState, readAccessState } from "./access-repository.ts";
 export {
   type AuditEvents,
   appendAuditEvents,

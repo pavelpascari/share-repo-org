@@ -9,14 +9,20 @@ import {
   type ServiceContext,
 } from "@sharerepo/application";
 import { type Db, listActiveConnectionIds } from "@sharerepo/db";
-import type { CommercialSource } from "@sharerepo/domain";
+import { type CommercialSource, OutboxKind } from "@sharerepo/domain";
 import type { GitHubAppPort } from "@sharerepo/integrations";
 import { AppError } from "@sharerepo/platform";
 import type { JobsEnvironment } from "./env.ts";
 import type { JobMessage } from "./messages.ts";
 
-/** `done`: the work ran (or was already done). `out_of_scope`: no workspace owns the subject. */
-export type JobOutcome = "done" | "out_of_scope";
+/** How a job ended without an error. */
+export const JobOutcome = {
+  /** The work ran, or was already done. */
+  Done: "done",
+  /** No workspace owns the job's subject, so there was nothing to do. */
+  OutOfScope: "out_of_scope",
+} as const;
+export type JobOutcome = (typeof JobOutcome)[keyof typeof JobOutcome];
 
 /** What a job may use beyond the service context. */
 export interface JobDeps {
@@ -30,8 +36,16 @@ export interface JobDeps {
  * A job that can never succeed as written: its key does not decode (so it names no workspace),
  * or its entitlement source is not available here. Final, with a classified code only.
  */
+export const JobRejection = {
+  /** The job's key does not decode, so it names no workspace. */
+  KeyInvalid: "key_invalid",
+  /** The job's entitlement source does not run in this environment. */
+  SourceUnavailable: "source_unavailable",
+} as const;
+export type JobRejection = (typeof JobRejection)[keyof typeof JobRejection];
+
 export class JobRejectedError extends AppError {
-  constructor(code: "key_invalid" | "source_unavailable") {
+  constructor(code: JobRejection) {
     super("job rejected", { httpStatus: 422, code });
   }
 }
@@ -44,7 +58,7 @@ function entitlementSource(source: CommercialSource, db: Db, deps: JobDeps): Ent
   if (source === "simulated" && deps.environment !== "production") {
     return deps.simulatedSource(db);
   }
-  throw new JobRejectedError("source_unavailable");
+  throw new JobRejectedError(JobRejection.SourceUnavailable);
 }
 
 /**
@@ -57,32 +71,32 @@ export async function runJob(
   deps: JobDeps,
 ): Promise<JobOutcome> {
   switch (job.kind) {
-    case "process_external_event":
+    case OutboxKind.ProcessExternalEvent:
       await processExternalEvent(ctx, job.subjectId, deps.github);
-      return "done";
-    case "refresh_subscription": {
+      return JobOutcome.Done;
+    case OutboxKind.RefreshSubscription: {
       // The workspace comes from the key and scopes every read and write of the refresh.
       const key = decodeRefreshKey(job.subjectId);
-      if (!key.ok) throw new JobRejectedError("key_invalid");
+      if (!key.ok) throw new JobRejectedError(JobRejection.KeyInvalid);
       await refreshSubscription(ctx, key.value, entitlementSource(key.value.source, ctx.db, deps));
-      return "done";
+      return JobOutcome.Done;
     }
-    case "recompute_offer": {
+    case OutboxKind.RecomputeOffer: {
       const key = decodeOfferKey(job.subjectId);
-      if (!key.ok) throw new JobRejectedError("key_invalid");
+      if (!key.ok) throw new JobRejectedError(JobRejection.KeyInvalid);
       await recomputeOffer(ctx, key.value);
-      return "done";
+      return JobOutcome.Done;
     }
-    case "resync_connection": {
+    case OutboxKind.ResyncConnection: {
       // A resync is always scoped to the connection's workspace as stored in the database, never
       // to anything in the message. The active-connection list is small in v1; a keyed lookup
       // can replace this scan when it is not.
       const connection = (await listActiveConnectionIds(ctx.db)).find(
         (candidate) => candidate.id === job.subjectId,
       );
-      if (connection === undefined) return "out_of_scope";
+      if (connection === undefined) return JobOutcome.OutOfScope;
       await resyncConnection(ctx, connection, deps.github, "outbox: resync_connection");
-      return "done";
+      return JobOutcome.Done;
     }
   }
 }

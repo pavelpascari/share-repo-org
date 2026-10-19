@@ -71,12 +71,9 @@ export async function listAccess(
   const { workspaceId } = scope;
   const { db } = context;
   const now = context.clock.now();
-  const [entitlements, grants, resources, connections, offers] = await Promise.all([
-    repo.listEntitlementsForWorkspace(db, workspaceId, {
-      includeEnded: true,
-      endedSince: now - ENDED_ACCESS_VISIBLE_MS,
-    }),
-    repo.listGrantsForWorkspace(db, workspaceId),
+  const endedSince = now - ENDED_ACCESS_VISIBLE_MS;
+  const [{ pairs, entitlements, grants }, resources, connections, offers] = await Promise.all([
+    repo.readAccessState(db, workspaceId, { endedSince }),
     repo.listResourcesForWorkspace(db, workspaceId),
     repo.listConnectionsForWorkspace(db, workspaceId),
     repo.listOffers(db, workspaceId),
@@ -93,54 +90,37 @@ export async function listAccess(
     connections,
   });
 
-  const subjectIds = new Set([...entitlements, ...grants].map((row) => row.subjectId));
-  const subjects = new Map(
-    (await repo.listSubjects(db, { workspaceId, ids: [...subjectIds] })).map((s) => [s.id, s]),
-  );
-  const resourceNames = new Map(resources.map((r) => [r.id, r.nameSnapshot]));
   const offerNames = new Map(offers.map((o) => [o.id, o.name]));
   const decisionFor = new Map(decisions.map((d) => [pairKey(d.subjectId, d.resourceId), d]));
   const grantsById = new Map(grants.map((g) => [g.id, g]));
 
-  const rows = new Map<string, AccessRow & { entitlements: AccessEntitlement[] }>();
-  const rowFor = (subjectId: string, resourceId: string) => {
-    const key = pairKey(subjectId, resourceId);
-    let row = rows.get(key);
-    if (row === undefined) {
-      const decision = decisionFor.get(key);
-      // A pair with a grant always has a decision about it.
-      const grant = decision?.grantId == null ? undefined : grantsById.get(decision.grantId);
-      row = {
-        // Composite foreign keys keep subjects and resources in the workspace.
-        subjectId,
-        subjectLogin: (subjects.get(subjectId) as repo.Subject).loginSnapshot,
-        resourceId,
-        resourceName: resourceNames.get(resourceId) as string,
-        entitlements: [],
-        grant:
-          grant === undefined
-            ? null
-            : {
-                state: grant.state,
-                accessLevel: grant.accessLevel,
-                managed: grant.managed,
-                observedAt: grant.observedAt,
-              },
-        planned:
-          decision === undefined ? null : { action: decision.action, reason: decision.reason },
-      };
-      rows.set(key, row);
-    }
-    return row;
-  };
-  for (const grant of grants) rowFor(grant.subjectId, grant.resourceId);
-  // Newest first, with live rows ahead of ended ones.
-  const ordered = [...entitlements].sort(
-    (a, b) =>
-      Number(a.state !== "active") - Number(b.state !== "active") || b.createdAt - a.createdAt,
-  );
-  for (const entitlement of ordered) {
-    rowFor(entitlement.subjectId, entitlement.resourceId).entitlements.push({
+  // The database lists the pairs in display order, with their names.
+  type MutableRow = AccessRow & { entitlements: AccessEntitlement[] };
+  const rows = new Map<string, MutableRow>();
+  for (const pair of pairs) {
+    const key = pairKey(pair.subjectId, pair.resourceId);
+    const decision = decisionFor.get(key);
+    // A pair with a grant always has a decision about it.
+    const grant = decision?.grantId == null ? undefined : grantsById.get(decision.grantId);
+    rows.set(key, {
+      ...pair,
+      entitlements: [],
+      grant:
+        grant === undefined
+          ? null
+          : {
+              state: grant.state,
+              accessLevel: grant.accessLevel,
+              managed: grant.managed,
+              observedAt: grant.observedAt,
+            },
+      planned: decision === undefined ? null : { action: decision.action, reason: decision.reason },
+    });
+  }
+  // Already live first, newest first. One snapshot, so every entitlement has its pair's row.
+  for (const entitlement of entitlements) {
+    const row = rows.get(pairKey(entitlement.subjectId, entitlement.resourceId)) as MutableRow;
+    row.entitlements.push({
       id: entitlement.id,
       state: entitlement.state,
       accessLevel: entitlement.accessLevel,
@@ -155,8 +135,5 @@ export async function listAccess(
       endedAt: entitlement.endedAt,
     });
   }
-  return [...rows.values()].sort(
-    (a, b) =>
-      a.subjectLogin.localeCompare(b.subjectLogin) || a.resourceName.localeCompare(b.resourceName),
-  );
+  return [...rows.values()];
 }

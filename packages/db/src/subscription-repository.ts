@@ -1,4 +1,4 @@
-import type { CommercialSource, Instant } from "@sharerepo/domain";
+import { type CommercialSource, type Instant, OutboxKind } from "@sharerepo/domain";
 import { and, asc, eq, isNotNull, lte, or, type SQL, sql } from "drizzle-orm";
 import { type AuditEvents, conditionalAuditInserts } from "./audit-repository.ts";
 import { insertWhere, runBatch, type Statement } from "./batch.ts";
@@ -430,7 +430,7 @@ export async function claimDueEvaluations(
             and(
               lapsed,
               sql`NOT (${isDue})`,
-              sql`NOT ${pending("refresh_subscription", refreshKeyOfRow)}`,
+              sql`NOT ${pending(OutboxKind.RefreshSubscription, refreshKeyOfRow)}`,
             ),
           )
           .orderBy(asc(subscriptions.id))

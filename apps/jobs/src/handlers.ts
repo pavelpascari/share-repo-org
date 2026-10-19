@@ -13,7 +13,7 @@ import {
   markOutboxSent,
   type OutboxRow,
 } from "@sharerepo/db";
-import type { Clock, IdGenerator } from "@sharerepo/domain";
+import { type Clock, type IdGenerator, OutboxKind } from "@sharerepo/domain";
 import { GitHubApiError, type GitHubAppConfig, type GitHubAppPort } from "@sharerepo/integrations";
 import {
   AppError,
@@ -27,7 +27,7 @@ import {
 } from "@sharerepo/platform";
 import { type JobsConfig, parseJobsEnv } from "./env.ts";
 import { jobMessageSchema } from "./messages.ts";
-import { type JobDeps, retryDelaySeconds, runJob } from "./work.ts";
+import { type JobDeps, JobOutcome, retryDelaySeconds, runJob } from "./work.ts";
 
 export interface JobsWorkerDeps {
   readonly ids: IdGenerator;
@@ -163,7 +163,7 @@ export function createJobsWorker(deps: JobsWorkerDeps) {
     try {
       const outcome = await runJob(services(db), row, jobs);
       await markOutboxSent(db, [row.id], now);
-      if (outcome === "out_of_scope") {
+      if (outcome === JobOutcome.OutOfScope) {
         logger.warn("job has no workspace scope", { outboxId: row.id, kind: row.kind });
       }
       return true;
@@ -208,7 +208,7 @@ export function createJobsWorker(deps: JobsWorkerDeps) {
     for (const connection of connections) {
       await enqueueOutbox(db, {
         id: deps.ids.next(),
-        kind: "resync_connection",
+        kind: OutboxKind.ResyncConnection,
         subjectId: connection.id,
         createdAt: now,
         availableAt: now,
@@ -307,7 +307,7 @@ export function createJobsWorker(deps: JobsWorkerDeps) {
         try {
           const outcome = await runJob(ctx, job, jobs);
           await markOutboxSent(db, [job.outboxId], deps.clock.now());
-          if (outcome === "out_of_scope") {
+          if (outcome === JobOutcome.OutOfScope) {
             logger.warn("job has no workspace scope", { outboxId: job.outboxId });
           }
           message.ack();

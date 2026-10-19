@@ -9,7 +9,7 @@ import {
   type OfferSummary,
   updateOffer,
 } from "@sharerepo/application";
-import { GRACE_PERIOD_DAYS_DEFAULT, roleAllows } from "@sharerepo/domain";
+import { GRACE_PERIOD_DAYS_DEFAULT, OutboxKind, roleAllows } from "@sharerepo/domain";
 import {
   TextField as AriaTextField,
   Button,
@@ -117,7 +117,7 @@ export async function action({ request, params, context }: Route.ActionArgs) {
   }
   if (result.outboxId !== null) {
     enqueueJob(context, {
-      kind: "recompute_offer",
+      kind: OutboxKind.RecomputeOffer,
       subjectId: encodeOfferKey({ workspaceId: workspace.id, offerId: result.offer.id }),
       outboxId: result.outboxId,
     });

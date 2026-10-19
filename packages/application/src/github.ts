@@ -9,6 +9,7 @@ import {
   GITHUB_PERSONAL_REPOSITORY_CAPABILITIES,
   isSellable,
   type ObservedRepository,
+  OutboxKind,
   planResourceSync,
   type ResourceChanges,
   type ResourceSelection,
@@ -213,7 +214,7 @@ export async function completeGitHubConnection(
       outbox: [
         {
           id: ctx.ids.next(),
-          kind: "resync_connection",
+          kind: OutboxKind.ResyncConnection,
           subjectId: connectionId,
           createdAt: now,
           availableAt: now,
@@ -322,7 +323,7 @@ export async function ingestGitHubWebhook(
     [
       {
         id: outboxId,
-        kind: "process_external_event",
+        kind: OutboxKind.ProcessExternalEvent,
         subjectId: eventId,
         createdAt: now,
         availableAt: now,

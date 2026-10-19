@@ -9,7 +9,7 @@ import {
   type SimulationResult,
   simulateSubscriptionAction,
 } from "@sharerepo/application";
-import { roleAllows } from "@sharerepo/domain";
+import { OutboxKind, roleAllows } from "@sharerepo/domain";
 import { Label, Radio, RadioGroup } from "react-aria-components";
 import { data, Form, useNavigation } from "react-router";
 import { servicesFor } from "../auth/server.ts";
@@ -103,7 +103,7 @@ export async function action({ request, params, context }: Route.ActionArgs) {
   const result = attempted.value;
   if (!result.ok) return { target, error: SIMULATION_ERRORS[result.error], notice: null };
   enqueueJob(context, {
-    kind: "refresh_subscription",
+    kind: OutboxKind.RefreshSubscription,
     subjectId: encodeRefreshKey({
       workspaceId: workspace.id,
       source: "simulated",

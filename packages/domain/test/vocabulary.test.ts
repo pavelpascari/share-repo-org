@@ -22,6 +22,7 @@ import {
   OFFER_NAME_MAX_LENGTH,
   OFFER_STATUSES,
   OUTBOX_KINDS,
+  OutboxKind,
   RECONCILIATION_ACTIONS,
   RECONCILIATION_REASONS,
   RESOURCE_SELECTIONS,
@@ -54,6 +55,7 @@ describe("persisted vocabularies", () => {
       "refresh_subscription",
       "recompute_offer",
     ]));
+  it("outbox kinds by name", () => expect(Object.values(OutboxKind)).toEqual(OUTBOX_KINDS));
   it("offer statuses", () => expect(OFFER_STATUSES).toEqual(["active", "archived"]));
   it("grace period bounds (decision 0009)", () =>
     expect([GRACE_PERIOD_DAYS_MIN, GRACE_PERIOD_DAYS_DEFAULT, GRACE_PERIOD_DAYS_MAX]).toEqual([

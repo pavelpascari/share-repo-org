@@ -9,6 +9,7 @@ import {
   type EntitlementPlan,
   isNewerSnapshot,
   type LiveEntitlement,
+  OutboxKind,
   type PlanOffer,
   type PlanSubscription,
   planEntitlements,
@@ -439,7 +440,7 @@ function refreshOutboxRow(ctx: ServiceContext, ref: SubscriptionRef): repo.NewOu
   const now = ctx.clock.now();
   return {
     id: ctx.ids.next(),
-    kind: "refresh_subscription",
+    kind: OutboxKind.RefreshSubscription,
     subjectId: encodeRefreshKey(ref),
     createdAt: now,
     availableAt: now,

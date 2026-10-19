@@ -2,6 +2,7 @@ import * as repo from "@sharerepo/db";
 import {
   auditEvent,
   type Instant,
+  OutboxKind,
   parseGitHubLogin,
   type SubscriptionState,
   type WorkspaceScope,
@@ -225,7 +226,7 @@ function refreshRow(ctx: ServiceContext, workspaceId: string, id: string) {
   const now = ctx.clock.now();
   return {
     id: ctx.ids.next(),
-    kind: "refresh_subscription",
+    kind: OutboxKind.RefreshSubscription,
     subjectId: encodeRefreshKey({ workspaceId, source: "simulated", externalSubscriptionId: id }),
     createdAt: now,
     availableAt: now,

@@ -13,6 +13,7 @@ import {
   type OfferResource,
   type OfferSnapshot,
   type OfferStatus,
+  OutboxKind,
   parseOfferInput,
   parseResourceCapabilities,
   type ResourceCapabilities,
@@ -239,7 +240,7 @@ function recomputeRow(
 ): repo.NewOutboxRow {
   return {
     id: ctx.ids.next(),
-    kind: "recompute_offer",
+    kind: OutboxKind.RecomputeOffer,
     subjectId: encodeOfferKey({ workspaceId, offerId }),
     createdAt: now,
     availableAt: now,
