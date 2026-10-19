@@ -148,6 +148,8 @@ const PLANNED_REASONS: Record<ReconciliationReason, string> = {
   revocation_in_progress: "removal in progress",
   unmanaged_access: "access not granted by ShareRepo, left as is",
   no_access: "no access",
+  invitation_quota: "invitation limit for this repository reached, waiting for it to reset",
+  indirect_access: "has access as the repository owner, left as is",
 };
 
 /**

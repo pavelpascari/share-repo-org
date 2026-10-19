@@ -8,7 +8,15 @@ import {
   type ResourceType,
 } from "@sharerepo/domain";
 import { sql } from "drizzle-orm";
-import { check, foreignKey, integer, sqliteTable, text, unique } from "drizzle-orm/sqlite-core";
+import {
+  check,
+  foreignKey,
+  index,
+  integer,
+  sqliteTable,
+  text,
+  unique,
+} from "drizzle-orm/sqlite-core";
 import { connections } from "./connections.ts";
 import { literalList } from "./sql.ts";
 import { workspaces } from "./workspaces.ts";
@@ -39,9 +47,16 @@ export const resources = sqliteTable(
     capabilities: text("capabilities").notNull(),
     discoveredAt: integer("discovered_at").$type<Instant>().notNull(),
     updatedAt: integer("updated_at").$type<Instant>().notNull(),
+    // Reconciliation (decision 0010): when the repository is next due, when it last ran, and the
+    // lease a run holds. Every grant write of a run is guarded on its token.
+    nextReconcileAt: integer("next_reconcile_at").$type<Instant>(),
+    lastReconciledAt: integer("last_reconciled_at").$type<Instant>(),
+    reconcileToken: text("reconcile_token"),
+    reconcileLeaseUntil: integer("reconcile_lease_until").$type<Instant>(),
   },
   (t) => [
     unique("resources_workspace_id_id_unique").on(t.workspaceId, t.id),
+    index("resources_next_reconcile_idx").on(t.nextReconcileAt),
     unique("resources_connection_external_unique").on(t.connectionId, t.externalId),
     foreignKey({
       name: "resources_connection_fk",

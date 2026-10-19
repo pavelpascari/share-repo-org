@@ -42,6 +42,10 @@ export type ReconciliationAction = (typeof RECONCILIATION_ACTIONS)[number];
  * - `revocation_in_progress` (verify): a managed grant is being revoked;
  * - `unmanaged_access` (noop): access ShareRepo did not create, never revoked;
  * - `no_access` (noop): the grant is absent or unknown.
+ *
+ * Phase 4 (decision 0010):
+ * - `invitation_quota` (wait): provisioning waits for the repository's invitation budget;
+ * - `indirect_access` (noop): access that does not come from a direct grant, never revoked.
  */
 export const RECONCILIATION_REASONS = [
   "grant_missing",
@@ -63,6 +67,8 @@ export const RECONCILIATION_REASONS = [
   "revocation_in_progress",
   "unmanaged_access",
   "no_access",
+  "invitation_quota",
+  "indirect_access",
 ] as const;
 export type ReconciliationReason = (typeof RECONCILIATION_REASONS)[number];
 

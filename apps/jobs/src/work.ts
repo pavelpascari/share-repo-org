@@ -98,6 +98,9 @@ export async function runJob(
       await resyncConnection(ctx, connection, deps.github, "outbox: resync_connection");
       return JobOutcome.Done;
     }
+    case OutboxKind.ReconcileResource:
+      // Placeholder until the reconciliation handler lands (Phase 4 plan, T7).
+      throw new Error("reconcile_resource is not handled yet");
   }
 }
 

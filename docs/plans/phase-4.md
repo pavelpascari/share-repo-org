@@ -171,7 +171,7 @@ Every mutation row and audit event carries the job's correlation ID, the entitle
 
 | Table | Change |
 |---|---|
-| `grants` | Adds `indirect` (boolean, default 0) and `next_attempt_at`. Adds a CHECK: `error` requires `retry_class`, and `retry_class` requires `error`. `external_grant_id` holds the invitation ID while one is pending. |
+| `grants` | Adds `indirect` (boolean, default false) and `next_attempt_at`. The existing `grants_error_classified` CHECK already ties `error` to `last_error_code` and `retry_class`, so no rebuild is needed. `external_grant_id` holds the invitation ID while one is pending. |
 | `resources` | Adds `next_reconcile_at` (indexed), `last_reconciled_at`, `reconcile_token` and `reconcile_lease_until`. |
 | `provider_mutations` (new) | Workspace-scoped, with composite foreign keys to the grant, resource and subject. Columns: `connection_id`, `operation` (CHECK: `invite`, `remove_collaborator` or `cancel_invitation`), `access_level`, `status` (CHECK: `started`, `succeeded`, `failed` or `resolved`), `error_code`, `retry_class`, `external_id`, `entitlement_ids` (JSON), `correlation_id`, `started_at` and `finished_at`. Indexed on `(workspace_id, resource_id, operation, started_at)` for the invitation budget. Status changes once, from `started`; a trigger forbids other updates and all deletes. |
 | `outbox` | Kind `reconcile_resource`. The table is rebuilt again with its rows copied, tested from a populated 0004 database. |

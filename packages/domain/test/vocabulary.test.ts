@@ -16,6 +16,8 @@ import {
   GRACE_PERIOD_DAYS_MIN,
   GRANT_STATES,
   IDENTITY_PROVIDERS,
+  MUTATION_OPERATIONS,
+  MUTATION_STATUSES,
   OFFER_ACCESSES_MAX,
   OFFER_CHANGES,
   OFFER_ITEMS_MAX,
@@ -54,6 +56,7 @@ describe("persisted vocabularies", () => {
       "resync_connection",
       "refresh_subscription",
       "recompute_offer",
+      "reconcile_resource",
     ]));
   it("outbox kinds by name", () => expect(Object.values(OutboxKind)).toEqual(OUTBOX_KINDS));
   it("offer statuses", () => expect(OFFER_STATUSES).toEqual(["active", "archived"]));
@@ -94,6 +97,10 @@ describe("persisted vocabularies", () => {
       "terminal",
     ]));
   it("subject types", () => expect(SUBJECT_TYPES).toEqual(["user"]));
+  it("mutation operations", () =>
+    expect(MUTATION_OPERATIONS).toEqual(["invite", "remove_collaborator", "cancel_invitation"]));
+  it("mutation statuses", () =>
+    expect(MUTATION_STATUSES).toEqual(["started", "succeeded", "failed", "resolved"]));
 });
 
 // Stored in entitlements, audit details and shown in the UI: add codes, never rename them.
@@ -151,6 +158,8 @@ describe("stable decision codes", () => {
       "revocation_in_progress",
       "unmanaged_access",
       "no_access",
+      "invitation_quota",
+      "indirect_access",
     ]));
   it("offer limits", () =>
     expect([OFFER_NAME_MAX_LENGTH, OFFER_ITEMS_MAX, OFFER_ACCESSES_MAX]).toEqual([100, 100, 100]));

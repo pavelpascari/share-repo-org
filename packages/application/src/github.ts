@@ -517,6 +517,10 @@ async function attemptResync(
       capabilities: JSON.stringify(GITHUB_PERSONAL_REPOSITORY_CAPABILITIES),
       discoveredAt: now,
       updatedAt: now,
+      nextReconcileAt: null,
+      lastReconciledAt: null,
+      reconcileToken: null,
+      reconcileLeaseUntil: null,
     };
   });
   const updates = new Map<string, repo.ResourceChanges>();

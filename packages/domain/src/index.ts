@@ -50,8 +50,20 @@ export type {
 export { planEntitlements } from "./entitlement-plan.ts";
 export type { ExternalEventState } from "./external-event.ts";
 export { EXTERNAL_EVENT_STATES, OUTBOX_KINDS, OutboxKind } from "./external-event.ts";
-export type { GrantState, RetryClass, SubjectType } from "./grant.ts";
-export { GRANT_STATES, RETRY_CLASSES, SUBJECT_TYPES } from "./grant.ts";
+export type {
+  GrantState,
+  MutationOperation,
+  MutationStatus,
+  RetryClass,
+  SubjectType,
+} from "./grant.ts";
+export {
+  GRANT_STATES,
+  MUTATION_OPERATIONS,
+  MUTATION_STATUSES,
+  RETRY_CLASSES,
+  SUBJECT_TYPES,
+} from "./grant.ts";
 export type {
   GitHubLogin,
   GitHubLoginError,
