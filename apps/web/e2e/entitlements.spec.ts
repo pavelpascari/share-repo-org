@@ -1,26 +1,11 @@
-import type { Page } from "@playwright/test";
 import { connectedCreator } from "./support/github.ts";
 import { expect, newGitHubAccount, test } from "./support/journeys.ts";
 import { FAKE_GITHUB_URL } from "./support/ports.ts";
+import { expectAccess } from "./support/provisioning.ts";
 
 // Phase 3 journeys: offers, the simulated billing source, and the access view. Processing goes
 // web -> EVENTS queue -> jobs Worker (an auxiliary Worker of the dev server), so the access view
 // is polled.
-
-/** The access table row for one subscriber and repository, reloaded until it matches. */
-async function expectAccess(page: Page, slug: string, login: string, texts: readonly string[]) {
-  await expect
-    .poll(
-      async () => {
-        await page.goto(`/w/${slug}/access`);
-        const row = page.getByRole("row").filter({ hasText: login });
-        const text = (await row.count()) === 0 ? "" : ((await row.first().textContent()) ?? "");
-        return texts.filter((expected) => !text.includes(expected));
-      },
-      { timeout: 20_000, message: `access row for ${login}` },
-    )
-    .toEqual([]);
-}
 
 test("an owner sells a repository to a simulated subscriber, then cancels", async ({
   page,

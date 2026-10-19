@@ -14,9 +14,11 @@
 // - POST /_control/repos/{owner}/{name}/invitations/by-user/{userId}/accept          → invitee accepts
 // - POST /_control/repos/{owner}/{name}/invitations/{invitationId}/expire            → GitHub expires it
 // - GET  /_control/repos/{owner}/{name}               → { collaborators, invitations } (port shapes)
-// - POST /_control/failures   operation, status, retry_after? → the next call of `operation`
-//   (listCollaborators, listInvitations, addCollaborator, removeCollaborator, cancelInvitation,
-//   getUserById) answers with that status (429, 403, 422, 5xx…)
+// - POST /_control/failures   operation, status, retry_after?, repository? → the next call of
+//   `operation` (listCollaborators, listInvitations, addCollaborator, removeCollaborator,
+//   cancelInvitation, getUserById) answers with that status (429, 403, 422, 5xx…); with
+//   `repository` (`owner/name`), only a call on that repository does, so parallel tests don't
+//   take each other's failures
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 export type Permission = "read" | "write" | "admin";
@@ -118,11 +120,13 @@ export function createFakeCollaborators(app: FakeAppState) {
       (invitation) => invitation.invitee.id === userId && !invitation.expired,
     );
 
-  /** An injected failure for `operation`, answered once. */
-  function failed(res: ServerResponse, operation: string): boolean {
-    const failure = failures.get(operation);
+  /** An injected failure for `operation` (on `repository`, or on any), answered once. */
+  function failed(res: ServerResponse, operation: string, repository?: string): boolean {
+    const scoped = repository === undefined ? undefined : `${operation} ${repository}`;
+    const key = scoped !== undefined && failures.has(scoped) ? scoped : operation;
+    const failure = failures.get(key);
     if (failure === undefined) return false;
-    failures.delete(operation);
+    failures.delete(key);
     const headers: Record<string, string> = {};
     if (failure.retryAfter !== null) headers["retry-after"] = failure.retryAfter;
     const body =
@@ -159,7 +163,7 @@ export function createFakeCollaborators(app: FakeAppState) {
       const fullName = `${repo[1]}/${repo[2]}`;
       const rest = repo[3] ?? "";
       const operation = operationFor(req.method ?? "GET", rest);
-      if (operation !== null && failed(res, operation)) return true;
+      if (operation !== null && failed(res, operation, fullName)) return true;
       const found = app.repositoryFor(token, fullName);
       if (found === "unauthorized") return json(res, 401, { message: "Bad credentials" });
       if (found === null) return json(res, 404, { message: "Not Found" });
@@ -224,7 +228,11 @@ export function createFakeCollaborators(app: FakeAppState) {
       if (!OPERATIONS.has(operation) || !(status >= 400 && status <= 599)) {
         return json(res, 400, { message: "operation and an error status are required" });
       }
-      failures.set(operation, { status, retryAfter: form.get("retry_after") });
+      const repository = form.get("repository");
+      failures.set(repository === null ? operation : `${operation} ${repository}`, {
+        status,
+        retryAfter: form.get("retry_after"),
+      });
       return json(res, 200, { ok: true });
     }
 
