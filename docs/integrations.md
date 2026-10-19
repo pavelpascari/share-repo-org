@@ -127,7 +127,7 @@ On personal repositories, provisioning works through the collaborator and invita
   - `GET …/invitations`.
   
   People are matched by immutable user ID, never by login.
-- **Invite:** `PUT …/collaborators/{login}`, sent with no `permission`, after the login is re-resolved from the user ID. A `201` is a pending invitation, never access. A `204` means the person is already a collaborator.
+- **Invite:** `PUT …/collaborators/{login}`, sent with no `permission`, after the login is re-resolved from the user ID. A `201` is a pending invitation, never access. A `204` means the person is already a collaborator: GitHub created nothing, so the access is recorded as unmanaged (decision 0010).
 - **Revoke:**
   - an active collaborator: `DELETE …/collaborators/{login}`;
   - a pending invitation: `DELETE …/invitations/{id}`.
@@ -137,13 +137,16 @@ On personal repositories, provisioning works through the collaborator and invita
 
 | Adapter failure | Grant result |
 |---|---|
-| `transient`, `malformed_response` | Retryable `provider_unavailable`, backoff of 1, 5, 15, then 60 minutes |
+| `transient` (including a request aborted after its 20-second timeout), `malformed_response` | Retryable `provider_unavailable`, backoff of 1, 5, 15, then 60 minutes |
 | `rate_limited` | `rate_limited` until `retryAfter`, minimum 1 minute. The run stops. |
 | `rejected` 422 on invite | `invitation_rejected`: the owner must act, then press "Retry" |
 | `rejected` 403 | `app_permission_missing`: Administration write is not granted |
 | `not_found` account | `account_not_found` |
 | `not_found` repository | The grant is unchanged, and the connection is resynced |
 | `suspended` | The run stops, and the planner blocks with `connection_inactive` |
+| `not_found` installation (minting its token) | The run stops as `installation_missing`, and the connection is resynced |
+
+A failed observation leaves the grants alone. The repository records the classified code (`last_reconcile_error`, shown on the access page) and its consecutive failures, and backs off by them with the same 1, 5, 15 and 60 minutes (a rate limit waits at least `retryAfter`). A suspended or missing installation, or a missing repository, queues a resync.
 
 ### GitHub risks to test
 

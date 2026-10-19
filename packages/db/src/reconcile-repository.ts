@@ -1,11 +1,28 @@
 import {
   type AuditEvent,
   type Instant,
+  MUTATION_STOP_REASONS,
   type MutationOperation,
+  type MutationStatus,
+  type ObservationErrorCode,
   OutboxKind,
   type RetryClass,
 } from "@sharerepo/domain";
-import { and, asc, eq, inArray, isNotNull, isNull, lte, ne, or, type SQL, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  eq,
+  gt,
+  inArray,
+  isNotNull,
+  isNull,
+  lte,
+  ne,
+  notInArray,
+  or,
+  type SQL,
+  sql,
+} from "drizzle-orm";
 import { type AuditEvents, auditInserts, conditionalAuditInserts } from "./audit-repository.ts";
 import { insertWhere, runBatch, type Statement } from "./batch.ts";
 import { chunked } from "./chunks.ts";
@@ -59,6 +76,41 @@ export const reconcileKeyOfRow: SQL = sql`${resources.workspaceId} || ':' || ${r
 const ofResource = (workspaceId: string, resourceId: string) =>
   and(eq(resources.workspaceId, workspaceId), eq(resources.id, resourceId)) as SQL;
 
+/**
+ * The statements that request a reconciliation of the resource a `reconcile_resource` row names
+ * (checked by `assertReconcileRows` first): the deduplicated outbox insert, then the request
+ * stamp, `reconcile_requested_at = createdAt`, which is written even when the insert is skipped
+ * because a row is pending. A pending row may be the one a run in progress started from: the run
+ * then sees the stamp when it releases and schedules itself again at once, and the sweep queues
+ * a resource whose request is newer than its last run. Both run only if `condition` holds.
+ */
+export function reconcileRequest(
+  db: Db,
+  workspaceId: string,
+  row: NewOutboxRow,
+  condition?: SQL,
+): [Statement, Statement] {
+  const resourceId = row.subjectId.slice(workspaceId.length + 1);
+  return [
+    dedupedOutboxInsert(db, row, condition),
+    db
+      .update(resources)
+      .set({ reconcileRequestedAt: row.createdAt })
+      .where(and(ofResource(workspaceId, resourceId), condition)),
+  ];
+}
+
+/** Checks a request row names the resource, in its workspace. */
+function assertRequestRow(
+  input: { workspaceId: string; resourceId: string; outboxRow: NewOutboxRow },
+  operation: string,
+): void {
+  assertReconcileRows([input.outboxRow], input.workspaceId, operation);
+  if (input.outboxRow.subjectId !== reconcileKey(input.workspaceId, input.resourceId)) {
+    throw new Error(`${operation}: the row's key must name the resource`);
+  }
+}
+
 // ---------------------------------------------------------------------------------------------
 // Lease
 
@@ -85,22 +137,49 @@ export async function claimReconcileLease(
   return changed === 1;
 }
 
+export interface ReleaseReconcileLease extends LeaseKey {
+  /** When the run started: its `last_reconciled_at`, since it loaded state after it. */
+  runStart: Instant;
+  /** The real time of the release. */
+  now: Instant;
+  /** The run's schedule, used unless a request arrived after the run started. */
+  nextReconcileAt: Instant;
+  /**
+   * How the run's observation went: `ok` resets the failure count and error; `failed` counts one
+   * more failure and records its classified code. Omitted (nothing was observed) leaves both.
+   */
+  observation?: { ok: true } | { ok: false; errorCode: ObservationErrorCode };
+}
+
 /**
  * Ends a run: if the resource still carries `token`, clears the lease, stamps `last_reconciled_at`
- * and schedules the next run. Returns false, writing nothing, when another run took the lease.
+ * (the run's start) and schedules the next run: `now` when a request was stamped at or after the
+ * run started (the run may have loaded state from before it, and the request's own outbox row may
+ * have been deduplicated behind the run's), else `nextReconcileAt`. Returns false, writing
+ * nothing, when another run took the lease.
  */
 export async function releaseReconcileLease(
   db: Db,
-  input: LeaseKey & { now: Instant; nextReconcileAt: Instant },
+  input: ReleaseReconcileLease,
 ): Promise<boolean> {
+  const observation =
+    input.observation === undefined
+      ? {}
+      : input.observation.ok
+        ? { reconcileFailures: 0, lastReconcileError: null }
+        : {
+            reconcileFailures: sql`${resources.reconcileFailures} + 1`,
+            lastReconcileError: input.observation.errorCode,
+          };
   const [changed] = await runBatch(db, [
     db
       .update(resources)
       .set({
         reconcileToken: null,
         reconcileLeaseUntil: null,
-        lastReconciledAt: input.now,
-        nextReconcileAt: input.nextReconcileAt,
+        lastReconciledAt: input.runStart,
+        nextReconcileAt: sql`CASE WHEN ${resources.reconcileRequestedAt} >= ${input.runStart} THEN ${input.now} ELSE ${input.nextReconcileAt} END`,
+        ...observation,
       })
       .where(
         and(
@@ -148,7 +227,8 @@ export async function listLiveEntitlementsForResource(
 /**
  * When each invitation to the resource started after `since`, oldest first, for the invitation
  * budget. An invitation that failed with a retryable error is counted: its response may have
- * been lost after GitHub created it. One GitHub refused (any other retry class) is not.
+ * been lost after GitHub created it. One GitHub refused (any other retry class) is not, nor one
+ * that stopped the run (a stop reason: the request never reached the repository).
  */
 export async function listInviteStarts(
   db: Db,
@@ -163,7 +243,13 @@ export async function listInviteStarts(
         eq(providerMutations.resourceId, key.resourceId),
         eq(providerMutations.operation, "invite"),
         sql`${providerMutations.startedAt} > ${key.since}`,
-        or(ne(providerMutations.status, "failed"), eq(providerMutations.retryClass, "retryable")),
+        or(
+          ne(providerMutations.status, "failed"),
+          and(
+            eq(providerMutations.retryClass, "retryable"),
+            notInArray(providerMutations.errorCode, [...MUTATION_STOP_REASONS]),
+          ),
+        ),
       ),
     )
     .orderBy(asc(providerMutations.startedAt));
@@ -188,18 +274,30 @@ export async function listOpenMutations(
     .orderBy(asc(providerMutations.startedAt), asc(providerMutations.id));
 }
 
+/** A grant's latest provider mutation, as observation reads it. */
+export interface LatestMutation {
+  operation: MutationOperation;
+  status: MutationStatus;
+  retryClass: RetryClass | null;
+  startedAt: Instant;
+}
+
 /**
- * For each grant of the resource, the operation of its latest `started` or `failed` mutation (by
- * `started_at`, then ID): what the grant was last attempting, for a grant in error.
+ * For each grant of the resource, its latest mutation (by `started_at`, then ID), whatever its
+ * status: what the grant was last doing and how it ended, so observation can tell ShareRepo's
+ * access from access granted by hand.
  */
-export async function latestMutationOperations(
+export async function latestMutations(
   db: Db,
   key: { workspaceId: string; resourceId: string },
-): Promise<Map<string, MutationOperation>> {
+): Promise<Map<string, LatestMutation>> {
   const ranked = db
     .select({
       grantId: providerMutations.grantId,
       operation: providerMutations.operation,
+      status: providerMutations.status,
+      retryClass: providerMutations.retryClass,
+      startedAt: providerMutations.startedAt,
       rank: sql<number>`row_number() OVER (PARTITION BY ${providerMutations.grantId} ORDER BY ${providerMutations.startedAt} DESC, ${providerMutations.id} DESC)`.as(
         "rank",
       ),
@@ -209,15 +307,20 @@ export async function latestMutationOperations(
       and(
         eq(providerMutations.workspaceId, key.workspaceId),
         eq(providerMutations.resourceId, key.resourceId),
-        inArray(providerMutations.status, ["started", "failed"]),
       ),
     )
     .as("ranked");
   const rows = await db
-    .select({ grantId: ranked.grantId, operation: ranked.operation })
+    .select({
+      grantId: ranked.grantId,
+      operation: ranked.operation,
+      status: ranked.status,
+      retryClass: ranked.retryClass,
+      startedAt: ranked.startedAt,
+    })
     .from(ranked)
     .where(eq(ranked.rank, 1));
-  return new Map(rows.map((row) => [row.grantId, row.operation]));
+  return new Map(rows.map(({ grantId, ...latest }) => [grantId, latest]));
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -484,12 +587,26 @@ export async function requestReconcile(
   audit: AuditEvents,
 ): Promise<{ outboxId: string | null }> {
   const row = input.outboxRow;
-  assertReconcileRows([row], input.workspaceId, "requestReconcile");
-  if (row.subjectId !== reconcileKey(input.workspaceId, input.resourceId)) {
-    throw new Error("requestReconcile: the row's key must name the resource");
-  }
-  const [queued] = await runBatch(db, [dedupedOutboxInsert(db, row), ...auditInserts(db, audit)]);
+  assertRequestRow(input, "requestReconcile");
+  const [queued] = await runBatch(db, [
+    ...reconcileRequest(db, input.workspaceId, row),
+    ...auditInserts(db, audit),
+  ]);
   return { outboxId: queued === 1 ? row.id : null };
+}
+
+/**
+ * Requests the resource's reconciliation on its own (the queueing half of "Retry", audited by
+ * the caller): the deduplicated insert and the request stamp in one batch. Returns whether the
+ * row was queued.
+ */
+export async function enqueueReconcile(
+  db: Db,
+  input: { workspaceId: string; resourceId: string; outboxRow: NewOutboxRow },
+): Promise<boolean> {
+  assertRequestRow(input, "enqueueReconcile");
+  const [queued] = await runBatch(db, reconcileRequest(db, input.workspaceId, input.outboxRow));
+  return queued === 1;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -509,6 +626,10 @@ export async function requestReconcile(
  *   for good after the sweep cleared its schedule never releases its lease with a new one; this
  *   picks the resource up again once its row failed. The insert re-checks "not pending", so
  *   concurrent sweeps queue it at most once.
+ * - **Requested:** not due by schedule, no lease is live, nothing with its key is pending, and
+ *   `reconcile_requested_at` is newer than `last_reconciled_at`: a request deduplicated behind a
+ *   run that then crashed (or whose delivery was acked as `busy`). The stamp is kept; the next
+ *   completed run's `last_reconciled_at` supersedes it.
  *
  * Clearing the schedule is bookkeeping, like the outbox, so it carries no audit event.
  */
@@ -529,6 +650,9 @@ export async function claimDueReconciles(
     .limit(input.limit);
   const liveEntitlement = sql`EXISTS (SELECT 1 FROM ${entitlements} WHERE ${entitlements.workspaceId} = ${resources.workspaceId} AND ${entitlements.resourceId} = ${resources.id} AND ${entitlements.state} = 'active')`;
   const presentGrant = sql`EXISTS (SELECT 1 FROM ${grants} WHERE ${grants.workspaceId} = ${resources.workspaceId} AND ${grants.resourceId} = ${resources.id} AND ${grants.state} <> 'absent')`;
+  // Not due by schedule (the due query above covers those, within its limit).
+  const notDue = or(isNull(resources.nextReconcileAt), gt(resources.nextReconcileAt, input.now));
+  const requested = sql`${resources.reconcileRequestedAt} > COALESCE(${resources.lastReconciledAt}, 0)`;
   const repair =
     due.length < input.limit
       ? await db
@@ -536,13 +660,15 @@ export async function claimDueReconciles(
           .from(resources)
           .where(
             and(
-              isNull(resources.nextReconcileAt),
               or(
                 isNull(resources.reconcileLeaseUntil),
                 lte(resources.reconcileLeaseUntil, input.now),
               ),
               sql`NOT ${pendingOutbox(OutboxKind.ReconcileResource, reconcileKeyOfRow)}`,
-              or(liveEntitlement, presentGrant),
+              or(
+                and(isNull(resources.nextReconcileAt), or(liveEntitlement, presentGrant)),
+                and(notDue, requested),
+              ),
             ),
           )
           .orderBy(asc(resources.id))

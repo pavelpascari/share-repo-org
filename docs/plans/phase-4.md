@@ -97,6 +97,7 @@ Make GitHub access converge to entitlements, using the simulated source. In a de
 | `not_found` on invite | `user_action_required` | `account_not_found` (account deleted) | none |
 | `not_found` on repository | — | the resource is re-synced (`resync_connection` queued), and the grant is unchanged | next run |
 | `suspended` | — | the run stops; the planner blocks with `connection_inactive` after resync | — |
+| `not_found` minting the installation token | — | the run stops (`installation_missing`) and the connection is resynced | — |
 | `malformed_response` | `retryable` | `provider_unavailable` | as `transient` |
 
   A `not_found` on removing a collaborator or cancelling an invitation means it is already gone: success.
@@ -172,7 +173,7 @@ Every mutation row and audit event carries the job's correlation ID, the entitle
 | Table | Change |
 |---|---|
 | `grants` | Adds `indirect` (boolean, default false) and `next_attempt_at`. The existing `grants_error_classified` CHECK already ties `error` to `last_error_code` and `retry_class`, so no rebuild is needed. `external_grant_id` holds the invitation ID while one is pending. |
-| `resources` | Adds `next_reconcile_at` (indexed), `last_reconciled_at`, `reconcile_token` and `reconcile_lease_until`. |
+| `resources` | Adds `next_reconcile_at` (indexed), `last_reconciled_at`, `reconcile_token`, `reconcile_lease_until`, `reconcile_requested_at`, `reconcile_failures` (default 0) and `last_reconcile_error` (see Implementation notes). |
 | `provider_mutations` (new) | Workspace-scoped, with composite foreign keys to the grant, resource and subject. Columns: `connection_id`, `operation` (CHECK: `invite`, `remove_collaborator` or `cancel_invitation`), `access_level`, `status` (CHECK: `started`, `succeeded`, `failed` or `resolved`), `error_code`, `retry_class`, `external_id`, `entitlement_ids` (JSON), `correlation_id`, `started_at` and `finished_at`. Indexed on `(workspace_id, resource_id, operation, started_at)` for the invitation budget. Status changes once, from `started`; a trigger forbids other updates and all deletes. |
 | `outbox` | Kind `reconcile_resource`. The table is rebuilt again with its rows copied, tested from a populated 0004 database. |
 
@@ -242,7 +243,7 @@ T1 schema + migration + vocabularies ──┬─ T2 domain: observation, planne
 ### T4 — Database repositories (parallel)
 
 - **Leases:** `claimReconcileLease`; `releaseReconcileLease`, which also sets `next_reconcile_at` and `last_reconciled_at`.
-- **Reads:** `listGrantsForResource`, `listLiveEntitlementsForResource`, `listInviteStarts` (the budget), `listOpenMutations` and `latestMutationOperations`.
+- **Reads:** `listGrantsForResource`, `listLiveEntitlementsForResource`, `listInviteStarts` (the budget), `listOpenMutations` and `latestMutations`.
 - **Lease-guarded writes:** `applyGrantObservation`, `beginMutation` (write-ahead: grant state, mutation row and audit) and `finishMutation`.
   - Each batch starts with a no-op `UPDATE resources … WHERE reconcile_token = ?`. If it changes no rows, the lease was lost, and every later statement is guarded on the same token.
 - **Owner controls:** `resetGrantRetry` and `requestReconcile`.
@@ -306,3 +307,18 @@ T1 schema + migration + vocabularies ──┬─ T2 domain: observation, planne
 - **Subrequests.** A run makes at most 3 list calls (plus pages) and 10 mutations with their lookups, which is about 40 subrequests, within Workers limits. Very large repositories may need the cap lowered.
 - **Invitation budget.** It counts only ShareRepo's invitations. If the creator sends many by hand, GitHub's own limit can still reject an invitation. That error maps to `rate_limited` when GitHub reports it as such, and otherwise to `invitation_rejected`.
 - **A subscriber who is also the creator** has indirect owner access, so nothing is provisioned. The access page explains why.
+
+## Implementation notes
+
+- **Reconcile requests are stamped.** Every trigger (a refresh that changes entitlements, a resync, "Check now", "Retry") sets `resources.reconcile_requested_at` in the same batch as its deduplicated `reconcile_resource` insert, even when the insert is skipped because a row is pending. The pending row may be the one a run in progress started from: the outbox marks it sent only after the run, so the request would otherwise be lost and the run would release with a schedule computed from state read before it.
+  - A run releases with `next_reconcile_at = now` when a request was stamped at or after its start. `last_reconciled_at` is the run's start.
+  - The minute sweep also queues, deduplicated, any resource with `reconcile_requested_at > last_reconciled_at` and no live lease, whatever its schedule. This covers a delivery acked as `busy` behind a run that then crashed with a future `next_reconcile_at`. The stamp is never cleared; the next completed run supersedes it.
+- **Lease versus request timeout.** Every GitHub request is aborted after `REQUEST_TIMEOUT_MS` (20 s) and classified `transient`. A run sends a mutation only while its lease (2 minutes from the claim) has at least `MUTATION_LEASE_RESERVE_MS` left: three request timeouts (login lookup, the change, the repository check after a 404) plus 10 s. Otherwise it stops acting and releases as left over (due now), so a slow request never outlives the lease it was sent under. Write-ahead rows, outcomes and their audit events carry the real time they are written; a failure's backoff counts from the attempt instant (`last_attempt_at`), so consecutive failures still escalate.
+- **Ownership after a revoke, a failed invite, or a 204** (decision 0010). Observation reads each grant's latest mutation, whatever its status.
+  - `revoking` with its revoke `succeeded` and access still listed past the grace window: the creator's, recorded unmanaged (`active` or `pending_invitation`).
+  - `revoking` with the revoke still `started`: listed access stays as it was (the planner revokes again), except an invitation created at or after the revoke started, which is unmanaged.
+  - An errored `invite` adopts listed access as managed only after a `retryable` failure; after any other, the access is unmanaged.
+  - A `PUT` answered `204` is a succeeded mutation and an unmanaged `active` grant.
+  - Only a managed lapsed invitation is cancelled before reissuing; an unmanaged one is the creator's.
+- **Observation backoff.** A failed observation increments `resources.reconcile_failures` and records `last_reconcile_error` (`provider_unavailable`, `rate_limited`, `provider_rejected`, `malformed_response`, `suspended`, `repository_not_found` or `installation_missing`). The next run waits the backoff for that count (1, 5, 15, then 60 minutes; a rate limit at least `retryAfter`). A refusal or malformed response keeps backing off and is shown on the access page (`resourceLastReconcileError`). Suspended or missing installations wait the idle interval and a missing repository the poll interval, each after queueing a resync. A successful observation resets both; a skipped one (inactive connection, unselected repository) leaves them.
+- **Missing installation.** A `404` minting an installation token is `not_found` with target `installation`. A mutation stops the run as `installation_missing` (a stop reason, like `suspended`) and queues a resync. Failed invitations with a stop reason never reached the repository, so they do not count against the invitation budget.

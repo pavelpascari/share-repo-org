@@ -1,5 +1,5 @@
 import type { AccessLevel } from "./entitlement.ts";
-import type { GrantState, MutationOperation, RetryClass } from "./grant.ts";
+import type { GrantState, MutationOperation, MutationStatus, RetryClass } from "./grant.ts";
 import { type InvitationBudget, preferredGrant } from "./reconciliation.ts";
 import type { Instant } from "./time.ts";
 
@@ -56,6 +56,14 @@ export interface RepositoryObservation {
   readonly invitations: readonly ObservedInvitation[];
 }
 
+/** A grant's latest provider mutation, whatever its status. */
+export interface LatestMutation {
+  readonly operation: MutationOperation;
+  readonly status: MutationStatus;
+  readonly retryClass: RetryClass | null;
+  readonly startedAt: Instant;
+}
+
 /** The stored grant fields observation reads. */
 export interface ObservableGrant {
   readonly id: string;
@@ -70,8 +78,11 @@ export interface ObservableGrant {
   readonly retryClass: RetryClass | null;
   readonly nextAttemptAt: Instant | null;
   readonly updatedAt: Instant;
-  /** The operation of the grant's latest unsettled-or-failed mutation, so an `error` or intermediate grant knows what it was doing. */
-  readonly lastOperation: MutationOperation | null;
+  /**
+   * The grant's latest mutation, so an `error` or intermediate grant knows what it was doing and
+   * how that ended: whether listed access is ShareRepo's or was granted by hand.
+   */
+  readonly lastMutation: LatestMutation | null;
 }
 
 /** The grant fields observation writes. */
@@ -131,7 +142,12 @@ export interface GrantObservationInput {
 type Presence =
   | { readonly kind: "none" }
   | { readonly kind: "collaborator"; readonly accessLevel: AccessLevel; readonly indirect: boolean }
-  | { readonly kind: "invitation"; readonly invitationId: string; readonly expiresAt: Instant };
+  | {
+      readonly kind: "invitation";
+      readonly invitationId: string;
+      readonly createdAt: Instant;
+      readonly expiresAt: Instant;
+    };
 
 interface Next {
   readonly fields: GrantFields;
@@ -143,9 +159,11 @@ interface Next {
  * Pure. Each subject has at most one grant: when several are stored, the one with the highest
  * level, then the lowest ID, is updated (keeping its level if another holds the listed one) and
  * the rest are left alone. Observation sets `managed` only while ShareRepo's own invitation intent
- * is outstanding (`provisioning`, an error from `invite`, or a managed grant keeping its own
- * invitation), and clears it whenever the access is gone. Applying the changes and observing the
- * same lists again changes nothing.
+ * is outstanding (`provisioning`, an error from an `invite` whose response may have been lost, or
+ * a managed grant keeping its own invitation), and clears it whenever the access is gone. Access
+ * listed after ShareRepo's revoke succeeded, or after GitHub refused its invitation, was granted
+ * by hand and is unmanaged. Applying the changes and observing the same lists again changes
+ * nothing.
  */
 export function observeGrants(input: GrantObservationInput): GrantObservationChange[] {
   const { now, observation } = input;
@@ -217,7 +235,7 @@ function transition(
     case "revoking":
       // Still listed: the DELETE may not show for a moment, or it never landed.
       if (presence.kind !== "none" && fresh) return null;
-      return to(grant.managed, true);
+      return to(keepsManagedWhileRevoking(grant, presence), true);
     case "error":
       return fromError(grant, from, presence);
   }
@@ -225,11 +243,15 @@ function transition(
 
 /** An errored grant settles by what its failed mutation was doing. */
 function fromError(grant: ObservableGrant, from: GrantFields, presence: Presence): Next | null {
-  switch (grant.lastOperation) {
-    case "invite":
-      // The invitation landed after all; while nothing is listed, it is still to be retried.
+  switch (grant.lastMutation?.operation ?? null) {
+    case "invite": {
+      // While nothing is listed, it is still to be retried.
       if (presence.kind === "none") return null;
-      return { fields: fieldsFor(presence, from, true), settlesIntent: true };
+      // A retryable failure (an outage, a lost response) may have landed after all; any other
+      // means GitHub refused it, so what is listed was granted by hand.
+      const landed = (grant.lastMutation as LatestMutation).retryClass === "retryable";
+      return { fields: fieldsFor(presence, from, landed), settlesIntent: true };
+    }
     case "remove_collaborator":
     case "cancel_invitation": {
       if (presence.kind === "none") return { fields: absent(from), settlesIntent: true };
@@ -255,6 +277,21 @@ function keepsManaged(grant: ObservableGrant, presence: Presence): boolean {
     grant.managed &&
     (presence.invitationId === grant.externalGrantId || grant.externalGrantId === null)
   );
+}
+
+/**
+ * Whether a revoking grant whose access is still listed (after the grace window) stays managed.
+ * Once its revoke succeeded, the access is the creator's, granted again by hand. While the
+ * revoke's outcome is unknown, the access may be ShareRepo's that the DELETE never removed, so it
+ * stays as it was, and the planner revokes again; but an invitation created after the revoke
+ * started cannot be ShareRepo's.
+ */
+function keepsManagedWhileRevoking(grant: ObservableGrant, presence: Presence): boolean {
+  const revoke = grant.lastMutation?.operation === "invite" ? null : grant.lastMutation;
+  if (revoke == null) return grant.managed;
+  if (revoke.status === "succeeded") return false;
+  if (presence.kind !== "invitation") return grant.managed;
+  return grant.managed && presence.createdAt < revoke.startedAt;
 }
 
 /** A managed invitation sent within the grace window may not be listed yet. */
@@ -361,7 +398,12 @@ function presenceOf(
       grant?.externalGrantId === invitation.invitationId ? (grant.expiresAt ?? now) : now;
     expiresAt = Math.min(lapses, stored, now);
   }
-  return { kind: "invitation", invitationId: invitation.invitationId, expiresAt };
+  return {
+    kind: "invitation",
+    invitationId: invitation.invitationId,
+    createdAt: invitation.createdAt,
+    expiresAt,
+  };
 }
 
 /** The grant's own invitation if listed, else the newest live one, then the lowest ID. */
@@ -419,8 +461,11 @@ export interface ProviderFailure {
   readonly status?: number;
   /** How long the provider asked to wait. */
   readonly retryAfterMs?: number;
-  /** What a `not_found` was about, when the adapter can tell. */
-  readonly target?: "account" | "repository";
+  /**
+   * What a `not_found` was about, when the adapter can tell. `installation`: the app's
+   * installation is gone (its access token could not be minted).
+   */
+  readonly target?: "account" | "repository" | "installation";
 }
 
 /** Why a grant's last mutation failed. Stable codes, stored and shown to creators. */
@@ -436,9 +481,13 @@ export type GrantErrorCode = (typeof GRANT_ERROR_CODES)[number];
 
 /**
  * Why a failure stops the whole run and leaves the grant unchanged. Also the error code of the
- * failed mutation. `repository_not_found`: the caller queues a resync of the connection.
+ * failed mutation. Each makes the caller queue a resync of the connection.
  */
-export const MUTATION_STOP_REASONS = ["suspended", "repository_not_found"] as const;
+export const MUTATION_STOP_REASONS = [
+  "suspended",
+  "repository_not_found",
+  "installation_missing",
+] as const;
 export type MutationStopReason = (typeof MUTATION_STOP_REASONS)[number];
 
 export type MutationFailureOutcome =
@@ -488,6 +537,9 @@ export function classifyMutationFailure(input: MutationFailureInput): MutationFa
       if (failure.target === "repository") {
         return { outcome: "stop_run", reason: "repository_not_found" };
       }
+      if (failure.target === "installation") {
+        return { outcome: "stop_run", reason: "installation_missing" };
+      }
       // Removing what is already gone succeeded; an invitee that is gone must be fixed by a person.
       return revokes
         ? { outcome: "already_done" }
@@ -504,6 +556,67 @@ function failed(
   stopRun = false,
 ): MutationFailureOutcome {
   return { outcome: "failed", errorCode, retryClass, nextAttemptAt, stopRun };
+}
+
+/** Why a repository's last observation failed. Stable codes, stored and shown to creators. */
+export const OBSERVATION_ERROR_CODES = [
+  "provider_unavailable",
+  "rate_limited",
+  "provider_rejected",
+  "malformed_response",
+  "suspended",
+  "repository_not_found",
+  "installation_missing",
+] as const;
+export type ObservationErrorCode = (typeof OBSERVATION_ERROR_CODES)[number];
+
+export interface ObservationFailureInput {
+  readonly failure: ProviderFailure;
+  /** The repository's consecutive failed observations, this one included (1-based). */
+  readonly failures: number;
+  readonly now: Instant;
+}
+
+export interface ObservationFailureOutcome {
+  readonly errorCode: ObservationErrorCode;
+  readonly nextReconcileAt: Instant;
+  /** Queue a resync of the connection: the installation or the repository may be gone. */
+  readonly resync: boolean;
+}
+
+/**
+ * Classifies a failed observation of a repository. Pure. A provider failure backs off by the
+ * repository's consecutive failures (a rate limit waits at least the provider's wait), so a
+ * repository GitHub keeps refusing is not polled every minute; a refusal or a malformed response
+ * is recorded and shown, and keeps backing off. A suspended or missing installation, or a
+ * repository that is gone or renamed, queues a resync, whose changes queue the next run.
+ */
+export function classifyObservationFailure(
+  input: ObservationFailureInput,
+): ObservationFailureOutcome {
+  const { failure, now } = input;
+  const backoff = retryBackoff(input.failures);
+  const outcome = (
+    errorCode: ObservationErrorCode,
+    wait: number,
+    resync = false,
+  ): ObservationFailureOutcome => ({ errorCode, nextReconcileAt: now + wait, resync });
+  switch (failure.kind) {
+    case "transient":
+      return outcome("provider_unavailable", backoff);
+    case "rate_limited":
+      return outcome("rate_limited", Math.max(failure.retryAfterMs ?? 0, backoff));
+    case "rejected":
+      return outcome("provider_rejected", backoff);
+    case "malformed_response":
+      return outcome("malformed_response", backoff);
+    case "suspended":
+      return outcome("suspended", RECONCILE_IDLE_MS, true);
+    case "not_found":
+      return failure.target === "installation"
+        ? outcome("installation_missing", RECONCILE_IDLE_MS, true)
+        : outcome("repository_not_found", RECONCILE_POLL_MS, true);
+  }
 }
 
 /** The wait before retrying after the attempt-th consecutive retryable failure. */

@@ -15,6 +15,11 @@ Phase 4 makes GitHub access converge to entitlements. Two things must be settled
 
 - A grant is **managed** only when ShareRepo created it. ShareRepo records its intent (`provisioning`) before it sends an invitation, and only an invitation or collaborator observed while that intent is outstanding becomes managed.
 - **Access that already exists is left unmanaged.** If the subscriber is already a collaborator, ShareRepo records an unmanaged active grant and sends nothing. When the entitlement ends, ShareRepo does not remove them. The access page shows "Has access ShareRepo does not manage", so the creator can decide.
+  - The same holds when the subscriber becomes a collaborator between the observation and the invitation: GitHub answers the `PUT` with `204` and creates nothing, so the grant is recorded `active` and unmanaged, and the mutation `succeeded`.
+- **Only what ShareRepo's own request may have created is adopted.** While an intent is outstanding, listed access becomes managed only if ShareRepo's request could have made it:
+  - after an invitation fails, only a retryable failure (an outage or a lost response) may have created it; after any other failure, GitHub refused it, and listed access is unmanaged;
+  - after a revoke succeeds, access listed again (past the 5-minute grace for list lag) was granted back by hand, and is unmanaged;
+  - while a revoke's outcome is unknown, listed access stays as it was, so the planner revokes again, except an invitation created after the revoke started, which is unmanaged.
 - **A managed grant that disappears is no longer managed.** If ShareRepo's collaborator or invitation is removed by hand, the grant becomes `absent` and `managed` is cleared:
   - while the entitlement is live, ShareRepo invites again, and that new invitation is managed;
   - if the creator later adds the person back by hand, that access is unmanaged.

@@ -57,6 +57,9 @@ ALTER TABLE `resources` ADD `next_reconcile_at` integer;--> statement-breakpoint
 ALTER TABLE `resources` ADD `last_reconciled_at` integer;--> statement-breakpoint
 ALTER TABLE `resources` ADD `reconcile_token` text;--> statement-breakpoint
 ALTER TABLE `resources` ADD `reconcile_lease_until` integer;--> statement-breakpoint
+ALTER TABLE `resources` ADD `reconcile_requested_at` integer;--> statement-breakpoint
+ALTER TABLE `resources` ADD `reconcile_failures` integer DEFAULT 0 NOT NULL;--> statement-breakpoint
+ALTER TABLE `resources` ADD `last_reconcile_error` text;--> statement-breakpoint
 CREATE INDEX `resources_next_reconcile_idx` ON `resources` (`next_reconcile_at`);--> statement-breakpoint
 CREATE TRIGGER `provider_mutations_settle_once` BEFORE UPDATE ON `provider_mutations`
 WHEN OLD.status <> 'started'

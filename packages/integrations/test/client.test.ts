@@ -1,7 +1,7 @@
 import { createSecretCanaries, expectNoCanaryLeak, FakeClock } from "@sharerepo/testing";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { nextLink, pathSegment } from "../src/github/client.ts";
-import { createGitHubApp, GitHubApiError } from "../src/index.ts";
+import { createGitHubApp, GitHubApiError, REQUEST_TIMEOUT_MS } from "../src/index.ts";
 import installation from "./fixtures/installation.json";
 import { appKey } from "./support/keys.ts";
 import {
@@ -216,6 +216,51 @@ describe("error classification", () => {
       kind: "transient",
       message: "GitHub get installation failed: network error",
     });
+  });
+
+  it("gives every request a timeout, and classifies one that timed out as transient", async () => {
+    const signals: (AbortSignal | null | undefined)[] = [];
+    const app = createGitHubApp({
+      appId: "1000",
+      privateKeyPem: (await appKey()).pem,
+      apiBaseUrl: API,
+      clock: new FakeClock(NOW),
+      fetch: (async (_input: RequestInfo | URL, init?: RequestInit) => {
+        signals.push(init?.signal);
+        throw new DOMException("The operation timed out.", "TimeoutError");
+      }) as typeof fetch,
+    });
+    expect(REQUEST_TIMEOUT_MS).toBe(20_000);
+    const error = await failure(app.getInstallation("42"));
+    expect(error).toMatchObject({
+      kind: "transient",
+      message: "GitHub get installation failed: network error",
+    });
+    expect(signals).toHaveLength(1);
+    expect(signals[0]).toBeInstanceOf(AbortSignal);
+    expect(signals[0]?.aborted).toBe(false);
+  });
+
+  it("aborts each request after REQUEST_TIMEOUT_MS", async () => {
+    const timeout = vi.spyOn(AbortSignal, "timeout");
+    try {
+      const signals: (AbortSignal | null | undefined)[] = [];
+      const app = createGitHubApp({
+        appId: "1000",
+        privateKeyPem: (await appKey()).pem,
+        apiBaseUrl: API,
+        clock: new FakeClock(NOW),
+        fetch: (async (_input: RequestInfo | URL, init?: RequestInit) => {
+          signals.push(init?.signal);
+          return jsonResponse(200, installation);
+        }) as typeof fetch,
+      });
+      await app.getInstallation("42");
+      expect(timeout.mock.calls).toEqual([[REQUEST_TIMEOUT_MS]]);
+      expect(signals).toEqual([timeout.mock.results[0]?.value]);
+    } finally {
+      timeout.mockRestore();
+    }
   });
 
   it("classifies a malformed 200 body", async () => {
@@ -536,12 +581,16 @@ describe("collaborators and invitations", () => {
       expect(calls).toHaveLength(3);
     });
 
-    it("does not blame the account when the installation is gone", async () => {
+    it("blames the installation, not the account, when the installation is gone", async () => {
       const { app, calls } = await client([]);
       const error = await failure(app.addCollaborator("404", REPO, "octo-subscriber"));
-      expect(error).toMatchObject({ kind: "not_found", target: undefined });
+      expect(error).toMatchObject({ kind: "not_found", target: "installation" });
       expect(error.message).toBe("GitHub create installation token failed with status 404");
       expect(calls).toHaveLength(1);
+      expect(await failure(app.listCollaborators("404", REPO, "all"))).toMatchObject({
+        kind: "not_found",
+        target: "installation",
+      });
     });
   });
 });

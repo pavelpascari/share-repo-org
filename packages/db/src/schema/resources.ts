@@ -2,6 +2,7 @@ import {
   IDENTITY_PROVIDERS,
   type IdentityProvider,
   type Instant,
+  type ObservationErrorCode,
   RESOURCE_SELECTIONS,
   RESOURCE_TYPES,
   type ResourceSelection,
@@ -53,6 +54,14 @@ export const resources = sqliteTable(
     lastReconciledAt: integer("last_reconciled_at").$type<Instant>(),
     reconcileToken: text("reconcile_token"),
     reconcileLeaseUntil: integer("reconcile_lease_until").$type<Instant>(),
+    // The latest request to reconcile (an entitlement change, a resync, "Check now", "Retry").
+    // A run that started before it schedules another at once, and the sweep queues a resource
+    // whose request is newer than its last run, so a request deduplicated behind a run in
+    // progress is never lost.
+    reconcileRequestedAt: integer("reconcile_requested_at").$type<Instant>(),
+    // Consecutive failed observations, for the backoff, and the last one's classified code.
+    reconcileFailures: integer("reconcile_failures").notNull().default(0),
+    lastReconcileError: text("last_reconcile_error").$type<ObservationErrorCode>(),
   },
   (t) => [
     unique("resources_workspace_id_id_unique").on(t.workspaceId, t.id),

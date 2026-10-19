@@ -1,5 +1,10 @@
 // Provider adapters (architecture § Integrations). v1: GitHub.
-export { createGitHubApp, type GitHubAppClient, type GitHubAppOptions } from "./github/client.ts";
+export {
+  createGitHubApp,
+  type GitHubAppClient,
+  type GitHubAppOptions,
+  REQUEST_TIMEOUT_MS,
+} from "./github/client.ts";
 export {
   GITHUB_API_BASE_URL,
   GITHUB_WEB_BASE_URL,

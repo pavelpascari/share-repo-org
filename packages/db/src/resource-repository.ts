@@ -2,11 +2,8 @@ import type { ConnectionStatus, Instant, ResourceSelection } from "@sharerepo/do
 import { and, asc, eq, getTableColumns, ne, sql } from "drizzle-orm";
 import { type AuditEvents, conditionalAuditInserts } from "./audit-repository.ts";
 import type { Db } from "./client.ts";
-import {
-  assertReconcileRows,
-  dedupedOutboxInsert,
-  type NewOutboxRow,
-} from "./outbox-repository.ts";
+import { assertReconcileRows, type NewOutboxRow } from "./outbox-repository.ts";
+import { reconcileRequest } from "./reconcile-repository.ts";
 import { connections, resources } from "./schema/index.ts";
 
 /** Domain `Resource`: keyed by the provider's immutable ID within its connection. */
@@ -33,7 +30,8 @@ export interface ResourceSync {
   connection: { status?: ConnectionStatus; permissions?: string; accountLoginSnapshot?: string };
   /**
    * `reconcile_resource` rows for resources whose selection, privacy, archive state or connection
-   * status changed. Each is inserted only if no row with its key is pending.
+   * status changed. Each is inserted only if no row with its key is pending, and stamps the
+   * resource's reconcile request either way.
    */
   reconcile?: readonly NewOutboxRow[];
 }
@@ -135,7 +133,7 @@ export async function applyResourceSync(
         .set({ ...set, updatedAt: now })
         .where(inConnection(id)),
     ),
-    ...(sync.reconcile ?? []).map((row) => dedupedOutboxInsert(db, row, ours)),
+    ...(sync.reconcile ?? []).flatMap((row) => reconcileRequest(db, workspaceId, row, ours)),
     ...conditionalAuditInserts(db, audit, ours),
   ]);
   return update.meta.changes > 0 ? { ok: true } : { ok: false, reason: "stale" };

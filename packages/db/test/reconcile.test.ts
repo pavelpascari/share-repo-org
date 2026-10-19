@@ -8,12 +8,13 @@ import {
   finishMutation,
   type Grant,
   getGrant,
-  latestMutationOperations,
+  latestMutations,
   listGrantsForResource,
   listInviteStarts,
   listLiveEntitlementsForResource,
   listOpenMutations,
   pendingOutboxId,
+  type ReleaseReconcileLease,
   releaseReconcileLease,
   requestReconcile,
   resetGrantRetry,
@@ -97,7 +98,7 @@ describe("reconcile lease", () => {
       claimReconcileLease(db, { ...key, token: other, now: T0 + LEASE, leaseMs: LEASE }),
     ).resolves.toBe(true);
     await expect(
-      releaseReconcileLease(db, { ...ws.lease, now: NOW, nextReconcileAt: NOW + 1 }),
+      releaseReconcileLease(db, { ...ws.lease, runStart: NOW, now: NOW, nextReconcileAt: NOW + 1 }),
     ).resolves.toBe(false);
     expect(await resourceRow(ws.resource.id)).toEqual({
       token: other,
@@ -107,7 +108,13 @@ describe("reconcile lease", () => {
     });
 
     await expect(
-      releaseReconcileLease(db, { ...key, token: other, now: NOW, nextReconcileAt: NOW + 5 }),
+      releaseReconcileLease(db, {
+        ...key,
+        token: other,
+        runStart: NOW,
+        now: NOW,
+        nextReconcileAt: NOW + 5,
+      }),
     ).resolves.toBe(true);
     expect(await resourceRow(ws.resource.id)).toEqual({
       token: null,
@@ -117,7 +124,13 @@ describe("reconcile lease", () => {
     });
     // Released: a second release changes nothing, and any run may claim it again.
     await expect(
-      releaseReconcileLease(db, { ...key, token: other, now: NOW + 1, nextReconcileAt: NOW + 9 }),
+      releaseReconcileLease(db, {
+        ...key,
+        token: other,
+        runStart: NOW + 1,
+        now: NOW + 1,
+        nextReconcileAt: NOW + 9,
+      }),
     ).resolves.toBe(false);
     await expect(
       claimReconcileLease(db, { ...key, token: uniqueId("tok"), now: NOW, leaseMs: LEASE }),
@@ -126,7 +139,7 @@ describe("reconcile lease", () => {
 
   it("goes to exactly one of two runs racing for it", async () => {
     const ws = await leasedWorkspace();
-    await releaseReconcileLease(db, { ...ws.lease, now: T0, nextReconcileAt: T0 });
+    await releaseReconcileLease(db, { ...ws.lease, runStart: T0, now: T0, nextReconcileAt: T0 });
     const key = { workspaceId: ws.workspaceId, resourceId: ws.resource.id };
     const results = await Promise.all(
       ["a", "b"].map((token) =>
@@ -139,7 +152,7 @@ describe("reconcile lease", () => {
   it("never claims or releases another workspace's resource", async () => {
     const ws = await leasedWorkspace();
     const other = await leasedWorkspace();
-    await releaseReconcileLease(db, { ...ws.lease, now: T0, nextReconcileAt: T0 });
+    await releaseReconcileLease(db, { ...ws.lease, runStart: T0, now: T0, nextReconcileAt: T0 });
     const foreign = { workspaceId: other.workspaceId, resourceId: ws.resource.id };
     await expect(
       claimReconcileLease(db, { ...foreign, token: "x", now: NOW, leaseMs: LEASE }),
@@ -149,12 +162,50 @@ describe("reconcile lease", () => {
         workspaceId: ws.workspaceId,
         resourceId: other.resource.id,
         token: other.token,
+        runStart: NOW,
         now: NOW,
         nextReconcileAt: NOW,
       }),
     ).resolves.toBe(false);
     expect((await resourceRow(ws.resource.id))?.token).toBeNull();
     expect((await resourceRow(other.resource.id))?.token).toBe(other.token);
+  });
+
+  it("counts failed observations with their code, and a successful one resets them", async () => {
+    const ws = await leasedWorkspace();
+    const key = { workspaceId: ws.workspaceId, resourceId: ws.resource.id };
+    const failures = () =>
+      env.DB.prepare(
+        "SELECT reconcile_failures AS failures, last_reconcile_error AS error FROM resources WHERE id = ?",
+      )
+        .bind(ws.resource.id)
+        .first<{ failures: number; error: string | null }>();
+    const run = async (token: string, observation?: ReleaseReconcileLease["observation"]) => {
+      await claimReconcileLease(db, { ...key, token, now: NOW, leaseMs: LEASE });
+      await releaseReconcileLease(db, {
+        ...key,
+        token,
+        runStart: NOW,
+        now: NOW,
+        nextReconcileAt: NOW,
+        ...(observation === undefined ? {} : { observation }),
+      });
+    };
+    expect(await failures()).toEqual({ failures: 0, error: null });
+    await releaseReconcileLease(db, {
+      ...ws.lease,
+      runStart: T0,
+      now: T0,
+      nextReconcileAt: T0,
+      observation: { ok: false, errorCode: "rate_limited" },
+    });
+    await run("b", { ok: false, errorCode: "provider_unavailable" });
+    expect(await failures()).toEqual({ failures: 2, error: "provider_unavailable" });
+    // Nothing observed (the connection is inactive): both are kept.
+    await run("c");
+    expect(await failures()).toEqual({ failures: 2, error: "provider_unavailable" });
+    await run("d", { ok: true });
+    expect(await failures()).toEqual({ failures: 0, error: null });
   });
 });
 
@@ -195,7 +246,7 @@ describe("reconcile reads", () => {
     await expect(listLiveEntitlementsForResource(db, ws.lease)).resolves.toEqual([]);
   });
 
-  it("lists invitation starts after `since`, except those GitHub refused", async () => {
+  it("lists invitation starts after `since`, except those GitHub refused or that stopped the run", async () => {
     const ws = await leasedWorkspace();
     const grant = await seedGrant(grantRow(ws.identity));
     const at = (startedAt: number, overrides = {}) =>
@@ -224,6 +275,19 @@ describe("reconcile reads", () => {
       retryClass: "rate_limited",
       ...done(T0 + 36),
     });
+    // A failure that stopped the run never reached the repository (recorded retryable).
+    for (const [offset, errorCode] of [
+      [37, "suspended"],
+      [38, "repository_not_found"],
+      [39, "installation_missing"],
+    ] as const) {
+      await at(T0 + offset, {
+        status: "failed",
+        errorCode,
+        retryClass: "retryable",
+        ...done(T0 + offset),
+      });
+    }
     await at(T0 + 50, { operation: "remove_collaborator" });
     const other = await leasedWorkspace();
     await seedMutation(
@@ -260,7 +324,7 @@ describe("reconcile reads", () => {
     ).resolves.toEqual([]);
   });
 
-  it("maps each grant to its latest started or failed mutation's operation", async () => {
+  it("maps each grant to its latest mutation, whatever its status", async () => {
     const ws = await leasedWorkspace();
     const second = await seedSubject(ws.workspaceId);
     const a = await seedGrant(grantRow(ws.identity));
@@ -273,7 +337,7 @@ describe("reconcile reads", () => {
     };
     await seedMutation(mutationRow(a, { startedAt: T0 + 1, ...failed, finishedAt: T0 + 2 }));
     await seedMutation(mutationRow(a, { startedAt: T0 + 2, operation: "remove_collaborator" }));
-    // A later settled mutation does not count.
+    // The latest wins, settled or not.
     await seedMutation(
       mutationRow(a, {
         startedAt: T0 + 3,
@@ -297,14 +361,25 @@ describe("reconcile reads", () => {
     );
     await seedMutation(mutationRow(c, { status: "resolved", finishedAt: T0 + 1 }));
 
-    const latest = await latestMutationOperations(db, ws.lease);
+    const latest = await latestMutations(db, ws.lease);
     expect(Object.fromEntries(latest)).toEqual({
-      [a.id]: "remove_collaborator",
-      [b.id]: "cancel_invitation",
+      [a.id]: {
+        operation: "cancel_invitation",
+        status: "succeeded",
+        retryClass: null,
+        startedAt: T0 + 3,
+      },
+      [b.id]: {
+        operation: "cancel_invitation",
+        status: "failed",
+        retryClass: "retryable",
+        startedAt: T0 + 5,
+      },
+      [c.id]: { operation: "invite", status: "resolved", retryClass: null, startedAt: T0 },
     });
     const other = await leasedWorkspace();
     await expect(
-      latestMutationOperations(db, { workspaceId: other.workspaceId, resourceId: ws.resource.id }),
+      latestMutations(db, { workspaceId: other.workspaceId, resourceId: ws.resource.id }),
     ).resolves.toEqual(new Map());
   });
 });

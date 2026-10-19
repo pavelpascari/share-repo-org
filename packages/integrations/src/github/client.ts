@@ -33,6 +33,13 @@ export interface GitHubAppClient extends GitHubAppPort {
   installationToken(installationId: string): Promise<string>;
 }
 
+/**
+ * How long one GitHub request may take, headers and body, before it is aborted and classified
+ * `transient`. A reconciliation run stops sending mutations when its lease has less than this
+ * left (plus a margin), so a slow request never outlives the lease it was sent under.
+ */
+export const REQUEST_TIMEOUT_MS = 20_000;
+
 /** Tokens are reused until 5 minutes before GitHub says they expire (they last an hour). */
 const TOKEN_REFRESH_MARGIN_MS = 5 * 60 * 1000;
 const PAGE_LIMIT = 50;
@@ -124,9 +131,15 @@ export function createGitHubApp(options: GitHubAppOptions): GitHubAppClient {
     if (cached !== undefined && clock.now() < cached.expiresAt - TOKEN_REFRESH_MARGIN_MS) {
       return cached.token;
     }
-    const response = await request("create installation token", "POST", tokenPath(installationId), {
-      kind: "app",
-    });
+    // A 404 here means the installation itself is gone, whatever the request was about.
+    const response = await request(
+      "create installation token",
+      "POST",
+      tokenPath(installationId),
+      { kind: "app" },
+      undefined,
+      "installation",
+    );
     const body = parse("create installation token", tokenResponse, await json(response));
     tokens.set(installationId, { token: body.token, expiresAt: body.expires_at });
     return body.token;
@@ -153,9 +166,15 @@ export function createGitHubApp(options: GitHubAppOptions): GitHubAppClient {
     try {
       response = await options.fetch(
         pathOrUrl.startsWith("/") ? `${apiBaseUrl}${pathOrUrl}` : pathOrUrl,
-        { method, headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }) },
+        {
+          method,
+          headers,
+          signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+          ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        },
       );
     } catch {
+      // A network failure, or the timeout aborting the request.
       throw new GitHubApiError("transient", `GitHub ${operation} failed: network error`);
     }
     if (response.ok) return response;

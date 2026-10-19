@@ -24,6 +24,7 @@ import {
   MUTATION_OPERATIONS,
   MUTATION_STATUSES,
   MUTATION_STOP_REASONS,
+  OBSERVATION_ERROR_CODES,
   OBSERVATION_GRACE_MS,
   OFFER_ACCESSES_MAX,
   OFFER_CHANGES,
@@ -183,7 +184,21 @@ describe("stable decision codes", () => {
       "provider_rejected",
     ]));
   it("mutation stop reasons", () =>
-    expect(MUTATION_STOP_REASONS).toEqual(["suspended", "repository_not_found"]));
+    expect(MUTATION_STOP_REASONS).toEqual([
+      "suspended",
+      "repository_not_found",
+      "installation_missing",
+    ]));
+  it("observation error codes", () =>
+    expect(OBSERVATION_ERROR_CODES).toEqual([
+      "provider_unavailable",
+      "rate_limited",
+      "provider_rejected",
+      "malformed_response",
+      "suspended",
+      "repository_not_found",
+      "installation_missing",
+    ]));
   it("reconciliation request kinds", () =>
     expect(RECONCILIATION_REQUEST_KINDS).toEqual(["check", "retry"]));
   it("offer limits", () =>

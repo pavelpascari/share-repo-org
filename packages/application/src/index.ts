@@ -60,6 +60,7 @@ export {
   updateOffer,
 } from "./offers.ts";
 export {
+  MUTATION_LEASE_RESERVE_MS,
   queueDueReconciles,
   RECONCILE_LEASE_MS,
   type ReconcileOutcome,

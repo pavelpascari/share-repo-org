@@ -5,10 +5,11 @@
  * | kind                 | cause                                                         |
  * |----------------------|---------------------------------------------------------------|
  * | `not_found`          | 404; repository calls say whether the `target` is the repository |
- * |                      | (resync it) or the account, collaborator or invitation        |
+ * |                      | (resync it) or the account, collaborator or invitation; a 404 |
+ * |                      | minting an installation token has target `installation`       |
  * | `suspended`          | 403 saying the installation is suspended                      |
  * | `rate_limited`       | 429, or 403 with `x-ratelimit-remaining: 0` or `retry-after`  |
- * | `transient`          | 5xx or a network failure                                      |
+ * | `transient`          | 5xx, a network failure, or a request aborted by its timeout   |
  * | `rejected`           | any other 4xx (401, 403, 422, …)                              |
  * | `malformed_response` | a 2xx body that does not match the expected shape             |
  */
@@ -30,12 +31,13 @@ export interface GitHubApiErrorDetails {
   readonly githubErrorCodes?: readonly string[];
   /**
    * For `not_found` from repository calls: whether the repository itself is gone (or renamed),
-   * which needs a resync, or the account, collaborator or invitation (already gone).
+   * which needs a resync, or the account, collaborator or invitation (already gone). From
+   * minting an installation token: the installation is gone.
    */
   readonly target?: GitHubNotFoundTarget;
 }
 
-export type GitHubNotFoundTarget = "repository" | "account";
+export type GitHubNotFoundTarget = "repository" | "account" | "installation";
 
 export class GitHubApiError extends Error {
   readonly kind: GitHubApiErrorKind;
