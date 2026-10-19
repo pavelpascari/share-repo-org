@@ -147,8 +147,8 @@ export async function listLiveEntitlementsForResource(
 
 /**
  * When each invitation to the resource started after `since`, oldest first, for the invitation
- * budget. Failed invitations are not counted: GitHub did not create them. Started, succeeded and
- * resolved ones are.
+ * budget. An invitation that failed with a retryable error is counted: its response may have
+ * been lost after GitHub created it. One GitHub refused (any other retry class) is not.
  */
 export async function listInviteStarts(
   db: Db,
@@ -163,7 +163,7 @@ export async function listInviteStarts(
         eq(providerMutations.resourceId, key.resourceId),
         eq(providerMutations.operation, "invite"),
         sql`${providerMutations.startedAt} > ${key.since}`,
-        ne(providerMutations.status, "failed"),
+        or(ne(providerMutations.status, "failed"), eq(providerMutations.retryClass, "retryable")),
       ),
     )
     .orderBy(asc(providerMutations.startedAt));

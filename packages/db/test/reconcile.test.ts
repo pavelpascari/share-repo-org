@@ -194,7 +194,7 @@ describe("reconcile reads", () => {
     await expect(listLiveEntitlementsForResource(db, ws.lease)).resolves.toEqual([]);
   });
 
-  it("lists invitation starts after `since` that did not fail", async () => {
+  it("lists invitation starts after `since`, except those GitHub refused", async () => {
     const ws = await leasedWorkspace();
     const grant = await seedGrant(grantRow(ws.identity));
     const at = (startedAt: number, overrides = {}) =>
@@ -210,6 +210,19 @@ describe("reconcile reads", () => {
       retryClass: "user_action_required",
       ...done(T0 + 30),
     });
+    // A retryable failure may have created the invitation before its response was lost.
+    await at(T0 + 35, {
+      status: "failed",
+      errorCode: "provider_unavailable",
+      retryClass: "retryable",
+      ...done(T0 + 35),
+    });
+    await at(T0 + 36, {
+      status: "failed",
+      errorCode: "rate_limited",
+      retryClass: "rate_limited",
+      ...done(T0 + 36),
+    });
     await at(T0 + 50, { operation: "remove_collaborator" });
     const other = await leasedWorkspace();
     await seedMutation(
@@ -219,6 +232,7 @@ describe("reconcile reads", () => {
     await expect(listInviteStarts(db, { ...ws.lease, since: T0 + 5 })).resolves.toEqual([
       T0 + 10,
       T0 + 20,
+      T0 + 35,
       T0 + 40,
     ]);
     await expect(
