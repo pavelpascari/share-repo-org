@@ -91,6 +91,32 @@ export async function enqueueOutboxOnce(db: Db, row: NewOutboxRow): Promise<bool
   return queued === 1;
 }
 
+/**
+ * The ID of the unsent, unfailed row of this kind and key, or null when none is pending. An
+ * owner's "Check now" hands it to the queue when the same work was already queued, rather than
+ * leaving it for the outbox drain.
+ */
+export async function pendingOutboxId(
+  db: Db,
+  kind: NewOutboxRow["kind"],
+  subjectId: string,
+): Promise<string | null> {
+  const [row] = await db
+    .select({ id: outbox.id })
+    .from(outbox)
+    .where(
+      and(
+        eq(outbox.kind, kind),
+        eq(outbox.subjectId, subjectId),
+        isNull(outbox.sentAt),
+        isNull(outbox.failedAt),
+      ),
+    )
+    .orderBy(asc(outbox.createdAt), asc(outbox.id))
+    .limit(1);
+  return row?.id ?? null;
+}
+
 /** Adds work on its own, outside any other change. */
 export async function enqueueOutbox(db: Db, row: NewOutboxRow): Promise<void> {
   await outboxInsert(db, row);

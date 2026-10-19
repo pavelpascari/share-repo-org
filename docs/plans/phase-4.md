@@ -154,7 +154,7 @@ getUserById(installationId, id: string): Promise<GitHubUser>
   - "Checked 5 min ago", always shown.
 - **Planned column:** the Phase 3 messages, plus the new reasons, "Waiting: invitation limit reached, resumes 14:05" and "Waiting to retry at 14:05".
 - **Controls**, for workspace owners only (`workspace.manage`), each audited as `reconciliation.requested` with the actor:
-  - "Check now" per repository queues `reconcile_resource` and sends it on the queue at once;
+  - "Check now" per repository queues `reconcile_resource` and sends it on the queue at once. When one is already pending (queued by a refresh or the sweep, waiting for the outbox drain), that row is sent instead, so a check never waits for the next drain;
   - "Retry" per row with an error resets `next_attempt_at` to now (and the retry class for `user_action_required` or `terminal`) and queues reconciliation.
 - A member sees the page without the controls.
 

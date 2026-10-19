@@ -13,6 +13,7 @@ import {
   listInviteStarts,
   listLiveEntitlementsForResource,
   listOpenMutations,
+  pendingOutboxId,
   releaseReconcileLease,
   requestReconcile,
   resetGrantRetry,
@@ -888,6 +889,24 @@ describe("requestReconcile", () => {
       false,
     );
     expect(await count("outbox", "subject_id = ?", first.subjectId)).toBe(1);
+  });
+
+  it("pendingOutboxId finds the pending row of a kind and key, and only a pending one", async () => {
+    const ws = await leasedWorkspace();
+    const first = reconcileRow(ws.workspaceId, ws.resource.id);
+    const pending = () => pendingOutboxId(db, first.kind, first.subjectId);
+    await expect(pending()).resolves.toBeNull();
+    await enqueueOutboxOnce(db, first);
+    await expect(pending()).resolves.toBe(first.id);
+    await expect(pendingOutboxId(db, "refresh_subscription", first.subjectId)).resolves.toBeNull();
+    await env.DB.prepare("UPDATE outbox SET sent_at = ? WHERE id = ?").bind(NOW, first.id).run();
+    await expect(pending()).resolves.toBeNull();
+    const second = reconcileRow(ws.workspaceId, ws.resource.id);
+    await enqueueOutboxOnce(db, second);
+    await env.DB.prepare("UPDATE outbox SET failed_at = ?, last_error_code = 'x' WHERE id = ?")
+      .bind(NOW, second.id)
+      .run();
+    await expect(pending()).resolves.toBeNull();
   });
 
   it("rejects a row of another kind, workspace or resource", async () => {

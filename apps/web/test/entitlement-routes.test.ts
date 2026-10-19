@@ -1,14 +1,19 @@
 import {
+  type AccessRow,
   createOffer,
   createSimulatedSubscriber,
   decodeOfferKey,
+  decodeReconcileKey,
   decodeRefreshKey,
+  reconcileResource,
   refreshSubscription,
   simulatedEntitlementSource,
 } from "@sharerepo/application";
+import { GitHubApiError } from "@sharerepo/integrations";
 import { ConflictError } from "@sharerepo/platform";
 import type { RouterContextProvider } from "react-router";
 import { describe, expect, it } from "vitest";
+import { observedAccessText } from "../app/entitlement-messages.ts";
 import { attempt } from "../app/entitlements.server.ts";
 import * as access from "../app/routes/w.$slug.access.tsx";
 import * as offers from "../app/routes/w.$slug.offers.tsx";
@@ -490,5 +495,200 @@ describe("access route", () => {
         access.loader(args(get(`/w/${s.slug}/access`, outsider.owner), s, h.context)),
       ),
     ).toBe(404);
+  });
+
+  /** A shop with one active subscriber on its private repository, refreshed but not reconciled. */
+  async function subscribed() {
+    const s = await shop();
+    const { item, resourceId } = await offerFor(s);
+    const login = `sub-${crypto.randomUUID().slice(0, 8)}`;
+    const userId = String(Math.floor(Math.random() * 1e9));
+    s.github.addUser({ id: userId, login, type: "User" });
+    const created = await createSimulatedSubscriber(
+      services(),
+      s.owner,
+      s.slug,
+      { login, items: [item], state: "active", periodDays: 30 },
+      { github: s.github, ...SIMULATION },
+    );
+    if (!created.ok) throw new Error(created.error);
+    await refreshSubscription(
+      services(),
+      {
+        workspaceId: s.workspaceId,
+        source: "simulated",
+        externalSubscriptionId: created.subscription.id,
+      },
+      simulatedEntitlementSource(db),
+    );
+    const repository = s.resources.find((r) => r.id === resourceId)?.nameSnapshot as string;
+    // What the jobs Worker does with a queued reconcile_resource.
+    const reconcile = () =>
+      reconcileResource(services(), { workspaceId: s.workspaceId, resourceId }, s.github);
+    return { s, login, userId, resourceId, repository, reconcile };
+  }
+
+  const observed = (row: AccessRow | undefined, now: number) =>
+    observedAccessText(
+      { ...(row as AccessRow), entitled: row?.entitlements[0]?.state === "active" },
+      now,
+    );
+
+  it("shows what GitHub shows: an invitation, then active access, with when it was checked", async () => {
+    const { s, login, userId, repository, reconcile } = await subscribed();
+    const h = harness();
+    const load = () => access.loader(args(get(`/w/${s.slug}/access`, s.owner), s, h.context));
+    await reconcile();
+    const invited = await load();
+    expect(invited.canManage).toBe(true);
+    expect(invited.now).toEqual(expect.any(Number));
+    const [row] = invited.rows;
+    expect(row).toMatchObject({
+      grant: { state: "pending_invitation", managed: true, indirect: false },
+      planned: { action: "wait", reason: "invitation_pending" },
+      resourceLastReconciledAt: expect.any(Number),
+    });
+    expect(observed(row, invited.now)).toEqual({
+      label: expect.stringMatching(
+        new RegExp(
+          `^Invitation sent, waiting for @${login} to accept \\(expires \\d{4}-\\d\\d-\\d\\d\\)$`,
+        ),
+      ),
+      hint: null,
+      retry: null,
+      checked: "Checked just now",
+    });
+
+    s.github.acceptInvitation(repository, userId);
+    await reconcile();
+    const accepted = await load();
+    expect(observed(accepted.rows[0], accepted.now).label).toBe("Active");
+  });
+
+  it("shows an error with what to do, and a member sees it without the controls", async () => {
+    const { s, reconcile } = await subscribed();
+    s.github.failNext(
+      "addCollaborator",
+      new GitHubApiError("rejected", "blocked", { status: 422 }),
+    );
+    await reconcile();
+    const member = await memberOf(s);
+    const h = harness();
+    const loaded = await access.loader(args(get(`/w/${s.slug}/access`, member), s, h.context));
+    expect(loaded.canManage).toBe(false);
+    const [row] = loaded.rows;
+    expect(row?.grant).toMatchObject({ state: "error", lastErrorCode: "invitation_rejected" });
+    expect(observed(row, loaded.now)).toMatchObject({
+      label: "Error: GitHub refused the invitation",
+      retry: null,
+    });
+  });
+
+  it("'Check now' queues the repository's reconciliation and hands it to the queue", async () => {
+    const { s, resourceId } = await subscribed();
+    const h = harness();
+    const check = () =>
+      access.action(
+        args(post(`/w/${s.slug}/access`, s.owner, { intent: "check", resourceId }), s, h.context),
+      );
+    expect(await check()).toEqual({ ok: true, notice: "Check queued.", error: null });
+    // Pending already (the refresh queued it): the same row is handed over again.
+    expect(await check()).toEqual({ ok: true, notice: "Check queued.", error: null });
+    await h.settle();
+    expect(h.sent).toHaveLength(2);
+    const [first, second] = h.sent as { kind: string; subjectId: string; outboxId: string }[];
+    expect(first?.kind).toBe("reconcile_resource");
+    expect(decodeReconcileKey(first?.subjectId ?? "")).toEqual({
+      ok: true,
+      value: { workspaceId: s.workspaceId, resourceId },
+    });
+    expect(second).toEqual(first);
+  });
+
+  it("'Retry' resets an errored grant and hands its repository to the queue", async () => {
+    const { s, resourceId, reconcile } = await subscribed();
+    s.github.failNext(
+      "addCollaborator",
+      new GitHubApiError("rejected", "blocked", { status: 422 }),
+    );
+    await reconcile();
+    const h = harness();
+    const [row] = (await access.loader(args(get(`/w/${s.slug}/access`, s.owner), s, h.context)))
+      .rows;
+    const grantId = row?.grant?.id as string;
+    const retry = () =>
+      access.action(
+        args(post(`/w/${s.slug}/access`, s.owner, { intent: "retry", grantId }), s, h.context),
+      );
+    expect(await retry()).toEqual({ ok: true, notice: "Retry queued.", error: null });
+    await h.settle();
+    expect(h.sent).toEqual([
+      {
+        kind: "reconcile_resource",
+        subjectId: `${s.workspaceId}:${resourceId}`,
+        outboxId: expect.any(String),
+      },
+    ]);
+    // Once the retry succeeded the grant is no longer in error: reload and look again.
+    await reconcile();
+    expect(await retry()).toEqual({
+      ok: false,
+      notice: null,
+      error: "Something changed; reload and try again.",
+    });
+  });
+
+  it("crash/between-event-commit-and-enqueue: a failed queue send does not fail 'Check now'", async () => {
+    const { s, resourceId } = await subscribed();
+    const h = harness({ sendFails: true });
+    const result = await access.action(
+      args(post(`/w/${s.slug}/access`, s.owner, { intent: "check", resourceId }), s, h.context),
+    );
+    expect(result.ok).toBe(true);
+    await h.settle();
+    expect(h.logs()).toContainEqual(
+      expect.objectContaining({ level: "warn", kind: "reconcile_resource", errorName: "Error" }),
+    );
+  });
+
+  it("refuses members, cross-origin posts, unknown intents and other workspaces' rows", async () => {
+    const { s, resourceId, reconcile } = await subscribed();
+    s.github.failNext(
+      "addCollaborator",
+      new GitHubApiError("rejected", "blocked", { status: 422 }),
+    );
+    await reconcile();
+    const h = harness();
+    const [row] = (await access.loader(args(get(`/w/${s.slug}/access`, s.owner), s, h.context)))
+      .rows;
+    const grantId = row?.grant?.id as string;
+    const member = await memberOf(s);
+    const call = (who: typeof s.owner, fields: Record<string, string>, origin?: string) =>
+      thrownStatus(
+        access.action(args(post(`/w/${s.slug}/access`, who, fields, origin), s, h.context)),
+      );
+
+    expect(await call(member, { intent: "check", resourceId })).toBe(403);
+    expect(await call(member, { intent: "retry", grantId })).toBe(403);
+    expect(await call(s.owner, { intent: "check", resourceId }, "https://evil.example")).toBe(403);
+    expect(await call(s.owner, { intent: "explode" })).toBe(400);
+    expect(await call(s.owner, { intent: "check" })).toBe(404);
+    expect(await call(s.owner, { intent: "retry", grantId: "gra_missing" })).toBe(404);
+
+    // Another workspace's repository and grant are not found from this one.
+    const other = await subscribed();
+    const otherCall = (fields: Record<string, string>) =>
+      thrownStatus(
+        access.action(
+          args(post(`/w/${other.s.slug}/access`, other.s.owner, fields), other.s, h.context),
+        ),
+      );
+    expect(await otherCall({ intent: "check", resourceId })).toBe(404);
+    expect(await otherCall({ intent: "retry", grantId })).toBe(404);
+
+    await h.settle();
+    expect(h.sent).toEqual([]);
+    const after = await access.loader(args(get(`/w/${s.slug}/access`, s.owner), s, h.context));
+    expect(after.rows[0]?.grant).toMatchObject({ state: "error", nextAttemptAt: null });
   });
 });

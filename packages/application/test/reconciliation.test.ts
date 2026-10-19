@@ -1190,14 +1190,21 @@ describe("owner controls", () => {
     return { s, sub, grant: await grantFor(s, sub.subjectId) };
   }
 
-  it("'Check now' queues one reconciliation and audits every request", async () => {
+  it("'Check now' queues one reconciliation, hands over a pending one, and audits every request", async () => {
     const s = await sold();
     await settleOutbox(s);
     const ctx = serviceContext();
     const first = await requestReconcileNow(ctx, s, s.slug, resourceOf(s).id);
     expect(first).toEqual({ outboxId: expect.any(String), subjectId: encodeReconcileKey(ref(s)) });
+    // Already pending: the same row is handed to the queue again, rather than a second one.
     const second = await requestReconcileNow(ctx, s, s.slug, resourceOf(s).id);
-    expect(second.outboxId).toBeNull();
+    expect(second).toEqual(first);
+    const queued = await env.DB.prepare(
+      "SELECT COUNT(*) AS n FROM outbox WHERE subject_id = ? AND sent_at IS NULL",
+    )
+      .bind(first.subjectId)
+      .first<{ n: number }>();
+    expect(queued?.n).toBe(1);
     const events = await listAuditEventsByCorrelationId(db, ctx.correlationId);
     expect(events.map((e) => [e.action, e.actor.id, e.details])).toEqual([
       ["reconciliation.requested", s.userId, { resourceId: resourceOf(s).id, kind: "check" }],
@@ -1211,7 +1218,7 @@ describe("owner controls", () => {
     const ctx = serviceContext();
     const result = await retryGrant(ctx, s, s.slug, grant.id);
     expect(result).toEqual({ outboxId: expect.any(String), subjectId: encodeReconcileKey(ref(s)) });
-    expect((await retryGrant(serviceContext(), s, s.slug, grant.id)).outboxId).toBeNull();
+    expect(await retryGrant(serviceContext(), s, s.slug, grant.id)).toEqual(result);
     expect((await listAuditEventsByCorrelationId(db, ctx.correlationId))[0]?.details).toEqual({
       resourceId: resourceOf(s).id,
       grantId: grant.id,

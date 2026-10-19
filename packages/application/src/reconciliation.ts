@@ -878,11 +878,25 @@ export async function reconcileResource(
 
 // Owner controls --------------------------------------------------------------------------------
 
-/** A queued reconciliation: the outbox row to hand to the queue (null when one was pending). */
+/**
+ * A queued reconciliation: the outbox row to hand to the queue at once. When the same work was
+ * already pending (queued by a refresh or the sweep, waiting for the outbox drain), that row is
+ * handed over instead; null only when it was delivered in between.
+ */
 export interface ReconcileRequest {
   readonly outboxId: string | null;
   /** The row's key, to send with it. */
   readonly subjectId: string;
+}
+
+/** The row to hand to the queue: the one just queued, or the pending one that deduplicated it. */
+async function rowToSend(
+  ctx: ServiceContext,
+  row: repo.NewOutboxRow,
+  queued: boolean,
+): Promise<ReconcileRequest> {
+  const outboxId = queued ? row.id : await repo.pendingOutboxId(ctx.db, row.kind, row.subjectId);
+  return { outboxId, subjectId: row.subjectId };
 }
 
 /**
@@ -917,7 +931,7 @@ export async function requestReconcileNow(
       ),
     ],
   );
-  return { outboxId, subjectId: row.subjectId };
+  return rowToSend(ctx, row, outboxId !== null);
 }
 
 /**
@@ -953,8 +967,7 @@ export async function retryGrant(
   if (!reset.ok) throw new ConflictError("grant is not in error; reload and retry");
   const row = reconcileOutboxRow(ctx, { workspaceId, resourceId: grant.resourceId });
   // Queueing is bookkeeping: the request itself is audited above.
-  const queued = await repo.enqueueOutboxOnce(ctx.db, row);
-  return { outboxId: queued ? row.id : null, subjectId: row.subjectId };
+  return rowToSend(ctx, row, await repo.enqueueOutboxOnce(ctx.db, row));
 }
 
 /**

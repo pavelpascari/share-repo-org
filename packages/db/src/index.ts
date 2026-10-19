@@ -73,6 +73,7 @@ export {
   type OutboxRow,
   outboxInsert,
   pendingOutbox,
+  pendingOutboxId,
 } from "./outbox-repository.ts";
 export {
   applyGrantObservation,
