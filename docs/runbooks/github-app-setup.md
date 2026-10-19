@@ -94,6 +94,19 @@ It uses two of the repository's 50 invitations per 24 hours, and the subscriber 
 
 Then complete the manual checklist at the end of that file (invitation email, `member` webhook after accepting an invitation by hand, push access after acceptance, branch protection on your plan, clean-up), and commit the file.
 
-## 7. Deployed environments
+## 7. Before merging Phase 4: live provisioning check
+
+Phase 4 is built on the safe assumptions in [decision 0010](../decisions/0010-grant-ownership-and-reconciliation.md). Before it merges, run the spike (step 6) and record the results. Then check the whole flow once against the test repository with `pnpm dev`:
+
+1. Create an offer for the test repository. In the Simulator, add the subscriber account and activate it. On Access, the row shows "Invitation sent", and GitHub shows a pending invitation.
+2. Accept the invitation as the subscriber, then press **Check now**. The row shows "Active".
+3. Remove the subscriber by hand on GitHub, then press **Check now**. ShareRepo invites them again, because the subscription is live.
+4. Cancel the subscription now in the Simulator. ShareRepo removes the collaborator, or cancels the invitation. After the next check, the row shows "Removed".
+5. Add a second account by hand as a collaborator, then simulate a subscription for it and cancel it. That account keeps its access, and the row shows "Has access ShareRepo does not manage".
+6. Check the audit trail. There is no audit page yet, so query the local database: `pnpm --filter @sharerepo/web exec wrangler d1 execute DB --local --command "SELECT action, target_id, occurred_at FROM audit_events WHERE action LIKE 'provider.%' ORDER BY occurred_at"`. Every `provider.mutation_attempted` has a matching `provider.mutation_succeeded`, `provider.mutation_failed` or `provider.mutation_resolved`.
+
+Record the outcome under the manual checklist in `docs/research/github-live-results.md`. If any assumption in decision 0010 turns out wrong, raise it before merging.
+
+## 8. Deployed environments
 
 For dev and production, create one App per environment, with the same settings and that environment's URLs. Set the values as Worker secrets and vars instead of `.dev.vars` (see `docs/deployment.md`). Never reuse the development App's key.

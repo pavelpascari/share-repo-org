@@ -241,13 +241,16 @@ T1 schema + migration + vocabularies ──┬─ T2 domain: observation, planne
 
 ### T4 — Database repositories (parallel)
 
-- **Leases:** `claimReconcileLease` and `releaseReconcileLease`.
-- **Grants:** `applyGrantObservation`, a lease-guarded batch of grant upserts and audit events.
-- **Mutations:** `beginMutation` (write-ahead: the grant state, the mutation row and audit) and `finishMutation`.
-- **Budget:** `listRecentInvitations`.
-- **Scheduling:** `scheduleReconcile`.
-- **Outbox:** `enqueueReconcile` (deduplicated) and `claimDueReconciles`.
-- `applySubscriptionRefresh` adds the reconcile outbox rows for touched resources.
+- **Leases:** `claimReconcileLease`; `releaseReconcileLease`, which also sets `next_reconcile_at` and `last_reconciled_at`.
+- **Reads:** `listGrantsForResource`, `listLiveEntitlementsForResource`, `listInviteStarts` (the budget), `listOpenMutations` and `latestMutationOperations`.
+- **Lease-guarded writes:** `applyGrantObservation`, `beginMutation` (write-ahead: grant state, mutation row and audit) and `finishMutation`.
+  - Each batch starts with a no-op `UPDATE resources … WHERE reconcile_token = ?`. If it changes no rows, the lease was lost, and every later statement is guarded on the same token.
+- **Owner controls:** `resetGrantRetry` and `requestReconcile`.
+- **Outbox:**
+  - `reconcileKey` and its SQL form;
+  - deduplicated inserts (`dedupedOutboxInsert`, `pendingOutbox`);
+  - `claimDueReconciles`, with a repair path for resources that have live entitlements or grants but no schedule;
+  - `reconcile` rows in `applySubscriptionRefresh` and `applyResourceSync`.
 - Conformance, isolation and composite foreign key tests for every new table and column.
 
 ### T5 — Application (after T2–T4)
