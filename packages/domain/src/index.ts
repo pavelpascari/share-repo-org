@@ -7,6 +7,7 @@ export type {
   AuditEventInput,
   AuditScope,
   OfferChange,
+  ReconciliationRequestKind,
   SignInRefusalReason,
 } from "./audit.ts";
 export {
@@ -15,6 +16,7 @@ export {
   AUDIT_SCOPES,
   auditEvent,
   OFFER_CHANGES,
+  RECONCILIATION_REQUEST_KINDS,
   SIGN_IN_REFUSAL_REASONS,
 } from "./audit.ts";
 export type { WorkspaceMembership, WorkspacePermission, WorkspaceScope } from "./authorization.ts";
@@ -105,6 +107,43 @@ export {
 export type { AccessDecision, AccessDecisionReason, PolicySubscription } from "./policy.ts";
 export { ACCESS_DECISION_REASONS, decideAccess } from "./policy.ts";
 export type {
+  GrantErrorCode,
+  GrantFields,
+  GrantObservationChange,
+  GrantObservationCreate,
+  GrantObservationInput,
+  GrantObservationUpdate,
+  MutationFailureInput,
+  MutationFailureOutcome,
+  MutationStopReason,
+  NextReconcileInput,
+  ObservableGrant,
+  ObservedCollaborator,
+  ObservedInvitation,
+  ProviderFailure,
+  ProviderFailureKind,
+  RepositoryObservation,
+} from "./provisioning.ts";
+export {
+  classifyMutationFailure,
+  GRANT_ERROR_CODES,
+  INVITATION_BUDGET,
+  INVITATION_LIFETIME_MS,
+  INVITATION_WINDOW_MS,
+  invitationBudget,
+  MAX_MUTATIONS_PER_RUN,
+  MUTATION_STOP_REASONS,
+  nextReconcileAt,
+  OBSERVATION_GRACE_MS,
+  observeGrants,
+  PROVIDER_FAILURE_KINDS,
+  RECONCILE_IDLE_MS,
+  RECONCILE_POLL_MS,
+  RETRY_BACKOFF_MS,
+  retryBackoff,
+} from "./provisioning.ts";
+export type {
+  InvitationBudget,
   ReconciliationAction,
   ReconciliationDecision,
   ReconciliationEntitlement,

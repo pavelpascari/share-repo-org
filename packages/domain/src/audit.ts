@@ -1,10 +1,12 @@
 import { z } from "zod";
 import { CONNECTION_STATUSES } from "./connection.ts";
 import { ACCESS_LEVELS } from "./entitlement.ts";
+import { GRANT_STATES, MUTATION_OPERATIONS, RETRY_CLASSES } from "./grant.ts";
 import { IDENTITY_PROVIDERS } from "./identity.ts";
 import type { IdGenerator } from "./ids.ts";
 import { COMMERCIAL_SOURCES, GRACE_PERIOD_DAYS_MAX, GRACE_PERIOD_DAYS_MIN } from "./offer.ts";
 import { ACCESS_DECISION_REASONS } from "./policy.ts";
+import { GRANT_ERROR_CODES, MUTATION_STOP_REASONS } from "./provisioning.ts";
 import { RESOURCE_SELECTIONS } from "./resource.ts";
 import { SUBSCRIPTION_STATES } from "./subscription.ts";
 import type { Clock, Instant } from "./time.ts";
@@ -54,6 +56,37 @@ const gracePeriodDays = z.number().int().min(GRACE_PERIOD_DAYS_MIN).max(GRACE_PE
 const source = z.enum(COMMERCIAL_SOURCES);
 const subscriptionState = z.enum(SUBSCRIPTION_STATES);
 const decisionReason = z.enum(ACCESS_DECISION_REASONS);
+const accessLevel = z.enum(ACCESS_LEVELS);
+const grantState = z.enum(GRANT_STATES);
+
+/** The grant fields a `grant.observed` event reports, before and after. */
+const observedGrant = z.strictObject({
+  state: grantState,
+  managed: z.boolean(),
+  indirect: z.boolean(),
+  accessLevel,
+});
+
+/**
+ * Every `provider.mutation_*` event names the mutation, what it changes, and the decision's
+ * entitlements (integrations.md § Reconciliation ownership). External IDs are the provider's
+ * immutable IDs, never logins.
+ */
+const mutation = {
+  mutationId: text,
+  operation: z.enum(MUTATION_OPERATIONS),
+  resourceId: text,
+  subjectId: text,
+  resourceExternalId: text,
+  subjectExternalId: text,
+  accessLevel,
+  // Empty for a revocation: no access is desired.
+  entitlementIds: z.array(text).readonly(),
+};
+
+/** What a reconciliation request asked for: a check of the repository, or a grant's retry. */
+export const RECONCILIATION_REQUEST_KINDS = ["check", "retry"] as const;
+export type ReconciliationRequestKind = (typeof RECONCILIATION_REQUEST_KINDS)[number];
 
 /** The parts of an offer's configuration an `offer.updated` event says changed. */
 export const OFFER_CHANGES = ["name", "gracePeriodDays", "items", "accesses"] as const;
@@ -261,6 +294,62 @@ export const AUDIT_ACTIONS = {
     scope: "workspace",
     targetType: "simulated_subscription",
     details: z.strictObject({ action: text, state: subscriptionState }),
+  },
+  // Only when the state, ownership, indirectness or level changes; `from` is null for a new grant.
+  "grant.observed": {
+    scope: "workspace",
+    targetType: "grant",
+    details: z
+      .strictObject({
+        resourceId: text,
+        subjectId: text,
+        from: observedGrant.nullable(),
+        to: observedGrant,
+      })
+      .refine(
+        ({ from, to }) =>
+          from === null ||
+          from.state !== to.state ||
+          from.managed !== to.managed ||
+          from.indirect !== to.indirect ||
+          from.accessLevel !== to.accessLevel,
+        { path: ["to"] },
+      ),
+  },
+  "provider.mutation_attempted": {
+    scope: "workspace",
+    targetType: "grant",
+    details: z.strictObject(mutation),
+  },
+  "provider.mutation_succeeded": {
+    scope: "workspace",
+    targetType: "grant",
+    details: z.strictObject(mutation),
+  },
+  // A failure that stops the run leaves the grant unchanged, so it has no retry class.
+  "provider.mutation_failed": {
+    scope: "workspace",
+    targetType: "grant",
+    details: z.strictObject({
+      ...mutation,
+      errorCode: z.enum([...GRANT_ERROR_CODES, ...MUTATION_STOP_REASONS]),
+      retryClass: z.enum(RETRY_CLASSES).nullable(),
+    }),
+  },
+  // A `started` mutation whose outcome a later observation settled (a lost response or a crash).
+  "provider.mutation_resolved": {
+    scope: "workspace",
+    targetType: "grant",
+    details: z.strictObject({ ...mutation, state: grantState }),
+  },
+  "reconciliation.requested": {
+    scope: "workspace",
+    targetType: "resource",
+    details: z.strictObject({
+      resourceId: text,
+      grantId: text.optional(),
+      kind: z.enum(RECONCILIATION_REQUEST_KINDS),
+    }),
   },
 } as const satisfies Record<string, AuditActionDefinition>;
 
