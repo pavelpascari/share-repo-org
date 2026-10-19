@@ -49,7 +49,7 @@ With a connected development App, simulated subscriptions change real access on 
 - **Activating a subscriber** invites their GitHub account. GitHub emails them the invitation, and the Access page shows "Invitation sent" until they accept.
 - **Ending a subscription** removes the collaborator, or cancels the pending invitation, but only if ShareRepo created it. Someone you added by hand is shown as "Has access ShareRepo does not manage" and left alone.
 - **Checks run on a schedule.** ShareRepo checks each repository again every 15 minutes while anything is pending, and every 6 hours otherwise. Owners can press **Check now** on a repository, and **Retry** on a row with an error.
-- **Each repository is limited to 40 ShareRepo invitations per 24 hours**, below GitHub's 50. Past that, invitations wait, and the Access page says until when.
+- **Each repository is limited to 40 ShareRepo invitations per 24 hours**, below GitHub's 50. Past that, invitations wait, and the Access page says the limit was reached. The next check after the 24-hour window opens sends them.
 
 Use a test repository and test accounts only: invitations are real and count against GitHub's limits.
 
