@@ -42,7 +42,7 @@ describe("listAccess", () => {
     const sold = await offer(s, { items: ["sim_pro"], name: "Pro" });
     const sub = await subscribe(s, { items: ["sim_pro"] });
     await drain(s.workspaceId);
-    const rows = await listAccess(serviceContext(), s, s.slug);
+    const rows = (await listAccess(serviceContext(), s, s.slug)).rows;
     const names = [...s.resources].map((r) => r.nameSnapshot).sort();
     expect(rows.map((row) => row.resourceName)).toEqual(names);
     expect(rows[0]).toMatchObject({
@@ -72,7 +72,7 @@ describe("listAccess", () => {
     await drain(s.workspaceId);
     const [entitlement] = await entitlementsOf(s.workspaceId);
     await grant(s, entitlement?.subjectId ?? "", entitlement?.resourceId ?? "", "active");
-    const [row] = await listAccess(serviceContext(), s, s.slug);
+    const [row] = (await listAccess(serviceContext(), s, s.slug)).rows;
     expect(row).toMatchObject({
       grant: { state: "active", accessLevel: "write", managed: true, observedAt: clock.now() },
       planned: { action: "verify", reason: "grant_active" },
@@ -89,7 +89,7 @@ describe("listAccess", () => {
     clock.advance(DAY);
     await act(s, sub.id, "reactivate");
     await drain(s.workspaceId);
-    const [row] = await listAccess(serviceContext(), s, s.slug);
+    const [row] = (await listAccess(serviceContext(), s, s.slug)).rows;
     expect(row?.entitlements.map((e) => [e.state, e.reason])).toEqual([
       ["active", "active"],
       ["expired", "canceled"],
@@ -97,17 +97,17 @@ describe("listAccess", () => {
 
     await act(s, sub.id, "pause");
     await drain(s.workspaceId);
-    const [ended] = await listAccess(serviceContext(), s, s.slug);
+    const [ended] = (await listAccess(serviceContext(), s, s.slug)).rows;
     expect(ended?.entitlements.map((e) => e.state)).toEqual(["revoked", "expired"]);
     expect(ended?.planned).toBeNull();
     // A managed grant that is no longer desired is planned for revocation.
     const [any] = await entitlementsOf(s.workspaceId);
     await grant(s, any?.subjectId ?? "", any?.resourceId ?? "", "active");
-    const [withGrant] = await listAccess(serviceContext(), s, s.slug);
+    const [withGrant] = (await listAccess(serviceContext(), s, s.slug)).rows;
     expect(withGrant?.planned).toEqual({ action: "revoke", reason: "not_entitled" });
 
     clock.advance(ENDED_ACCESS_VISIBLE_MS + DAY);
-    const [later] = await listAccess(serviceContext(), s, s.slug);
+    const [later] = (await listAccess(serviceContext(), s, s.slug)).rows;
     expect(later?.entitlements).toEqual([]);
     expect(live(await entitlementsOf(s.workspaceId))).toEqual([]);
   });
@@ -115,7 +115,7 @@ describe("listAccess", () => {
   it("lets any member read it; strangers see nothing", async () => {
     const s = await shop();
     const member = await memberOf(s);
-    expect(await listAccess(serviceContext(), member, s.slug)).toEqual([]);
+    expect((await listAccess(serviceContext(), member, s.slug)).rows).toEqual([]);
     const stranger = await signedUpUser();
     await expect(listAccess(serviceContext(), stranger, s.slug)).rejects.toBeInstanceOf(
       NotFoundError,

@@ -133,9 +133,9 @@ describe("isolation/cross-workspace-read-denied (entitlements)", () => {
     expect(await listSimulatedSubscriptions(serviceContext(), bob, bob.slug, SIMULATION)).toEqual(
       [],
     );
-    expect(await listAccess(serviceContext(), bob, bob.slug)).toEqual([]);
+    expect((await listAccess(serviceContext(), bob, bob.slug)).rows).toEqual([]);
     // Alice's own view is unaffected by Bob's offer for the same item ID.
-    const [row] = await listAccess(serviceContext(), alice, alice.slug);
+    const [row] = (await listAccess(serviceContext(), alice, alice.slug)).rows;
     expect(row?.subjectLogin).toBe(aliceSub.login);
     expect(row?.entitlements.map((e) => e.offerId)).toEqual([aliceOffer.id]);
   });

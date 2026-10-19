@@ -82,6 +82,15 @@ export function assertReconcileRows(
   }
 }
 
+/**
+ * Adds work on its own unless the same work (kind and key) is already pending. Returns whether
+ * the row was queued, so the caller knows whether to hand its ID to the queue.
+ */
+export async function enqueueOutboxOnce(db: Db, row: NewOutboxRow): Promise<boolean> {
+  const [queued] = await runBatch(db, [dedupedOutboxInsert(db, row)]);
+  return queued === 1;
+}
+
 /** Adds work on its own, outside any other change. */
 export async function enqueueOutbox(db: Db, row: NewOutboxRow): Promise<void> {
   await outboxInsert(db, row);

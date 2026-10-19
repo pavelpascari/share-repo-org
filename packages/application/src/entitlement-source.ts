@@ -151,3 +151,25 @@ export function decodeOfferKey(key: string): ParseResult<OfferRef, "key_invalid"
     ? { ok: true, value: parsed.data }
     : { ok: false, error: "key_invalid" };
 }
+
+/** Identifies one resource to reconcile, within a workspace. */
+export interface ReconcileRef {
+  readonly workspaceId: string;
+  readonly resourceId: string;
+}
+
+const reconcileKeySchema = z.object({ workspaceId: id, resourceId: id });
+
+/** The `reconcile_resource` outbox subject: `<workspaceId>:<resourceId>`, as db `reconcileKey`. */
+export function encodeReconcileKey(ref: ReconcileRef): string {
+  const parsed = reconcileKeySchema.parse(ref);
+  return `${parsed.workspaceId}:${parsed.resourceId}`;
+}
+
+export function decodeReconcileKey(key: string): ParseResult<ReconcileRef, "key_invalid"> {
+  const parts = key.split(":");
+  const parsed = reconcileKeySchema.safeParse({ workspaceId: parts[0], resourceId: parts[1] });
+  return parsed.success && parts.length === 2
+    ? { ok: true, value: parsed.data }
+    : { ok: false, error: "key_invalid" };
+}

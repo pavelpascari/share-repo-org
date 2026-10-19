@@ -31,7 +31,7 @@ export {
   type RecordExternalEventResult,
   recordExternalEvent,
 } from "./event-repository.ts";
-export { type Grant, listGrantsForWorkspace } from "./grant-repository.ts";
+export { type Grant, getGrant, listGrantsForWorkspace } from "./grant-repository.ts";
 export {
   type ExternalIdentity,
   type ExternalIdentitySnapshot,
@@ -65,6 +65,7 @@ export {
   claimOutbox,
   dedupedOutboxInsert,
   enqueueOutbox,
+  enqueueOutboxOnce,
   enqueueOutboxRows,
   markOutboxFailed,
   markOutboxSent,

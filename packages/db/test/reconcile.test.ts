@@ -4,8 +4,10 @@ import {
   applyGrantObservation,
   beginMutation,
   claimReconcileLease,
+  enqueueOutboxOnce,
   finishMutation,
   type Grant,
+  getGrant,
   latestMutationOperations,
   listGrantsForResource,
   listInviteStarts,
@@ -357,6 +359,32 @@ describe("applyGrantObservation", () => {
     expect(await grantById(unchanged.id)).toMatchObject({ observed_at: T0 });
     expect(await mutationById(open.id)).toMatchObject({ status: "started" });
     expect(await audit.written()).toBe(0);
+  });
+
+  it("writes an update of details alone without an audit event", async () => {
+    const ws = await leasedWorkspace();
+    const grant = await seedGrant(
+      grantRow(ws.identity, {
+        state: "pending_invitation",
+        externalGrantId: "inv1",
+        expiresAt: T0,
+      }),
+    );
+    await expect(
+      applyGrantObservation(
+        db,
+        {
+          ...ws.lease,
+          now: NOW,
+          creates: [],
+          updates: [{ id: grant.id, set: { expiresAt: NOW } }],
+          touch: [],
+          resolve: { mutationIds: [] },
+        },
+        [],
+      ),
+    ).resolves.toEqual({ ok: true });
+    expect(await grantById(grant.id)).toMatchObject({ expires_at: NOW, observed_at: NOW });
   });
 
   it("stamps more observed grants than one statement can bind, without an audit event", async () => {
@@ -715,6 +743,20 @@ describe("beginMutation and finishMutation", () => {
   });
 });
 
+describe("getGrant", () => {
+  it("reads a grant of the workspace only", async () => {
+    const ws = await leasedWorkspace();
+    const grant = await seedGrant(grantRow(ws.identity));
+    const other = await leasedWorkspace();
+    await expect(getGrant(db, { workspaceId: ws.workspaceId, grantId: grant.id })).resolves.toEqual(
+      grant,
+    );
+    await expect(
+      getGrant(db, { workspaceId: other.workspaceId, grantId: grant.id }),
+    ).resolves.toBeNull();
+  });
+});
+
 describe("resetGrantRetry", () => {
   async function erroredGrant(retryClass: Grant["retryClass"]) {
     const ws = await leasedWorkspace();
@@ -822,6 +864,16 @@ describe("requestReconcile", () => {
       requestReconcile(db, { ...key, outboxRow: third }, audited(ws.workspaceId).events),
     ).resolves.toEqual({ outboxId: third.id });
     expect(await count("outbox", "subject_id = ?", first.subjectId)).toBe(2);
+  });
+
+  it("enqueueOutboxOnce queues work unless the same work is pending", async () => {
+    const ws = await leasedWorkspace();
+    const first = reconcileRow(ws.workspaceId, ws.resource.id);
+    await expect(enqueueOutboxOnce(db, first)).resolves.toBe(true);
+    await expect(enqueueOutboxOnce(db, reconcileRow(ws.workspaceId, ws.resource.id))).resolves.toBe(
+      false,
+    );
+    expect(await count("outbox", "subject_id = ?", first.subjectId)).toBe(1);
   });
 
   it("rejects a row of another kind, workspace or resource", async () => {
