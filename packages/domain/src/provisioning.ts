@@ -390,18 +390,15 @@ function invitedRecently(grant: ObservableGrant, now: Instant): boolean {
 
 const NO_ERROR = { lastErrorCode: null, retryClass: null, nextAttemptAt: null } as const;
 
-const NEW_GRANT: GrantFields = {
-  state: "absent",
-  accessLevel: INVITED_ACCESS_LEVEL,
-  managed: false,
-  indirect: false,
-  externalGrantId: null,
-  expiresAt: null,
-  ...NO_ERROR,
-};
+/** What a new grant keeps from its base: {@link fieldsFor} sets every other field. */
+const NEW_GRANT: Pick<GrantFields, "accessLevel"> = { accessLevel: INVITED_ACCESS_LEVEL };
 
 /** The fields for what is listed; leaving any state but `error` clears the error fields. */
-function fieldsFor(presence: Presence, base: GrantFields, managed: boolean): GrantFields {
+function fieldsFor(
+  presence: Presence,
+  base: Pick<GrantFields, "accessLevel">,
+  managed: boolean,
+): GrantFields {
   switch (presence.kind) {
     case "none":
       return absent(base);
@@ -430,7 +427,7 @@ function fieldsFor(presence: Presence, base: GrantFields, managed: boolean): Gra
 }
 
 /** No access is listed: the grant is absent and no longer managed. */
-function absent(base: GrantFields): GrantFields {
+function absent(base: Pick<GrantFields, "accessLevel">): GrantFields {
   return {
     ...base,
     ...NO_ERROR,
