@@ -140,7 +140,17 @@ function realPort(): Subject {
         return undefined;
       }
       expect(url.searchParams.get("per_page")).toBe("200");
-      const data = subscriptions.data.filter((sub) => sub.customer_id === customerId);
+      const statuses = url.searchParams.get("status")?.split(",") ?? [];
+      expect([...statuses].sort()).toEqual([
+        "active",
+        "canceled",
+        "past_due",
+        "paused",
+        "trialing",
+      ]);
+      const data = subscriptions.data.filter(
+        (sub) => sub.customer_id === customerId && statuses.includes(sub.status),
+      );
       return jsonResponse(200, {
         ...subscriptions,
         meta: {
@@ -297,11 +307,11 @@ describe.each([
   it("lists one customer's subscriptions with the claim reference each carries", async () => {
     const { port } = await make();
     await expect(port.listCustomerSubscriptions(CUSTOMER_JO.id)).resolves.toEqual({
-      subscriptions: [{ id: SUB_JO, claimReference: CLAIM_REFERENCE }],
+      subscriptions: [{ id: SUB_JO, customerId: CUSTOMER_JO.id, claimReference: CLAIM_REFERENCE }],
       truncated: false,
     });
     await expect(port.listCustomerSubscriptions(CUSTOMER_SAM.id)).resolves.toEqual({
-      subscriptions: [{ id: SUB_SAM, claimReference: null }],
+      subscriptions: [{ id: SUB_SAM, customerId: CUSTOMER_SAM.id, claimReference: null }],
       truncated: false,
     });
     await expect(port.listCustomerSubscriptions(UNKNOWN_CUSTOMER)).resolves.toEqual({

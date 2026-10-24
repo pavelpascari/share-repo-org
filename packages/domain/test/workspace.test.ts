@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  hasAsciiControlCharacter,
   isWorkspaceRole,
   isWorkspaceStatus,
   normalizeWorkspaceSlug,
@@ -119,6 +120,47 @@ describe("workspace name", () => {
     // Each emoji is one code point but two UTF-16 units.
     expect(parseWorkspaceName("🚀".repeat(100))).toEqual({ ok: true, value: "🚀".repeat(100) });
     expect(parseWorkspaceName("🚀".repeat(101))).toEqual({ ok: false, error: "name_too_long" });
+  });
+
+  // The name reaches email subjects and headers: a CR or LF there could inject a header.
+  it.each([
+    "Acme\r\nBcc: x@example.com",
+    "Acme\nCo",
+    "Acme\tCo",
+    "A\u0000B",
+    "A\u001fB",
+    "A\u007fB",
+  ])("rejects ASCII control characters in %j", (name) => {
+    expect(parseWorkspaceName(name)).toEqual({ ok: false, error: "name_invalid_characters" });
+  });
+
+  it("accepts the printable neighbours of the control ranges", () => {
+    for (const name of ["A B", "A~B", "A\u0080B", "A B"]) {
+      expect(parseWorkspaceName(name)).toEqual({ ok: true, value: name });
+    }
+  });
+
+  it("checks length before characters", () => {
+    expect(parseWorkspaceName(`${"a".repeat(101)}\n`)).toEqual({
+      ok: false,
+      error: "name_too_long",
+    });
+    expect(parseWorkspaceName(`a\n${"a".repeat(100)}`)).toEqual({
+      ok: false,
+      error: "name_too_long",
+    });
+  });
+});
+
+describe("hasAsciiControlCharacter", () => {
+  it("finds C0 controls and DEL anywhere, and nothing else", () => {
+    for (let code = 0; code < 0x20; code += 1) {
+      expect(hasAsciiControlCharacter(`a${String.fromCharCode(code)}b`)).toBe(true);
+    }
+    expect(hasAsciiControlCharacter("\u007f")).toBe(true);
+    expect(hasAsciiControlCharacter("x\r")).toBe(true);
+    expect(hasAsciiControlCharacter("")).toBe(false);
+    expect(hasAsciiControlCharacter(" ~Ünïcødé 🚀\u0080 ")).toBe(false);
   });
 });
 

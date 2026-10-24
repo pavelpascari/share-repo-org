@@ -32,6 +32,9 @@ export const checkoutClaims = sqliteTable(
     priceId: text("price_id").notNull(),
     // The Paddle transaction (`txn_…`), once created.
     transactionId: text("transaction_id"),
+    // Paddle's checkout URL for that transaction, so starting the same checkout again within the
+    // reuse window sends the buyer back to it instead of creating another transaction.
+    checkoutUrl: text("checkout_url"),
     createdAt: integer("created_at").$type<Instant>().notNull(),
     expiresAt: integer("expires_at").$type<Instant>().notNull(),
     consumedByCustomerId: text("consumed_by_customer_id"),
@@ -136,8 +139,9 @@ export const claimTokens = sqliteTable(
 );
 
 /**
- * Fixed-window counters for claim requests, like `auth_rate_limits`. Global: a bucket is
- * `email:<hash>`, `user:<id>` or `ip:<hash>`, so limits hold across workspaces.
+ * Fixed-window counters for claim requests and checkout starts, like `auth_rate_limits`. Windows
+ * are aligned to the epoch. A bucket names its scope: `email:<workspaceId>:<hash>:…` is one
+ * workspace's, `user:<id>:…`, `ip:<hash>:…` and `checkout:…` hold across workspaces.
  */
 export const claimRateLimits = sqliteTable(
   "claim_rate_limits",

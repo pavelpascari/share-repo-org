@@ -25,12 +25,14 @@ export type {
   CheckoutClaimUsability,
   ClaimTokenUsability,
   CustomerPurchases,
+  CustomerSubscriptionListing,
   UsableCheckoutClaim,
   UsableClaimToken,
 } from "./claim.ts";
 export {
   CHECKOUT_CLAIM_LIFETIME_MS,
   CHECKOUT_REJECTION_REASONS,
+  CHECKOUT_REUSE_WINDOW_MS,
   CLAIM_REJECTION_REASONS,
   CLAIM_TOKEN_LIFETIME_MS,
   ClaimRejectionReason,
@@ -197,7 +199,9 @@ export {
 } from "./provisioning.ts";
 export type { RateLimitBucket, RateLimitCounter, RateLimitDecision } from "./rate-limit.ts";
 export {
+  CHECKOUT_RATE_LIMITS,
   CLAIM_RATE_LIMITS,
+  checkoutRateLimitBuckets,
   claimRateLimitBuckets,
   rateLimitDecision,
   rateLimitWindowStart,
@@ -252,6 +256,7 @@ export type {
   WorkspaceStatus,
 } from "./workspace.ts";
 export {
+  hasAsciiControlCharacter,
   isWorkspaceRole,
   isWorkspaceStatus,
   normalizeWorkspaceSlug,

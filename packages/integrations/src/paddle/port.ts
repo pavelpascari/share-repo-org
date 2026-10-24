@@ -103,6 +103,8 @@ export interface PaddleSubscriptionList {
 export interface PaddleCustomerSubscription {
   /** `sub_…`. */
   readonly id: string;
+  /** `ctm_…`, as Paddle reports it; the caller checks it is the customer it asked about. */
+  readonly customerId: string;
   /** `custom_data.sharerepo_claim`, extracted as `normalizePaddleSubscription` does. Untrusted. */
   readonly claimReference: string | null;
 }
@@ -177,7 +179,7 @@ export interface PaddlePort {
   listSubscriptions(): Promise<PaddleSubscriptionList>;
   /**
    * Every subscription of one customer, any status, newest first, up to the page cap
-   * (`GET /subscriptions?customer_id=`). An unknown customer has none.
+   * (`GET /subscriptions?customer_id=&status=<every status>`). An unknown customer has none.
    */
   listCustomerSubscriptions(customerId: string): Promise<PaddleCustomerSubscriptionList>;
   /** Active customers whose email matches exactly (Paddle's `email` filter). */

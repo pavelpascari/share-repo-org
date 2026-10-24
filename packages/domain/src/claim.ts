@@ -71,6 +71,11 @@ const HOUR_MS = 3_600_000;
 export const CHECKOUT_CLAIM_LIFETIME_MS = 7 * 24 * HOUR_MS;
 /** How long an emailed claim link stays usable (decision 0012, path 2). */
 export const CLAIM_TOKEN_LIFETIME_MS = 24 * HOUR_MS;
+/**
+ * How long a buyer who starts checkout again for the same price is sent back to the checkout
+ * they already started, rather than to a new Paddle transaction (decision 0012, path 1).
+ */
+export const CHECKOUT_REUSE_WINDOW_MS = HOUR_MS;
 
 // Linking -------------------------------------------------------------------------------------
 
@@ -154,10 +159,18 @@ export function checkoutClaimUsable(
     : { usable: false, reason: ClaimRejectionReason.Expired };
 }
 
+/** One subscription in the provider's list of a customer's subscriptions. */
+export interface CustomerSubscriptionListing {
+  readonly externalSubscriptionId: string;
+  /** The customer the provider says the subscription belongs to. */
+  readonly externalCustomerId: string;
+  /** The claim reference the subscription carries, or null for one without. */
+  readonly claimReference: string | null;
+}
+
 /** A customer's subscriptions as the payment provider lists them, for path 1. */
 export interface CustomerPurchases {
-  /** The claim reference each subscription carries, or null for one without. */
-  readonly claimReferences: readonly (string | null)[];
+  readonly subscriptions: readonly CustomerSubscriptionListing[];
   /** The provider stopped listing at its page cap with more to come. */
   readonly truncated: boolean;
 }
@@ -166,17 +179,33 @@ export interface CustomerPurchases {
  * Whether a checkout reference may link a customer (decision 0012, path 1). The link must follow
  * the purchase, not the customer: at checkout a buyer can enter anyone's email, and Paddle then
  * puts the new subscription on that person's existing customer. So the customer qualifies only
- * when every subscription the provider holds for it carries this same reference. A customer with
- * no listed subscription, or a list cut short, cannot show that and does not qualify.
+ * when every subscription the provider holds for it carries this same reference.
+ *
+ * The provider's list is checked rather than trusted: every listed subscription must belong to
+ * this customer, and the list must include the subscription that presented the reference and
+ * every subscription ShareRepo already stores for the customer. A list that is cut short, empty,
+ * or misses any of those does not qualify.
  */
-export function purchasesOnlyThroughClaim(
-  reference: string,
-  purchases: CustomerPurchases,
-): boolean {
+export function purchasesOnlyThroughClaim(input: {
+  readonly reference: string;
+  readonly externalCustomerId: string;
+  /** The subscription whose refresh reported the reference. */
+  readonly externalSubscriptionId: string;
+  /** Every subscription ShareRepo stores for the customer, by external ID. */
+  readonly storedSubscriptionIds: readonly string[];
+  readonly purchases: CustomerPurchases;
+}): boolean {
+  const { purchases } = input;
+  if (purchases.truncated) return false;
+  const listed = new Set(purchases.subscriptions.map((sub) => sub.externalSubscriptionId));
   return (
-    !purchases.truncated &&
-    purchases.claimReferences.length > 0 &&
-    purchases.claimReferences.every((carried) => carried === reference)
+    listed.has(input.externalSubscriptionId) &&
+    input.storedSubscriptionIds.every((id) => listed.has(id)) &&
+    purchases.subscriptions.every(
+      (sub) =>
+        sub.externalCustomerId === input.externalCustomerId &&
+        sub.claimReference === input.reference,
+    )
   );
 }
 

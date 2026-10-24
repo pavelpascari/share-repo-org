@@ -57,6 +57,13 @@
       "when": 1792861410038,
       "tag": "0007_paddle_event_subscription",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1792866778821,
+      "tag": "0008_checkout_claim_url",
+      "breakpoints": true
     }
   ]
 }

@@ -11,7 +11,7 @@ export const UNAUDITED_TABLES: Readonly<Record<string, string>> = {
   auth_sessions: "Better Auth sessions; sign-in and sign-out are audited as auth.* events",
   auth_verifications: "transient Better Auth OAuth state",
   auth_rate_limits: "Better Auth rate-limit counters",
-  claim_rate_limits: "claim request rate-limit counters; each allowed request is audited",
+  claim_rate_limits: "claim request and checkout start rate-limit counters (bookkeeping)",
   external_events: "receipt bookkeeping; the resulting changes are audited",
   outbox: "work hand-off bookkeeping (decision 0003)",
 };

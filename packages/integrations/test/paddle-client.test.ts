@@ -248,16 +248,35 @@ describe("Paddle pagination", () => {
     ]);
   });
 
-  it("lists a customer's subscriptions by customer_id, truncating at the cap", async () => {
+  it("lists a customer's subscriptions by customer_id, in every status, truncating at the cap", async () => {
     const { port, calls } = paged(PADDLE_PAGE_LIMIT + 5);
     const customerId = `ctm_${"1".repeat(26)}`;
     const list = await port.listCustomerSubscriptions(customerId);
-    expect(new URL(calls[0]?.url ?? "").searchParams.get("customer_id")).toBe(customerId);
+    const query = new URL(calls[0]?.url ?? "").searchParams;
+    expect(query.get("customer_id")).toBe(customerId);
+    // Explicit, so the purchase rule never depends on Paddle's default scope (review F4).
+    expect(query.get("status")).toBe("active,canceled,past_due,paused,trialing");
     expect(calls).toHaveLength(PADDLE_PAGE_LIMIT);
     expect(list.truncated).toBe(true);
     expect(list.subscriptions[0]).toEqual({
       id: `sub_${"1".padStart(26, "0")}`,
+      customerId: subscriptions.data[0]?.customer_id,
       claimReference: null,
+    });
+  });
+
+  it("refuses a customer's subscription list without a customer_id on each item", async () => {
+    const item = { ...subscriptions.data[0], customer_id: undefined };
+    const { port } = client([
+      () =>
+        jsonResponse(200, {
+          ...subscriptions,
+          data: [item],
+          meta: { pagination: { next: null, has_more: false } },
+        }),
+    ]);
+    expect(await failure(port.listCustomerSubscriptions(`ctm_${"1".repeat(26)}`))).toMatchObject({
+      kind: "malformed",
     });
   });
 

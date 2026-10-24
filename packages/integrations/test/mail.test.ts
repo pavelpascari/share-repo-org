@@ -69,6 +69,9 @@ describe("mail through the send_email binding", () => {
     ["no recipient", { ...MESSAGE, to: "" }],
     ["two recipients", { ...MESSAGE, to: "a@x.test b@x.test" }],
     ["no subject", { ...MESSAGE, subject: "" }],
+    ["a CR LF in the subject", { ...MESSAGE, subject: "Hi\r\nBcc: x@evil.test" }],
+    ["a LF in the subject", { ...MESSAGE, subject: "Hi\nthere" }],
+    ["a control character in the subject", { ...MESSAGE, subject: "Hi\u0007" }],
     ["no text", { ...MESSAGE, text: "" }],
     ["no html", { ...MESSAGE, html: "" }],
   ])("refuses a message with %s before sending", async (_, message) => {
@@ -116,6 +119,19 @@ describe("mail through the HTTP capture", () => {
     );
     expect(await failure(port.send(MESSAGE))).toMatchObject({ kind, providerCode: String(status) });
   });
+
+  it.each(["Hi\r\nBcc: x@evil.test", "Hi\rthere", "Hi\u007f"])(
+    "refuses the subject %j before posting",
+    async (subject) => {
+      const stub = stubFetch([() => new Response(null, { status: 204 })]);
+      const port = createMailPort(
+        { kind: "capture", url: CAPTURE },
+        { from: FROM, fetch: stub.fetch },
+      );
+      expect(await failure(port.send({ ...MESSAGE, subject }))).toMatchObject({ kind: "rejected" });
+      expect(stub.calls).toEqual([]);
+    },
+  );
 
   it("is transient on a network failure", async () => {
     const port = createMailPort(

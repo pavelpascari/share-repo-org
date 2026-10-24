@@ -1,5 +1,6 @@
 import { env } from "cloudflare:workers";
 import {
+  consumeCheckoutClaim,
   findCustomer,
   getCheckoutClaim,
   getClaimRequest,
@@ -15,6 +16,7 @@ import {
 } from "@sharerepo/platform";
 import { changedTables, snapshotTables } from "@sharerepo/testing";
 import { describe, expect, it } from "vitest";
+import { linkCheckoutReference } from "../src/claims.ts";
 import {
   archiveOffer,
   confirmClaim,
@@ -39,6 +41,7 @@ import { clock, db, serviceContext, signedUpUser } from "./support/context.ts";
 import {
   auditOf,
   beforeFirstBatch,
+  buyerIp,
   CLAIM_KEY,
   connectionOf,
   deliverSubscription,
@@ -89,7 +92,7 @@ describe("startCheckout and getCheckoutView (path 1)", () => {
     const user = await signedUp();
     const result = await startCheckout(
       serviceContext(),
-      { offerId: s.offer.id, priceId: s.price.id, user },
+      { offerId: s.offer.id, priceId: s.price.id, user, ip: buyerIp() },
       s.deps,
     );
     if (!result.ok) throw new Error(result.reason);
@@ -161,7 +164,7 @@ describe("startCheckout and getCheckoutView (path 1)", () => {
     const s = await paddleShop();
     const user = await signedUp();
     const start = (offerId: string, priceId: string) =>
-      startCheckout(serviceContext(), { offerId, priceId, user }, s.deps);
+      startCheckout(serviceContext(), { offerId, priceId, user, ip: buyerIp() }, s.deps);
     expect(await start("nope", s.price.id)).toEqual({ ok: false, reason: "not_found" });
     const other = s.paddle.addPrice();
     expect(await start(s.offer.id, other.id)).toEqual({ ok: false, reason: "price_invalid" });
@@ -203,11 +206,85 @@ describe("startCheckout and getCheckoutView (path 1)", () => {
     expect(
       await startCheckout(
         serviceContext(),
-        { offerId: s.offer.id, priceId: s.price.id, user: await signedUp() },
+        { offerId: s.offer.id, priceId: s.price.id, user: await signedUp(), ip: buyerIp() },
         deps,
       ),
     ).toEqual({ ok: false, reason: "no_default_payment_link" });
   });
+});
+
+describe("claim/checkout-start-rate-limited", () => {
+  const HOUR = 3_600_000;
+
+  it("sends a buyer who starts the same checkout again back to it, for an hour", async () => {
+    const s = await paddleShop();
+    const user = await signedUp();
+    const ip = buyerIp();
+    const start = () =>
+      startCheckout(
+        serviceContext(),
+        { offerId: s.offer.id, priceId: s.price.id, user, ip },
+        s.deps,
+      );
+    const transactions = () => s.paddle.calls.filter((call) => call === "createTransaction");
+    const first = await start();
+    if (!first.ok) throw new Error(first.reason);
+    // Reused checkouts create nothing and count against no limit.
+    for (let i = 0; i < 12; i += 1) expect(await start()).toEqual(first);
+    expect(transactions()).toHaveLength(1);
+    expect(await auditOf(s.workspaceId, "checkout.started")).toHaveLength(1);
+    clock.advance(HOUR - 1);
+    expect(await start()).toEqual(first);
+    // An hour on, a new checkout.
+    clock.advance(1);
+    const second = await start();
+    if (!second.ok) throw new Error(second.reason);
+    expect(second.checkoutClaimId).not.toBe(first.checkoutClaimId);
+    expect(second.checkoutUrl).not.toBe(first.checkoutUrl);
+    expect(transactions()).toHaveLength(2);
+    // Once the checkout's reference is used, starting again is a new checkout.
+    const paid = s.paddle.completeCheckout(transactionOf(second.checkoutUrl), {
+      customerId: paddleCustomer(s).id,
+    });
+    await deliverSubscription(s, "subscription.created", paid.id);
+    const third = await start();
+    if (!third.ok) throw new Error(third.reason);
+    expect(third.checkoutClaimId).not.toBe(second.checkoutClaimId);
+  });
+
+  it("allows 10 new checkouts an hour per user and 30 per IP, then refuses without calling Paddle", async () => {
+    const s = await paddleShop();
+    const user = await signedUp();
+    const start = (who: UserActor, ip: string) =>
+      startCheckout(
+        serviceContext(),
+        { offerId: s.offer.id, priceId: s.price.id, user: who, ip },
+        s.deps,
+      );
+    // Without a default payment link no checkout is stored, so every attempt is a new one.
+    s.paddle.setDefaultPaymentLink(null);
+    for (let i = 0; i < 10; i += 1) {
+      expect(await start(user, buyerIp())).toEqual({
+        ok: false,
+        reason: "no_default_payment_link",
+      });
+    }
+    const calls = s.paddle.calls.length;
+    expect(await start(user, buyerIp())).toEqual({ ok: false, reason: "rate_limited" });
+    expect(s.paddle.calls).toHaveLength(calls);
+
+    const ip = buyerIp();
+    for (let i = 0; i < 30; i += 1) {
+      expect(await start(await signedUp(), ip)).toMatchObject({ ok: false });
+    }
+    expect(await start(await signedUp(), ip)).toEqual({ ok: false, reason: "rate_limited" });
+    expect(await auditOf(s.workspaceId, "checkout.started")).toEqual([]);
+
+    // A new window allows both again.
+    clock.advance(HOUR);
+    s.paddle.setDefaultPaymentLink("https://seller.example/pay");
+    expect(await start(user, ip)).toMatchObject({ ok: true });
+  }, 30_000);
 });
 
 describe("claim/checkout-reference-tamper-rejected", () => {
@@ -237,7 +314,7 @@ describe("claim/checkout-reference-tamper-rejected", () => {
     const user = await signedUp();
     const started = await startCheckout(
       serviceContext(),
-      { offerId: s.offer.id, priceId: s.price.id, user },
+      { offerId: s.offer.id, priceId: s.price.id, user, ip: buyerIp() },
       s.deps,
     );
     if (!started.ok) throw new Error(started.reason);
@@ -280,7 +357,7 @@ describe("claim/checkout-reference-tamper-rejected", () => {
     const user = await signedUp();
     const started = await startCheckout(
       serviceContext(),
-      { offerId: a.offer.id, priceId: a.price.id, user },
+      { offerId: a.offer.id, priceId: a.price.id, user, ip: buyerIp() },
       a.deps,
     );
     if (!started.ok) throw new Error(started.reason);
@@ -303,7 +380,7 @@ describe("claim/checkout-reference-tamper-rejected", () => {
 
     const late = await startCheckout(
       serviceContext(),
-      { offerId: s.offer.id, priceId: s.price.id, user },
+      { offerId: s.offer.id, priceId: s.price.id, user, ip: buyerIp() },
       s.deps,
     );
     if (!late.ok) throw new Error(late.reason);
@@ -325,7 +402,7 @@ describe("claim/checkout-reference-tamper-rejected", () => {
     const intruder = await signedUp();
     const started = await startCheckout(
       serviceContext(),
-      { offerId: s.offer.id, priceId: s.price.id, user: intruder },
+      { offerId: s.offer.id, priceId: s.price.id, user: intruder, ip: buyerIp() },
       s.deps,
     );
     if (!started.ok) throw new Error(started.reason);
@@ -346,6 +423,113 @@ describe("claim/checkout-reference-tamper-rejected", () => {
       }),
     ]);
     expect(await liveFor(s.workspaceId, intruder.profile.externalUserId)).toEqual([]);
+  });
+
+  it("a reference first presented by a customer already linked to the buyer is used up", async () => {
+    const s = await paddleShop();
+    const user = await signedUp();
+    const { customer } = await purchase(s, user);
+    const linked = await customerRow(s, customer.id);
+    const again = await startCheckout(
+      serviceContext(),
+      { offerId: s.offer.id, priceId: s.price.id, user, ip: buyerIp() },
+      s.deps,
+    );
+    if (!again.ok) throw new Error(again.reason);
+    const transactionId = transactionOf(again.checkoutUrl);
+    // The buyer's own customer pays through the second checkout: already linked to them.
+    const sub = s.paddle.completeCheckout(transactionId, { customerId: customer.id });
+    await deliverSubscription(s, "subscription.created", sub.id);
+    expect(
+      await getCheckoutClaim(db, { workspaceId: s.workspaceId, id: again.checkoutClaimId }),
+    ).toMatchObject({ consumedByCustomerId: linked?.id, consumedAt: clock.now() });
+    expect((await auditOf(s.workspaceId, "claim.completed")).at(-1)).toMatchObject({
+      actor_type: "system",
+      target_id: linked?.id,
+      details: {
+        path: "checkout",
+        claimId: again.checkoutClaimId,
+        userId: user.userId,
+        subjectId: linked?.subjectId,
+      },
+    });
+    // A leaked copy of the reference then links no other customer to the buyer.
+    const reference = s.paddle.transaction(transactionId).customData.sharerepo_claim;
+    const { customer: other } = await presented(s, reference);
+    expect(other.subjectId).toBeNull();
+    expect(await rejections(s)).toEqual([
+      { path: "checkout", claimId: again.checkoutClaimId, reason: "consumed_by_other_customer" },
+    ]);
+  });
+
+  it("a reference first presented by a customer linked to someone else is used up", async () => {
+    const s = await paddleShop();
+    const { customer } = await purchase(s, await signedUp());
+    const linked = await customerRow(s, customer.id);
+    const intruder = await signedUp();
+    const started = await startCheckout(
+      serviceContext(),
+      { offerId: s.offer.id, priceId: s.price.id, user: intruder, ip: buyerIp() },
+      s.deps,
+    );
+    if (!started.ok) throw new Error(started.reason);
+    const transactionId = transactionOf(started.checkoutUrl);
+    const sub = s.paddle.completeCheckout(transactionId, { customerId: customer.id });
+    await deliverSubscription(s, "subscription.created", sub.id);
+    expect(await auditOf(s.workspaceId, "claim.conflict")).toHaveLength(1);
+    expect(
+      await getCheckoutClaim(db, { workspaceId: s.workspaceId, id: started.checkoutClaimId }),
+    ).toMatchObject({ consumedByCustomerId: linked?.id });
+    // The same reference on a new customer links nothing to the intruder.
+    const reference = s.paddle.transaction(transactionId).customData.sharerepo_claim;
+    const { customer: other } = await presented(s, reference);
+    expect(other.subjectId).toBeNull();
+    expect(await rejections(s)).toEqual([
+      { path: "checkout", claimId: started.checkoutClaimId, reason: "consumed_by_other_customer" },
+    ]);
+    expect(await liveFor(s.workspaceId, intruder.profile.externalUserId)).toEqual([]);
+    // A later refresh of the conflicting subscription records the conflict again, uses nothing.
+    s.paddle.renew(sub.id);
+    await deliverSubscription(s, "subscription.updated", sub.id);
+    expect(await auditOf(s.workspaceId, "claim.conflict")).toHaveLength(2);
+  });
+
+  it("a conflict is recorded once when a concurrent refresh used the claim first", async () => {
+    const s = await paddleShop();
+    const { customer } = await purchase(s, await signedUp());
+    const linked = (await customerRow(s, customer.id)) as NonNullable<
+      Awaited<ReturnType<typeof customerRow>>
+    >;
+    const intruder = await signedUp();
+    const started = await startCheckout(
+      serviceContext(),
+      { offerId: s.offer.id, priceId: s.price.id, user: intruder, ip: buyerIp() },
+      s.deps,
+    );
+    if (!started.ok) throw new Error(started.reason);
+    const transactionId = transactionOf(started.checkoutUrl);
+    const sub = s.paddle.completeCheckout(transactionId, { customerId: customer.id });
+    const key = { workspaceId: s.workspaceId, id: started.checkoutClaimId };
+    // Another refresh of the same customer uses the claim between this one's reads and write.
+    const ctx = beforeFirstBatch(() =>
+      consumeCheckoutClaim(db, { ...key, customerId: linked.id, now: clock.now() }),
+    );
+    const source = paddleEntitlementSource(ctx, s.deps).checkoutClaims;
+    await linkCheckoutReference(
+      ctx,
+      s.workspaceId,
+      {
+        customer: linked,
+        reference: s.paddle.transaction(transactionId).customData.sharerepo_claim as string,
+        externalSubscriptionId: sub.id,
+        newer: true,
+      },
+      source as NonNullable<typeof source>,
+    );
+    expect(await auditOf(s.workspaceId, "claim.conflict")).toEqual([
+      expect.objectContaining({ details: expect.objectContaining({ claimId: key.id }) }),
+    ]);
+    expect(await getCheckoutClaim(db, key)).toMatchObject({ consumedByCustomerId: linked.id });
   });
 
   it("a source without a signing key never links", async () => {
@@ -385,7 +569,7 @@ describe("claim/checkout-cannot-adopt-existing-customer", () => {
     const attacker = await signedUp();
     const started = await startCheckout(
       serviceContext(),
-      { offerId: s.offer.id, priceId: s.price.id, user: attacker },
+      { offerId: s.offer.id, priceId: s.price.id, user: attacker, ip: buyerIp() },
       s.deps,
     );
     if (!started.ok) throw new Error(started.reason);
@@ -516,6 +700,89 @@ describe("claim/checkout-cannot-adopt-existing-customer", () => {
     expect(await liveFor(s.workspaceId, buyer.profile.externalUserId)).not.toEqual([]);
   });
 
+  type Listing = {
+    readonly subscriptions: readonly {
+      readonly id: string;
+      readonly customerId: string;
+      readonly claimReference: string | null;
+    }[];
+    readonly truncated: boolean;
+  };
+
+  /** Refreshes a subscription through a Paddle whose list of a customer's subscriptions lies. */
+  async function refreshWithListing(
+    s: PaddleShop,
+    subscriptionId: string,
+    edit: (listing: Listing) => Listing,
+  ) {
+    const deps = {
+      ...s.deps,
+      paddle: (credentials: Parameters<typeof s.deps.paddle>[0]) => {
+        const client = s.deps.paddle(credentials);
+        return {
+          ...client,
+          listCustomerSubscriptions: async (customerId: string) =>
+            edit(await client.listCustomerSubscriptions(customerId)),
+        };
+      },
+    };
+    const ctx = serviceContext();
+    await refreshSubscription(
+      ctx,
+      { workspaceId: s.workspaceId, source: "paddle", externalSubscriptionId: subscriptionId },
+      paddleEntitlementSource(ctx, deps),
+    );
+  }
+
+  it("refuses a listing that puts a subscription under another customer", async () => {
+    const s = await paddleShop();
+    const { attacker, started, transactionId } = await attackerCheckout(s);
+    const sub = s.paddle.completeCheckout(transactionId, { email: newEmail() });
+    const elsewhere = paddleCustomer(s).id;
+    await refreshWithListing(s, sub.id, (listing) => ({
+      ...listing,
+      subscriptions: listing.subscriptions.map((item) => ({ ...item, customerId: elsewhere })),
+    }));
+    expect((await customerRow(s, sub.customerId))?.subjectId).toBeNull();
+    expect(await liveFor(s.workspaceId, attacker.profile.externalUserId)).toEqual([]);
+    expect((await claimEvents(s)).rejected).toEqual([otherPurchases(started.checkoutClaimId)]);
+  });
+
+  it("refuses a listing without the subscription that presented the reference", async () => {
+    const s = await paddleShop();
+    const { attacker, started, transactionId } = await attackerCheckout(s);
+    const sub = s.paddle.completeCheckout(transactionId, { email: newEmail() });
+    await refreshWithListing(s, sub.id, (listing) => ({
+      ...listing,
+      subscriptions: listing.subscriptions.map((item) => ({
+        ...item,
+        id: `sub_${"9".repeat(26)}`,
+      })),
+    }));
+    expect((await customerRow(s, sub.customerId))?.subjectId).toBeNull();
+    expect(await liveFor(s.workspaceId, attacker.profile.externalUserId)).toEqual([]);
+    expect((await claimEvents(s)).rejected).toEqual([otherPurchases(started.checkoutClaimId)]);
+  });
+
+  it("refuses a listing without a subscription ShareRepo stores for the customer", async () => {
+    const s = await paddleShop();
+    const { attacker, started, transactionId } = await attackerCheckout(s);
+    clock.advance(DAY);
+    // The victim buys directly, and ShareRepo records it after the claim was created.
+    const { customer: victim, sub: victimSub } = await unclaimed(s);
+    clock.advance(DAY);
+    const sub = s.paddle.completeCheckout(transactionId, { email: victim.email });
+    expect(sub.customerId).toBe(victim.id);
+    // Paddle's list leaves out the victim's own subscription.
+    await refreshWithListing(s, sub.id, (listing) => ({
+      ...listing,
+      subscriptions: listing.subscriptions.filter((item) => item.id !== victimSub.id),
+    }));
+    expect((await customerRow(s, victim.id))?.subjectId).toBeNull();
+    expect(await liveFor(s.workspaceId, attacker.profile.externalUserId)).toEqual([]);
+    expect((await claimEvents(s)).rejected).toEqual([otherPurchases(started.checkoutClaimId)]);
+  });
+
   it("refuses when Paddle's list of the customer's subscriptions is cut short", async () => {
     const s = await paddleShop();
     const { started, transactionId } = await attackerCheckout(s);
@@ -587,7 +854,7 @@ describe("claims in a suspended workspace", () => {
     const user = await signedUp();
     const started = await startCheckout(
       serviceContext(),
-      { offerId: s.offer.id, priceId: s.price.id, user },
+      { offerId: s.offer.id, priceId: s.price.id, user, ip: buyerIp() },
       s.deps,
     );
     if (!started.ok) throw new Error(started.reason);
@@ -802,6 +1069,46 @@ describe("claims by email (path 2)", () => {
       outboxId: expect.any(String),
     });
   }, 30_000);
+
+  it("claim/request-rate-limited: a refused request uses up no limit", async () => {
+    const s = await paddleShop();
+    const attacker = await signedUp();
+    const ask = (who: UserActor, email: string, ip = buyerIp()) =>
+      requestClaim(serviceContext(), { workspaceSlug: s.slug, email, user: who, ip }, s.deps);
+    const victim = `victim-${crypto.randomUUID()}@example.com`;
+    // The attacker uses up their own hourly limit...
+    for (let i = 0; i < 5; i += 1) {
+      expect(await ask(attacker, `a${i}-${crypto.randomUUID()}@example.com`)).toMatchObject({
+        outboxId: expect.any(String),
+      });
+    }
+    // ...then keeps asking for the victim's email: refused, and never counted against it.
+    for (let i = 0; i < 5; i += 1) {
+      expect(await ask(attacker, victim)).toEqual({ status: "requested", outboxId: null });
+    }
+    for (let i = 0; i < 3; i += 1) {
+      expect(await ask(await signedUp(), victim)).toMatchObject({
+        outboxId: expect.any(String),
+      });
+    }
+  });
+
+  it("claim/request-rate-limited: an email's limits in one workspace leave it free in another", async () => {
+    const a = await paddleShop();
+    const b = await paddleShop();
+    const email = `shared-${crypto.randomUUID()}@example.com`;
+    const ask = async (s: PaddleShop) =>
+      requestClaim(
+        serviceContext(),
+        { workspaceSlug: s.slug, email, user: await signedUp(), ip: buyerIp() },
+        s.deps,
+      );
+    for (let i = 0; i < 3; i += 1) {
+      expect(await ask(a)).toMatchObject({ outboxId: expect.any(String) });
+    }
+    expect(await ask(a)).toEqual({ status: "requested", outboxId: null });
+    expect(await ask(b)).toMatchObject({ outboxId: expect.any(String) });
+  });
 
   it("refuses an invalid email, and an unknown or suspended workspace", async () => {
     const s = await paddleShop();

@@ -147,16 +147,24 @@ export function toSubscriptionSummary(
   return { id: sub.id, status: sub.status, updatedAt: sub.updated_at };
 }
 
-/** A subscription in a customer's list: its ID and the custom data the claim rule reads. */
+/**
+ * A subscription in a customer's list: its ID, the customer Paddle says it belongs to, and the
+ * custom data the claim rule reads.
+ */
 export const customerSubscriptionSchema = z.object({
   id: id("sub"),
+  customer_id: id("ctm"),
   custom_data: z.record(z.string(), z.unknown()).nullable(),
 });
 
 export function toCustomerSubscription(
   sub: z.output<typeof customerSubscriptionSchema>,
 ): PaddleCustomerSubscription {
-  return { id: sub.id, claimReference: claimReferenceOf(sub.custom_data) };
+  return {
+    id: sub.id,
+    customerId: sub.customer_id,
+    claimReference: claimReferenceOf(sub.custom_data),
+  };
 }
 
 export const customerSchema = z.object({

@@ -23,7 +23,8 @@ export interface RateLimitCounter {
 
 /**
  * The claim request limits (decision 0012, threat T5), as data. Each key's suffix names its
- * window: `email:<hash>:h` and `email:<hash>:d` are separate counters.
+ * window: `email:<workspaceId>:<hash>:h` and `email:<workspaceId>:<hash>:d` are separate
+ * counters.
  */
 export const CLAIM_RATE_LIMITS = [
   { key: "email", window: "h", windowMs: HOUR_MS, limit: 3 },
@@ -34,16 +35,45 @@ export const CLAIM_RATE_LIMITS = [
 
 /**
  * The buckets one claim request counts against. `emailHash` and `ipHash` are HMACs; neither an
- * email nor an IP address ever reaches a bucket name.
+ * email nor an IP address ever reaches a bucket name. Anyone can type anyone's email, so the
+ * email's buckets are per workspace: requests in one workspace never use up its limits in
+ * another. The user and IP limits hold across workspaces.
  */
 export function claimRateLimitBuckets(keys: {
+  readonly workspaceId: string;
   readonly emailHash: string;
   readonly userId: string;
   readonly ipHash: string;
 }): readonly RateLimitBucket[] {
-  const values = { email: keys.emailHash, user: keys.userId, ip: keys.ipHash };
+  const values = {
+    email: `${keys.workspaceId}:${keys.emailHash}`,
+    user: keys.userId,
+    ip: keys.ipHash,
+  };
   return CLAIM_RATE_LIMITS.map(({ key, window, windowMs, limit }) => ({
     bucket: `${key}:${values[key]}:${window}`,
+    windowMs,
+    limit,
+  }));
+}
+
+/**
+ * The limits on starting a checkout (decision 0012, path 1): each new checkout creates a Paddle
+ * transaction and a checkout claim, so a signed-in user cannot create them without bound.
+ */
+export const CHECKOUT_RATE_LIMITS = [
+  { key: "user", window: "h", windowMs: HOUR_MS, limit: 10 },
+  { key: "ip", window: "h", windowMs: HOUR_MS, limit: 30 },
+] as const;
+
+/** The buckets one new checkout counts against: `checkout:user:<id>:h` and `checkout:ip:<hash>:h`. */
+export function checkoutRateLimitBuckets(keys: {
+  readonly userId: string;
+  readonly ipHash: string;
+}): readonly RateLimitBucket[] {
+  const values = { user: keys.userId, ip: keys.ipHash };
+  return CHECKOUT_RATE_LIMITS.map(({ key, window, windowMs, limit }) => ({
+    bucket: `checkout:${key}:${values[key]}:${window}`,
     windowMs,
     limit,
   }));
@@ -65,8 +95,9 @@ export type RateLimitDecision =
 
 /**
  * Decides one request against `buckets`, given the stored counters (missing ones count as zero,
- * and a counter from an earlier window is stale). Writers must apply `counters` with a guarded
- * upsert (`count < limit` within the same window) so concurrent requests cannot overshoot.
+ * and a counter from an earlier window is stale). This is the rule the database applies
+ * atomically (`takeRateLimits` in `packages/db`, tested against this function): a request that
+ * any bucket refuses changes no counter, so refused requests never use up a limit.
  */
 export function rateLimitDecision(
   buckets: readonly RateLimitBucket[],

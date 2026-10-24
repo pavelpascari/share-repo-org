@@ -78,6 +78,7 @@ export const CHECKOUT_ERRORS: Record<Exclude<CheckoutError, "not_found">, string
   price_invalid: "Choose one of the listed prices.",
   no_default_payment_link:
     "Checkout isn't set up yet: the creator needs to set a default payment link in Paddle. Please let them know.",
+  rate_limited: "Too many checkout attempts; try again later.",
 };
 
 export const CHECKOUT_FAILED = "Paddle couldn't start checkout right now. Try again in a moment.";

@@ -996,7 +996,11 @@ export function paddleEntitlementSource(
           client.listCustomerSubscriptions(externalCustomerId),
         );
         return {
-          claimReferences: list.subscriptions.map((sub) => sub.claimReference),
+          subscriptions: list.subscriptions.map((sub) => ({
+            externalSubscriptionId: sub.id,
+            externalCustomerId: sub.customerId,
+            claimReference: sub.claimReference,
+          })),
           truncated: list.truncated,
         };
       },

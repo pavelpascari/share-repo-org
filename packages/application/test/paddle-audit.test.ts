@@ -30,6 +30,7 @@ import {
 import { failingBatches, githubUser, memberOf, shop } from "./support/commerce.ts";
 import { serviceContext, signedUpUser } from "./support/context.ts";
 import {
+  buyerIp,
   commerceDeps,
   connectionOf,
   deliverSubscription,
@@ -141,7 +142,7 @@ describe("audit/every-state-change-has-audit-event (Paddle and claims)", () => {
     const s = await paddleShop();
     const user = await signedUpUser();
     const started = await audited((ctx) =>
-      startCheckout(ctx, { offerId: s.offer.id, priceId: s.price.id, user }, s.deps),
+      startCheckout(ctx, { offerId: s.offer.id, priceId: s.price.id, user, ip: buyerIp() }, s.deps),
     );
     expect(started.changedTables).toEqual(["checkout_claims"]);
 
@@ -213,7 +214,7 @@ describe("audit/every-state-change-has-audit-event (Paddle and claims)", () => {
       () =>
         startCheckout(
           failingBatches(),
-          { offerId: s.offer.id, priceId: s.price.id, user: member },
+          { offerId: s.offer.id, priceId: s.price.id, user: member, ip: buyerIp() },
           s.deps,
         ),
     ]) {

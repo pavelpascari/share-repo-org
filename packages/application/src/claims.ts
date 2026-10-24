@@ -5,11 +5,13 @@ import {
   type AuditEventInput,
   auditEvent,
   CHECKOUT_CLAIM_LIFETIME_MS,
+  CHECKOUT_REUSE_WINDOW_MS,
   CLAIM_TOKEN_LIFETIME_MS,
   ClaimRejectionReason,
   type CommercialSource,
   CustomerLinkDecision,
   checkoutClaimUsable,
+  checkoutRateLimitBuckets,
   claimRateLimitBuckets,
   claimTokenUsable,
   customerKnownBeforeClaim,
@@ -20,8 +22,6 @@ import {
   parseGitHubLogin,
   parseWorkspaceSlug,
   purchasesOnlyThroughClaim,
-  rateLimitDecision,
-  rateLimitWindowStart,
 } from "@sharerepo/domain";
 import {
   CLAIM_REFERENCE_KEY,
@@ -162,13 +162,17 @@ async function claimantSubjectId(
  * carry that claim's MAC (workspace, claim, user, offer), and the claim must be usable for this
  * customer. Then an unlinked customer is linked to the buyer's subject, consuming the claim in the
  * same batch, and audited `claim.completed`; anything else is audited `claim.rejected`. A customer
- * linked to another subject is never moved (threat T8): `claim.conflict`.
+ * linked to another subject is never moved (threat T8): `claim.conflict`. A customer already
+ * linked, to the buyer or to someone else, still uses up a claim it presents first (audited
+ * `claim.completed` or `claim.conflict`), so the reference cannot link another customer later.
  *
  * The link follows the purchase, not the customer: a buyer can enter anyone's email at checkout,
  * and Paddle then puts the subscription on that person's customer. So a customer is linked only
  * when every subscription the source holds for it carries this same reference; otherwise
- * `customer_has_other_purchases`. A customer ShareRepo recorded before the claim fails that rule
- * and is refused without asking the source. When the source cannot be read, nothing is linked or
+ * `customer_has_other_purchases`. The source's list is checked, not trusted: it must hold only
+ * this customer's subscriptions, including the one that carried the reference and every one
+ * ShareRepo stores for the customer. A customer ShareRepo recorded before the claim fails that
+ * rule and is refused without asking the source. When the source cannot be read, nothing is linked or
  * rejected and the error propagates, so the refresh is retried; the reference stays on the
  * subscription and an unlinked customer is evaluated again by every refresh.
  *
@@ -225,21 +229,48 @@ export async function linkCheckoutReference(
     proposedSubjectId: claimant.subjectId,
     path: LinkPath.Checkout,
   });
-  if (decision === CustomerLinkDecision.Noop) return;
-  if (decision === CustomerLinkDecision.Conflict) {
-    return record(
-      workspaceEvent(ctx, "claim.conflict", {
+  // A customer that is already linked uses up the claim it first presents, as a link would: a
+  // leaked copy of the reference must never link another customer to the claimant later.
+  const useUp = (event: AuditEvent) =>
+    repo.consumeCheckoutClaim(ctx.db, { workspaceId, id: claim.id, customerId: customer.id, now }, [
+      event,
+    ]);
+  if (decision === CustomerLinkDecision.Noop) {
+    if (usable.renewal) return;
+    await useUp(
+      workspaceEvent(ctx, "claim.completed", {
         workspaceId,
         actor: SYSTEM,
         targetId: customer.id,
         details: {
           path: LinkPath.Checkout,
           claimId: claim.id,
-          subjectId: customer.subjectId as string,
           userId: claim.userId,
+          subjectId: claimant.subjectId,
         },
       }),
     );
+    return;
+  }
+  if (decision === CustomerLinkDecision.Conflict) {
+    const conflict = workspaceEvent(ctx, "claim.conflict", {
+      workspaceId,
+      actor: SYSTEM,
+      targetId: customer.id,
+      details: {
+        path: LinkPath.Checkout,
+        claimId: claim.id,
+        subjectId: customer.subjectId as string,
+        userId: claim.userId,
+      },
+    });
+    // Recorded with the claim's first use, or on its own when this customer used it before (a
+    // renewal, or a concurrent refresh of the same customer).
+    if (!usable.renewal) {
+      const consumed = await useUp(conflict);
+      if (consumed.ok && consumed.first) return;
+    }
+    return record(conflict);
   }
   // Only a customer whose every purchase came through this checkout: first what ShareRepo
   // already knew, then every subscription the source holds for it.
@@ -252,11 +283,18 @@ export async function linkCheckoutReference(
   ) {
     return otherPurchases();
   }
-  const purchases = await source.customerPurchases({
-    workspaceId,
+  const [purchases, storedSubscriptionIds] = await Promise.all([
+    source.customerPurchases({ workspaceId, externalCustomerId: customer.externalCustomerId }),
+    repo.listCustomerSubscriptionIds(ctx.db, { workspaceId, customerId: customer.id }),
+  ]);
+  const qualifies = purchasesOnlyThroughClaim({
+    reference,
     externalCustomerId: customer.externalCustomerId,
+    externalSubscriptionId: reported.externalSubscriptionId,
+    storedSubscriptionIds,
+    purchases,
   });
-  if (!purchasesOnlyThroughClaim(reference, purchases)) return otherPurchases();
+  if (!qualifies) return otherPurchases();
   const subjectId = await claimantSubjectId(ctx, workspaceId, claimant, SYSTEM);
   // Guarded on the customer still being unlinked and the claim still unconsumed; a concurrent
   // link wins, and the next refresh looks again while the customer stays unlinked.
@@ -384,19 +422,35 @@ export type StartCheckoutResult =
       /**
        * `not_found`, `unavailable`: as for the page; `price_invalid`: not a price of this offer
        * that can be bought now; `no_default_payment_link`: the seller has not set the default
-       * payment link Paddle needs (the page names the setup step).
+       * payment link Paddle needs (the page names the setup step); `rate_limited`: the buyer, or
+       * their IP address, started too many new checkouts this hour.
        */
-      readonly reason: "not_found" | "unavailable" | "price_invalid" | "no_default_payment_link";
+      readonly reason:
+        | "not_found"
+        | "unavailable"
+        | "price_invalid"
+        | "no_default_payment_link"
+        | "rate_limited";
     };
 
 /**
  * Starts checkout for a signed-in buyer (decision 0012, path 1): a Paddle transaction for the
  * price, carrying the signed reference of a new checkout claim bound to the workspace, the buyer
  * and the offer (7 days), audited `checkout.started`. Nothing is stored when Paddle refuses.
+ *
+ * Each new checkout costs a Paddle transaction and stored rows, so it is bounded: a buyer who
+ * starts the same offer and price again within an hour, while that checkout is unused, is sent
+ * back to it (nothing is written); a new one counts against per-user and per-IP limits in D1,
+ * and is `rate_limited` beyond them without calling Paddle.
  */
 export async function startCheckout(
   context: ServiceContext,
-  input: { readonly offerId: string; readonly priceId: string; readonly user: UserActor },
+  input: {
+    readonly offerId: string;
+    readonly priceId: string;
+    readonly user: UserActor;
+    readonly ip: string;
+  },
   deps: CommerceDeps,
 ): Promise<StartCheckoutResult> {
   const ctx = atOneInstant(context);
@@ -409,6 +463,26 @@ export async function startCheckout(
   }
   const workspaceId = offer.workspaceId;
   const { userId } = input.user;
+  const now = ctx.clock.now();
+  // Reusing a checkout whose payment completed moments ago (its webhook not yet processed)
+  // sends the buyer to Paddle's page for a paid transaction; the window is seconds long.
+  const open = await repo.findReusableCheckoutClaim(ctx.db, {
+    workspaceId,
+    userId,
+    offerId: offer.id,
+    priceId: input.priceId,
+    createdAfter: now - CHECKOUT_REUSE_WINDOW_MS,
+    now,
+  });
+  if (open !== null) return { ok: true, checkoutUrl: open.checkoutUrl, checkoutClaimId: open.id };
+  const buckets = checkoutRateLimitBuckets({
+    userId,
+    ipHash: await hashIp(deps.claimSigningKey, input.ip),
+  });
+  if (!(await repo.takeRateLimits(ctx.db, buckets, now))) {
+    return { ok: false, reason: "rate_limited" };
+  }
+
   const checkoutClaimId = ctx.ids.next();
   const reference = await signClaimReference({
     key: deps.claimSigningKey,
@@ -438,7 +512,6 @@ export async function startCheckout(
     throw error;
   }
   if (checkoutUrl === null) return { ok: false, reason: "no_default_payment_link" };
-  const now = ctx.clock.now();
   await repo.createCheckoutClaim(
     ctx.db,
     {
@@ -459,11 +532,13 @@ export async function startCheckout(
       }),
     ],
   );
-  // The transaction ID is bookkeeping on the claim `checkout.started` just recorded.
+  // The transaction and its checkout URL are bookkeeping on the claim `checkout.started` just
+  // recorded.
   await repo.setCheckoutClaimTransaction(ctx.db, {
     workspaceId,
     id: checkoutClaimId,
     transactionId,
+    checkoutUrl,
   });
   return { ok: true, checkoutUrl, checkoutClaimId };
 }
@@ -486,8 +561,9 @@ export type RequestClaimResult =
 
 /**
  * A signed-in buyer asks for claim links for the email they paid with (`/c/:slug/claim`). Counts
- * the request against the per-email, per-user and per-IP limits (decision 0012), each an atomic
- * counter in D1; a request that takes any counter past its limit queues nothing. Otherwise the
+ * the request against the per-email (in this workspace), per-user and per-IP limits (decision
+ * 0012), counters in D1 taken all at once or not at all; a request that any limit refuses queues
+ * nothing and counts against none. Otherwise the
  * email is stored only as an envelope on a claim request, with a `send_claim_email` job and
  * `claim.requested`. Matching happens in the job, off the request path. NotFound for an unknown
  * or suspended workspace.
@@ -511,26 +587,19 @@ export async function requestClaim(
 
   const now = ctx.clock.now();
   const key = deps.claimSigningKey;
+  const workspaceId = workspace.id;
   const emailHash = await hashClaimEmail(key, email.data);
   const buckets = claimRateLimitBuckets({
+    workspaceId,
     emailHash,
     userId: input.user.userId,
     ipHash: await hashIp(key, input.ip),
   });
-  // The database counts atomically; the domain decides from the count before this request.
-  const counts = await repo.hitRateLimits(ctx.db, buckets, now);
-  const decision = rateLimitDecision(
-    buckets,
-    buckets.map(({ bucket, windowMs }, i) => ({
-      bucket,
-      windowStart: rateLimitWindowStart(windowMs, now),
-      count: (counts[i] as number) - 1,
-    })),
-    now,
-  );
-  if (!decision.allowed) return { status: "requested", outboxId: null };
+  // Counted in every bucket or in none, atomically: a refused request uses up no limit.
+  if (!(await repo.takeRateLimits(ctx.db, buckets, now))) {
+    return { status: "requested", outboxId: null };
+  }
 
-  const workspaceId = workspace.id;
   const claimRequestId = ctx.ids.next();
   const emailEnvelope = await sealSecret({
     keyring: deps.credentialKeys,

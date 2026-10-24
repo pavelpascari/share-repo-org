@@ -83,6 +83,7 @@ Each scenario has a stable name used as the test title so coverage of the matrix
 | `claim/get-never-mutates` | Claim threat model T3 | Entry point | 5 |
 | `claim/request-does-not-reveal-purchases` | Claim threat model T4 | Service | 5 |
 | `claim/request-rate-limited` | Claim threat model T5 | Service | 5 |
+| `claim/checkout-start-rate-limited` | Claim threat model T5 | Service | 5 |
 | `claim/checkout-reference-tamper-rejected` | Claim threat model T11 | Service | 5 |
 | `claim/checkout-cannot-adopt-existing-customer` | Claim threat model T13 | Service | 5 |
 | `connection/revoked-key-keeps-last-facts` | Decision 0011: connection loss | Service | 5 |

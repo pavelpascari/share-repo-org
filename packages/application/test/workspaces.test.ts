@@ -196,6 +196,10 @@ describe("renameWorkspace", () => {
     await expect(
       renameWorkspace(serviceContext(), owner, workspace.slug, { name: "" }),
     ).resolves.toEqual({ ok: false, errors: [{ field: "name", code: "name_empty" }] });
+    // The name reaches claim email subjects: no line breaks or other control characters.
+    await expect(
+      renameWorkspace(serviceContext(), owner, workspace.slug, { name: "Acme\r\nBcc: x" }),
+    ).resolves.toEqual({ ok: false, errors: [{ field: "name", code: "name_invalid_characters" }] });
   });
 
   it("forbids a member from renaming", async () => {

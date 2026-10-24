@@ -2,6 +2,7 @@ import { getCheckoutView, startCheckout } from "@sharerepo/application";
 import { Label, Radio, RadioGroup } from "react-aria-components";
 import { data, Form, redirect, useNavigation } from "react-router";
 import { z } from "zod";
+import { CLIENT_IP_HEADER } from "../auth/auth.ts";
 import { servicesFor } from "../auth/server.ts";
 import { getSignedInUser } from "../auth/session.server.ts";
 import { attemptPaddle, commerceFor } from "../commerce.server.ts";
@@ -57,7 +58,12 @@ export async function action({ request, params, context }: Route.ActionArgs) {
     () =>
       startCheckout(
         servicesFor(context),
-        { offerId: params.offerId, priceId: parsed.data.priceId, user },
+        {
+          offerId: params.offerId,
+          priceId: parsed.data.priceId,
+          user,
+          ip: request.headers.get(CLIENT_IP_HEADER) ?? "unknown",
+        },
         commerce,
       ),
     CHECKOUT_FAILED,

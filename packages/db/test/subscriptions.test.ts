@@ -5,6 +5,7 @@ import {
   getCustomer,
   getSubscription,
   getSubscriptionByExternal,
+  listCustomerSubscriptionIds,
   listEntitlementsForWorkspace,
   listLiveEntitlementsForSubscription,
   listLiveEntitlementsForWorkspace,
@@ -49,6 +50,23 @@ const entitlementState = (id: string) =>
   )
     .bind(id)
     .first();
+
+describe("listCustomerSubscriptionIds", () => {
+  it("lists one customer's subscriptions by external ID, in its workspace only", async () => {
+    const ws = await subscribedWorkspace();
+    const { customerId, externalSubscriptionId } = ws.subscription;
+    await expect(
+      listCustomerSubscriptionIds(db, { workspaceId: ws.workspaceId, customerId }),
+    ).resolves.toEqual([externalSubscriptionId]);
+    await expect(
+      listCustomerSubscriptionIds(db, { workspaceId: ws.workspaceId, customerId: "nobody" }),
+    ).resolves.toEqual([]);
+    const elsewhere = await subscribedWorkspace();
+    await expect(
+      listCustomerSubscriptionIds(db, { workspaceId: elsewhere.workspaceId, customerId }),
+    ).resolves.toEqual([]);
+  });
+});
 
 describe("listSubscriptionSourceVersions", () => {
   it("maps the workspace's subscriptions of one source to their source updated_at", async () => {

@@ -33,14 +33,31 @@ export function parseWorkspaceSlug(input: string): ParseResult<WorkspaceSlug, Wo
   return { ok: true, value: slug as WorkspaceSlug };
 }
 
-export type WorkspaceName = Brand<string, "WorkspaceName">;
-export type WorkspaceNameError = "name_empty" | "name_too_long";
+/**
+ * Whether `value` holds an ASCII control character (U+0000–U+001F or U+007F), such as CR or LF.
+ * Text that can reach a mail header, such as a subject, must not.
+ */
+export function hasAsciiControlCharacter(value: string): boolean {
+  return [...value].some((character) => {
+    const code = character.charCodeAt(0);
+    return code < 0x20 || code === 0x7f;
+  });
+}
 
-/** Length is counted in Unicode code points, which is what SQLite's `length()` counts. */
+export type WorkspaceName = Brand<string, "WorkspaceName">;
+export type WorkspaceNameError = "name_empty" | "name_too_long" | "name_invalid_characters";
+
+/**
+ * Length is counted in Unicode code points, which is what SQLite's `length()` counts. A name
+ * reaches claim email subjects, so it may not contain ASCII control characters (CR, LF, tab…).
+ * That rule is checked on create and rename only: no CHECK constraint mirrors it, since adding
+ * one would rebuild `workspaces`, and names stored before it may still hold such characters.
+ */
 export function parseWorkspaceName(input: string): ParseResult<WorkspaceName, WorkspaceNameError> {
   const name = input.trim();
   if (name === "") return { ok: false, error: "name_empty" };
   if ([...name].length > WORKSPACE_NAME_MAX_LENGTH) return { ok: false, error: "name_too_long" };
+  if (hasAsciiControlCharacter(name)) return { ok: false, error: "name_invalid_characters" };
   return { ok: true, value: name as WorkspaceName };
 }
 

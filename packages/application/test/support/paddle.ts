@@ -251,6 +251,10 @@ export function directSubscription(s: PaddleShop, customerId: string) {
   return s.paddle.createSubscription({ customerId, priceIds: [s.price.id] });
 }
 
+/** A client IP of a buyer's own, so tests never share an IP rate-limit bucket. */
+export const buyerIp = () =>
+  `198.18.${Math.floor(Math.random() * 256)}.${Math.floor(Math.random() * 256)}`;
+
 /** A signed-up buyer, with the GitHub identity sign-in gives them. */
 export const buyer = () => signedUpUser();
 
@@ -331,7 +335,7 @@ export function beforeFirstBatch(interfere: () => Promise<unknown>): ServiceCont
 export async function purchase(s: PaddleShop, user: UserActor) {
   const started = await startCheckout(
     serviceContext(),
-    { offerId: s.offer.id, priceId: s.price.id, user },
+    { offerId: s.offer.id, priceId: s.price.id, user, ip: buyerIp() },
     s.deps,
   );
   if (!started.ok) throw new Error(started.reason);

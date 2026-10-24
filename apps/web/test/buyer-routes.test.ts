@@ -183,6 +183,23 @@ describe("checkout page (/buy/:offerId)", () => {
       error: PADDLE_NOT_CONFIGURED,
     });
   });
+
+  it("says when the buyer started too many checkouts", async () => {
+    const s = await paddleShop();
+    const buyer = await signedIn();
+    const { context } = paddleHarness(s.accounts);
+    const params = { offerId: s.offer.id };
+    const path = `/buy/${s.offer.id}`;
+    const submit = () =>
+      buy.action(call(buyerPost(path, buyer, { priceId: s.price.id }), context, params));
+    // Without a default payment link nothing is stored to reuse, so each attempt is new.
+    s.paddle.setDefaultPaymentLink(null);
+    for (let i = 0; i < 10; i += 1) {
+      expect(await submit()).toEqual({ error: CHECKOUT_ERRORS.no_default_payment_link });
+    }
+    expect(await submit()).toEqual({ error: CHECKOUT_ERRORS.rate_limited });
+    expect(CHECKOUT_ERRORS.rate_limited).toBe("Too many checkout attempts; try again later.");
+  });
 });
 
 describe("claim request page (/c/:slug/claim)", () => {

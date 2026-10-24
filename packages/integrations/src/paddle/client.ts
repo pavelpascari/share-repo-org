@@ -1,7 +1,7 @@
 import type { Clock } from "@sharerepo/domain";
 import type { z } from "zod";
 import { PaddleApiError } from "./errors.ts";
-import type { PaddlePort } from "./port.ts";
+import { PADDLE_SUBSCRIPTION_STATUSES, type PaddlePort } from "./port.ts";
 import {
   apiRootSchema,
   createdNotificationSettingSchema,
@@ -166,8 +166,11 @@ export function createPaddleClient(options: PaddleClientOptions): PaddlePort {
     },
 
     async listCustomerSubscriptions(customerId) {
+      // Every status, explicitly: the purchase rule (decision 0012) must see canceled and paused
+      // subscriptions too, whatever Paddle's default scope for the list is or becomes.
       const query = new URLSearchParams({
         customer_id: paddleId("ctm", customerId),
+        status: [...PADDLE_SUBSCRIPTION_STATUSES].sort().join(","),
         per_page: String(PADDLE_PAGE_SIZE),
       });
       const { items, truncated } = await paginate(

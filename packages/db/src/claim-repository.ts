@@ -1,11 +1,16 @@
-import type { AuditEvent, Instant } from "@sharerepo/domain";
-import { and, eq, isNull, type SQL, sql } from "drizzle-orm";
+import {
+  type AuditEvent,
+  type Instant,
+  type RateLimitBucket,
+  rateLimitWindowStart,
+} from "@sharerepo/domain";
+import { and, desc, eq, gt, isNotNull, isNull, type SQL, sql } from "drizzle-orm";
 import type { SQLiteTable } from "drizzle-orm/sqlite-core";
 import { type AuditEvents, auditInserts, conditionalAuditInserts } from "./audit-repository.ts";
 import { insertWhere, runBatch, type Statement } from "./batch.ts";
 import type { Db } from "./client.ts";
 import { dedupedOutboxInsert, type NewOutboxRow } from "./outbox-repository.ts";
-import { checkoutClaims, claimRateLimits, claimRequests, claimTokens } from "./schema/index.ts";
+import { checkoutClaims, claimRequests, claimTokens } from "./schema/index.ts";
 
 // Purchase claims (decision 0012). Every single-use write is one guarded statement, and its
 // audit events are inserted in the same batch under the same guard, ahead of the write (once the
@@ -27,12 +32,16 @@ function guardedAudit(db: Db, audit: readonly AuditEvent[], condition: SQL): Sta
 /** Records a checkout claim (unconsumed, no transaction yet) with its audit events. */
 export async function createCheckoutClaim(
   db: Db,
-  claim: Omit<CheckoutClaim, "transactionId" | "consumedByCustomerId" | "consumedAt">,
+  claim: Omit<
+    CheckoutClaim,
+    "transactionId" | "checkoutUrl" | "consumedByCustomerId" | "consumedAt"
+  >,
   audit: AuditEvents,
 ): Promise<CheckoutClaim> {
   const row: CheckoutClaim = {
     ...claim,
     transactionId: null,
+    checkoutUrl: null,
     consumedByCustomerId: null,
     consumedAt: null,
   };
@@ -53,13 +62,13 @@ export async function getCheckoutClaim(
 }
 
 /**
- * Records the Paddle transaction a checkout claim started, once (guarded on none being set).
- * `audit` (for example `checkout.started`, once the transaction exists) is written under the same
- * guard; it may be empty.
+ * Records the Paddle transaction a checkout claim started, and its checkout URL, once (guarded on
+ * no transaction being set). `audit` (for example `checkout.started`, once the transaction
+ * exists) is written under the same guard; it may be empty.
  */
 export async function setCheckoutClaimTransaction(
   db: Db,
-  input: { workspaceId: string; id: string; transactionId: string },
+  input: { workspaceId: string; id: string; transactionId: string; checkoutUrl?: string },
   audit: readonly AuditEvent[] = [],
 ): Promise<{ ok: true } | { ok: false; reason: "stale" }> {
   const guard = and(
@@ -69,9 +78,52 @@ export async function setCheckoutClaimTransaction(
   );
   const changes = await runBatch(db, [
     ...guardedAudit(db, audit, exists(checkoutClaims, guard)),
-    db.update(checkoutClaims).set({ transactionId: input.transactionId }).where(guard),
+    db
+      .update(checkoutClaims)
+      .set({ transactionId: input.transactionId, checkoutUrl: input.checkoutUrl ?? null })
+      .where(guard),
   ]);
   return changes.at(-1) === 1 ? { ok: true } : { ok: false, reason: "stale" };
+}
+
+/**
+ * The newest checkout the user started for this offer and price, in its workspace, after
+ * `createdAfter`, that can still be sent to: it has a transaction and checkout URL, is unconsumed, and
+ * is unexpired at `now`. Null when there is none.
+ */
+export async function findReusableCheckoutClaim(
+  db: Db,
+  key: {
+    workspaceId: string;
+    userId: string;
+    offerId: string;
+    priceId: string;
+    createdAfter: Instant;
+    now: Instant;
+  },
+): Promise<(CheckoutClaim & { transactionId: string; checkoutUrl: string }) | null> {
+  const rows = await db
+    .select()
+    .from(checkoutClaims)
+    .where(
+      and(
+        eq(checkoutClaims.workspaceId, key.workspaceId),
+        eq(checkoutClaims.userId, key.userId),
+        eq(checkoutClaims.offerId, key.offerId),
+        eq(checkoutClaims.priceId, key.priceId),
+        gt(checkoutClaims.createdAt, key.createdAfter),
+        gt(checkoutClaims.expiresAt, key.now),
+        isNull(checkoutClaims.consumedByCustomerId),
+        isNotNull(checkoutClaims.transactionId),
+        isNotNull(checkoutClaims.checkoutUrl),
+      ),
+    )
+    .orderBy(desc(checkoutClaims.createdAt), desc(checkoutClaims.id))
+    .limit(1);
+  return (
+    (rows[0] as (CheckoutClaim & { transactionId: string; checkoutUrl: string }) | undefined) ??
+    null
+  );
 }
 
 /** "This checkout claim is unconsumed and unexpired at `now`", in its workspace. */
@@ -269,41 +321,44 @@ export async function consumeClaimToken(
 
 // --- Rate limits ---
 
-/** A fixed-window counter to hit: `email:<hash>…`, `user:<id>…` or `ip:<hash>…`. */
-export interface RateLimitBucket {
-  bucket: string;
-  windowMs: number;
-}
-
 /**
- * Counts one hit on each bucket and returns each bucket's count in its current window, in input
- * order. Each bucket is one atomic UPSERT: a bucket whose window has passed restarts at 1. Global
- * (not workspace-scoped), so limits hold across workspaces. Counting is bookkeeping: no audit.
+ * Takes one request from every bucket, or from none: true when the request is allowed, and then
+ * counted once in each bucket's current window; false when any bucket is at its limit, and then
+ * no counter changes, so refused requests never use up a limit (the domain's
+ * `rateLimitDecision`, applied atomically). Windows are aligned to the epoch; a counter stored
+ * for another window restarts.
+ *
+ * One statement does it: an UPSERT whose rows are selected only if no bucket is exhausted. SQLite
+ * evaluates a SELECT that reads the target table in full before inserting, so the check sees the
+ * counters as they were before this request. Counting is bookkeeping: no audit.
  */
-export async function hitRateLimits(
+export async function takeRateLimits(
   db: Db,
   buckets: readonly RateLimitBucket[],
   now: Instant,
-): Promise<number[]> {
-  if (buckets.length === 0) return [];
-  const statements = buckets.map(({ bucket, windowMs }) => {
-    const lapsed = sql`${claimRateLimits.windowStart} + ${windowMs} <= ${now}`;
-    return db
-      .insert(claimRateLimits)
-      .values({ bucket, windowStart: now, count: 1 })
-      .onConflictDoUpdate({
-        target: claimRateLimits.bucket,
-        set: {
-          windowStart: sql`CASE WHEN ${lapsed} THEN ${now} ELSE ${claimRateLimits.windowStart} END`,
-          count: sql`CASE WHEN ${lapsed} THEN 1 ELSE ${claimRateLimits.count} + 1 END`,
-        },
-      })
-      .returning({ count: claimRateLimits.count });
-  });
-  const [first, ...rest] = statements;
-  // `map` loses the non-empty tuple type that `batch` requires; `buckets` is non-empty.
-  const results = await db.batch([first as NonNullable<typeof first>, ...rest]);
-  return results.map((rows) => (rows[0] as { count: number }).count);
+): Promise<boolean> {
+  if (buckets.length === 0) return true;
+  const requested = sql.join(
+    buckets.map(
+      ({ bucket, windowMs, limit }) =>
+        sql`(${bucket}, ${rateLimitWindowStart(windowMs, now)}, ${limit})`,
+    ),
+    sql`, `,
+  );
+  const rows = await db.all<{ bucket: string }>(sql`
+    WITH requested (bucket, window_start, request_limit) AS (VALUES ${requested})
+    INSERT INTO claim_rate_limits (bucket, window_start, count)
+    SELECT bucket, window_start, 1 FROM requested
+    WHERE NOT EXISTS (
+      SELECT 1 FROM requested AS r JOIN claim_rate_limits AS c ON c.bucket = r.bucket
+      WHERE c.window_start = r.window_start AND c.count >= r.request_limit
+    )
+    ON CONFLICT (bucket) DO UPDATE SET
+      count = CASE WHEN claim_rate_limits.window_start = excluded.window_start
+        THEN claim_rate_limits.count + 1 ELSE 1 END,
+      window_start = excluded.window_start
+    RETURNING bucket`);
+  return rows.length === buckets.length;
 }
 
 /** A single-use claim a link consumes in the same batch (see `applyCustomerLink`). */

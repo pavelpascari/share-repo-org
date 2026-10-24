@@ -1,3 +1,4 @@
+import { hasAsciiControlCharacter } from "@sharerepo/domain";
 import { z } from "zod";
 import type { MailTransportConfig } from "./config.ts";
 
@@ -59,7 +60,12 @@ const message = z.object({
     .min(3)
     .max(254)
     .regex(/^[^\s@]+@[^\s@]+$/),
-  subject: z.string().min(1).max(998),
+  // A CR or LF in a subject could inject a header: no ASCII control characters at all.
+  subject: z
+    .string()
+    .min(1)
+    .max(998)
+    .refine((subject) => !hasAsciiControlCharacter(subject)),
   text: z.string().min(1),
   html: z.string().min(1),
 });

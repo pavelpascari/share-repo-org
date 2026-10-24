@@ -46,8 +46,9 @@ export interface CheckoutClaimSupport {
   /** `CLAIM_SIGNING_KEY`. */
   readonly signingKey: Uint8Array;
   /**
-   * The claim reference each of the customer's subscriptions carries, any status. Fails (and is
-   * worth retrying) when the source cannot be read now.
+   * Every subscription the source lists for the customer, any status, each with the customer the
+   * source says it belongs to and the claim reference it carries. Fails (and is worth retrying)
+   * when the source cannot be read now.
    */
   customerPurchases(ref: {
     readonly workspaceId: string;

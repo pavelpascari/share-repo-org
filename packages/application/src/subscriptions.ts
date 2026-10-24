@@ -235,6 +235,8 @@ const planSize = (plan: EntitlementPlan) =>
 export interface ReportedClaim {
   readonly customer: repo.Customer;
   readonly reference: string;
+  /** The subscription that carried the reference, by its ID in the source. */
+  readonly externalSubscriptionId: string;
   /** The refresh applied a newer snapshot (rather than re-planning from stored facts). */
   readonly newer: boolean;
 }
@@ -335,6 +337,7 @@ async function attemptRefresh(
       ? {
           customer: customer as repo.Customer,
           reference: observed.claimReference,
+          externalSubscriptionId: ref.externalSubscriptionId,
           newer: snapshot !== null,
         }
       : null;

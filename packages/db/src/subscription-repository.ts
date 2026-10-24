@@ -133,6 +133,24 @@ export async function getSubscription(
   return withItems(db, rows[0]);
 }
 
+/** The external IDs of every subscription the workspace stores for one customer. */
+export async function listCustomerSubscriptionIds(
+  db: Db,
+  key: { workspaceId: string; customerId: string },
+): Promise<string[]> {
+  const rows = await db
+    .select({ externalSubscriptionId: subscriptions.externalSubscriptionId })
+    .from(subscriptions)
+    .where(
+      and(
+        eq(subscriptions.workspaceId, key.workspaceId),
+        eq(subscriptions.customerId, key.customerId),
+      ),
+    )
+    .orderBy(asc(subscriptions.externalSubscriptionId));
+  return rows.map((row) => row.externalSubscriptionId);
+}
+
 /**
  * The source's `updated_at` of every subscription the workspace stores from `source`, by external
  * ID: what a repair sweep compares the source's list with, in one query.

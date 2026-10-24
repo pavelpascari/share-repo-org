@@ -18,13 +18,13 @@ export {
   createClaimRequest,
   createClaimTokens,
   findClaimTokenByHash,
+  findReusableCheckoutClaim,
   finishClaimRequest,
   getCheckoutClaim,
   getClaimRequest,
-  hitRateLimits,
   type NewClaimToken,
-  type RateLimitBucket,
   setCheckoutClaimTransaction,
+  takeRateLimits,
 } from "./claim-repository.ts";
 export { createDb, type Db, ping } from "./client.ts";
 export {
@@ -201,6 +201,7 @@ export {
   type EntitlementPlanWrite,
   getSubscription,
   getSubscriptionByExternal,
+  listCustomerSubscriptionIds,
   listEntitlementsForWorkspace,
   listLiveEntitlementsForSubscription,
   listLiveEntitlementsForWorkspace,

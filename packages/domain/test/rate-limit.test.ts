@@ -1,7 +1,9 @@
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 import {
+  CHECKOUT_RATE_LIMITS,
   CLAIM_RATE_LIMITS,
+  checkoutRateLimitBuckets,
   claimRateLimitBuckets,
   type RateLimitBucket,
   type RateLimitCounter,
@@ -15,7 +17,12 @@ const DAY = 24 * HOUR;
 const DAY_START = 1_699_920_000_000;
 const NOW = DAY_START + 5 * HOUR + 30 * 60_000;
 
-const KEYS = { emailHash: "e".repeat(64), userId: "u1", ipHash: "i".repeat(64) };
+const KEYS = {
+  workspaceId: "w1",
+  emailHash: "e".repeat(64),
+  userId: "u1",
+  ipHash: "i".repeat(64),
+};
 const BUCKETS = claimRateLimitBuckets(KEYS);
 const [EMAIL_H, EMAIL_D, USER_H, IP_H] = BUCKETS.map((b) => b.bucket) as [
   string,
@@ -34,13 +41,44 @@ describe("claim rate limits (decision 0012, threat T5)", () => {
     ]);
   });
 
-  it("name one bucket per key and window", () => {
+  it("name one bucket per key and window, the email's within its workspace", () => {
     expect(BUCKETS).toEqual([
-      { bucket: `email:${KEYS.emailHash}:h`, windowMs: HOUR, limit: 3 },
-      { bucket: `email:${KEYS.emailHash}:d`, windowMs: DAY, limit: 10 },
+      { bucket: `email:w1:${KEYS.emailHash}:h`, windowMs: HOUR, limit: 3 },
+      { bucket: `email:w1:${KEYS.emailHash}:d`, windowMs: DAY, limit: 10 },
       { bucket: "user:u1:h", windowMs: HOUR, limit: 5 },
       { bucket: `ip:${KEYS.ipHash}:h`, windowMs: HOUR, limit: 20 },
     ]);
+  });
+
+  // Anyone can type anyone's email: requests in one workspace must not use up its limits in
+  // another (review F1). The user and IP limits stay global.
+  it("scope the email's buckets to the workspace, and only those", () => {
+    const other = claimRateLimitBuckets({ ...KEYS, workspaceId: "w2" }).map((b) => b.bucket);
+    expect(other).toEqual([
+      `email:w2:${KEYS.emailHash}:h`,
+      `email:w2:${KEYS.emailHash}:d`,
+      USER_H,
+      IP_H,
+    ]);
+  });
+});
+
+describe("checkout rate limits (review F2)", () => {
+  it("are 10 an hour per user and 30 an hour per IP", () => {
+    expect(CHECKOUT_RATE_LIMITS).toEqual([
+      { key: "user", window: "h", windowMs: HOUR, limit: 10 },
+      { key: "ip", window: "h", windowMs: HOUR, limit: 30 },
+    ]);
+  });
+
+  it("name their own buckets, apart from the claim request's", () => {
+    const buckets = checkoutRateLimitBuckets({ userId: "u1", ipHash: KEYS.ipHash });
+    expect(buckets).toEqual([
+      { bucket: "checkout:user:u1:h", windowMs: HOUR, limit: 10 },
+      { bucket: `checkout:ip:${KEYS.ipHash}:h`, windowMs: HOUR, limit: 30 },
+    ]);
+    const claimBuckets = new Set(BUCKETS.map((b) => b.bucket));
+    expect(buckets.some((b) => claimBuckets.has(b.bucket))).toBe(false);
   });
 });
 

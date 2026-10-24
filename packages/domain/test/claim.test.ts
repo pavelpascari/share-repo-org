@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   CHECKOUT_CLAIM_LIFETIME_MS,
   CHECKOUT_REJECTION_REASONS,
+  CHECKOUT_REUSE_WINDOW_MS,
   CLAIM_TOKEN_LIFETIME_MS,
   CUSTOMER_LINK_DECISIONS,
   CustomerLinkDecision,
@@ -25,6 +26,7 @@ describe("claim constants (decision 0012)", () => {
       7 * 24 * HOUR,
       24 * HOUR,
     ]));
+  it("reuses an open checkout for an hour", () => expect(CHECKOUT_REUSE_WINDOW_MS).toBe(HOUR));
   it("customer link decisions", () =>
     expect(CUSTOMER_LINK_DECISIONS).toEqual(["link", "relink", "noop", "conflict"]));
   it("customer link decisions by name", () =>
@@ -88,30 +90,63 @@ describe("decideCustomerLink", () => {
 });
 
 describe("purchasesOnlyThroughClaim", () => {
-  const only = (claimReferences: (string | null)[], truncated = false) =>
-    purchasesOnlyThroughClaim("v1.a.mac", { claimReferences, truncated });
+  const REF = "v1.a.mac";
+  const CTM = "ctm_a";
+  const listed = (
+    externalSubscriptionId: string,
+    claimReference: string | null = REF,
+    externalCustomerId = CTM,
+  ) => ({ externalSubscriptionId, externalCustomerId, claimReference });
+  const only = (
+    subscriptions: ReturnType<typeof listed>[],
+    options: { truncated?: boolean; stored?: string[]; trigger?: string } = {},
+  ) =>
+    purchasesOnlyThroughClaim({
+      reference: REF,
+      externalCustomerId: CTM,
+      externalSubscriptionId: options.trigger ?? "sub_1",
+      storedSubscriptionIds: options.stored ?? ["sub_1"],
+      purchases: { subscriptions, truncated: options.truncated ?? false },
+    });
 
   it("qualifies a customer whose every subscription carries the reference", () => {
-    expect(only(["v1.a.mac"])).toBe(true);
-    expect(only(["v1.a.mac", "v1.a.mac"])).toBe(true);
+    expect(only([listed("sub_1")])).toBe(true);
+    expect(only([listed("sub_2"), listed("sub_1")], { stored: ["sub_1", "sub_2"] })).toBe(true);
   });
 
   it("refuses a customer with any subscription without it or with another reference", () => {
-    expect(only(["v1.a.mac", null])).toBe(false);
-    expect(only([null, "v1.a.mac"])).toBe(false);
-    expect(only(["v1.a.mac", "v1.b.mac"])).toBe(false);
+    expect(only([listed("sub_1"), listed("sub_2", null)])).toBe(false);
+    expect(only([listed("sub_2", null), listed("sub_1")])).toBe(false);
+    expect(only([listed("sub_1"), listed("sub_2", "v1.b.mac")])).toBe(false);
   });
 
   it("refuses when nothing is listed, or the list was cut short", () => {
     expect(only([])).toBe(false);
-    expect(only(["v1.a.mac"], true)).toBe(false);
+    expect(only([listed("sub_1")], { truncated: true })).toBe(false);
+  });
+
+  // Review F4: the listing is Paddle's answer, not proof. It must be about this customer, and
+  // complete as far as ShareRepo can tell.
+  it("refuses a listing with another customer's subscription", () => {
+    expect(only([listed("sub_1"), listed("sub_2", REF, "ctm_b")])).toBe(false);
+    expect(only([listed("sub_1", REF, "ctm_b")])).toBe(false);
+  });
+
+  it("refuses a listing without the subscription that presented the reference", () => {
+    expect(only([listed("sub_2")], { trigger: "sub_1", stored: [] })).toBe(false);
+  });
+
+  it("refuses a listing without a subscription ShareRepo stores for the customer", () => {
+    expect(only([listed("sub_1")], { stored: ["sub_1", "sub_0"] })).toBe(false);
+    expect(only([listed("sub_1")], { stored: [] })).toBe(true);
   });
 
   it("is the conjunction over every subscription", () => {
-    const carried = fc.option(fc.constantFrom("v1.a.mac", "v1.b.mac"), { nil: null });
+    const carried = fc.option(fc.constantFrom(REF, "v1.b.mac"), { nil: null });
     fc.assert(
       fc.property(fc.array(carried, { minLength: 1 }), (refs) => {
-        expect(only(refs)).toBe(refs.every((r) => r === "v1.a.mac"));
+        const subscriptions = refs.map((ref, i) => listed(`sub_${i + 1}`, ref));
+        expect(only(subscriptions)).toBe(refs.every((r) => r === REF));
       }),
     );
   });
