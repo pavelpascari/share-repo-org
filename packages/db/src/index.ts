@@ -5,6 +5,27 @@ export {
   listAuditEventsByCorrelationId,
   listAuditEventsForWorkspace,
 } from "./audit-repository.ts";
+export {
+  type CheckoutClaim,
+  type ClaimConsumption,
+  type ClaimRequest,
+  type ClaimToken,
+  type ConsumeCheckoutClaimResult,
+  type ConsumeClaimTokenResult,
+  consumeCheckoutClaim,
+  consumeClaimToken,
+  createCheckoutClaim,
+  createClaimRequest,
+  createClaimTokens,
+  findClaimTokenByHash,
+  finishClaimRequest,
+  getCheckoutClaim,
+  getClaimRequest,
+  hitRateLimits,
+  type NewClaimToken,
+  type RateLimitBucket,
+  setCheckoutClaimTransaction,
+} from "./claim-repository.ts";
 export { createDb, type Db, ping } from "./client.ts";
 export {
   type Connection,
@@ -20,7 +41,16 @@ export {
   type UpdateConnectionResult,
   updateConnection,
 } from "./connection-repository.ts";
-export { type Customer, findCustomer, getCustomer } from "./customer-repository.ts";
+export {
+  type ApplyCustomerLinkResult,
+  applyCustomerLink,
+  type Customer,
+  type CustomerSubscriptionSummary,
+  type CustomerWithLink,
+  findCustomer,
+  getCustomer,
+  listCustomersWithLinks,
+} from "./customer-repository.ts";
 export { isUniqueViolation, uniqueViolationColumns } from "./errors.ts";
 export {
   type ExternalEvent,
@@ -42,6 +72,12 @@ export {
   type UpdateExternalIdentitySnapshotResult,
   updateExternalIdentitySnapshot,
 } from "./identity-repository.ts";
+export {
+  listMyAccess,
+  type MyAccessEntitlement,
+  type MyAccessGrant,
+  type MyAccessSubscription,
+} from "./my-access-repository.ts";
 export {
   createOffer,
   findOffersForItems,
@@ -75,6 +111,27 @@ export {
   pendingOutbox,
   pendingOutboxId,
 } from "./outbox-repository.ts";
+export {
+  type CreatePaddleConnectionResult,
+  createPaddleConnection,
+  disconnectPaddleConnection,
+  type GuardedWriteResult,
+  getPaddleConnection,
+  getPaddleConnectionForWebhook,
+  listActivePaddleConnections,
+  listPaddlePrices,
+  markPaddleEventReceived,
+  type PaddleConnection,
+  type PaddleEnvelopeField,
+  type PaddlePrice,
+  type PaddlePriceImport,
+  type PaddleWebhookConnection,
+  recordPaddleConnectionChecked,
+  replacePaddleCredentials,
+  rewrapPaddleEnvelope,
+  updatePaddleConnectionStatus,
+  upsertPaddlePrices,
+} from "./paddle-repository.ts";
 export {
   applyGrantObservation,
   type BeginMutation,
@@ -126,6 +183,7 @@ export {
   updateSimulatedSubscription,
 } from "./simulation-repository.ts";
 export {
+  findOrCreateSubjectForIdentity,
   findSubjectByExternalId,
   insertSubject,
   listSubjects,

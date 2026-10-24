@@ -27,9 +27,9 @@
     },
     "packages/platform/src/**": {
       "lines": 100,
-      "branches": 96.8,
+      "branches": 97.7,
       "functions": 100,
-      "statements": 99.3
+      "statements": 99.6
     },
     "packages/testing/src/**": {
       "lines": 100,

@@ -165,6 +165,9 @@ importers:
       '@cloudflare/workers-types':
         specifier: 5.20261018.1
         version: 5.20261018.1
+      '@sharerepo/platform':
+        specifier: workspace:*
+        version: link:../platform
       drizzle-kit:
         specifier: 0.31.11
         version: 0.31.11
