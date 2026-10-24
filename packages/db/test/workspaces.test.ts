@@ -12,7 +12,9 @@ import {
   createDb,
   createUser,
   createWorkspace,
+  findWorkspaceBySlug,
   findWorkspaceForMemberBySlug,
+  getWorkspace,
   getWorkspaceForMember,
   listAuditEventsByCorrelationId,
   listWorkspacesForUser,
@@ -265,6 +267,16 @@ describe("findWorkspaceForMemberBySlug", () => {
     await expect(
       findWorkspaceForMemberBySlug(db, { slug: slug("no-such-workspace"), userId: outsider }),
     ).resolves.toBeNull();
+  });
+});
+
+describe("getWorkspace and findWorkspaceBySlug (system lookups)", () => {
+  it("find a workspace by ID or slug whoever asks, and null when there is none", async () => {
+    const workspace = await newWorkspace(await newUser());
+    await expect(getWorkspace(db, workspace.id)).resolves.toEqual(workspace);
+    await expect(findWorkspaceBySlug(db, workspace.slug)).resolves.toEqual(workspace);
+    await expect(getWorkspace(db, uniqueId("ws"))).resolves.toBeNull();
+    await expect(findWorkspaceBySlug(db, slug("no-such-workspace"))).resolves.toBeNull();
   });
 });
 

@@ -275,9 +275,9 @@ export type PaddleEnvelopeField = "api_key" | "webhook_secret";
 
 /**
  * Replaces an envelope sealed under a retired master key with one re-sealed under the current
- * key (decision 0011, rotation). Guarded on the stored envelope still being `previous`, so a
- * concurrent reconnect or re-wrap wins. The secret itself does not change, so this carries no
- * audit event.
+ * key (decision 0011, rotation), with its audit event (`paddle.credentials_rewrapped`). Guarded on
+ * the stored envelope still being `previous`, so a concurrent reconnect or re-wrap wins and this
+ * one writes nothing, its audit event included.
  */
 export async function rewrapPaddleEnvelope(
   db: Db,
@@ -288,6 +288,7 @@ export async function rewrapPaddleEnvelope(
     previous: string;
     next: string;
   },
+  audit: AuditEvents,
 ): Promise<GuardedWriteResult> {
   const column =
     input.field === "api_key"
@@ -297,19 +298,12 @@ export async function rewrapPaddleEnvelope(
     input.field === "api_key"
       ? { apiKeyEnvelope: input.next }
       : { webhookSecretEnvelope: input.next };
-  const [changed] = await runBatch(db, [
-    db
-      .update(paddleConnections)
-      .set(set)
-      .where(
-        and(
-          scoped(input.workspaceId, input.connectionId),
-          notDisconnected,
-          eq(column, input.previous),
-        ),
-      ),
-  ]);
-  return changed === 1 ? { ok: true } : { ok: false, reason: "stale" };
+  const guard = and(
+    scoped(input.workspaceId, input.connectionId),
+    notDisconnected,
+    eq(column, input.previous),
+  );
+  return guardedUpdate(db, guard, db.update(paddleConnections).set(set).where(guard), audit);
 }
 
 /** A price as imported from Paddle's catalog; `id` is ShareRepo's row ID for a new price. */

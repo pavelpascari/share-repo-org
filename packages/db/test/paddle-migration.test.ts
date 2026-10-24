@@ -59,6 +59,7 @@ describe("migration 0006 (Paddle and claims)", () => {
       "INSERT INTO outbox (id, kind, subject_id, created_at, available_at, attempts) VALUES ('o2', 'sweep_paddle_subscriptions', 'k2', 1, 1, 0)";
     await expect(db.prepare(sweep).run()).rejects.toThrow(/CHECK constraint failed/);
 
+    // Through every later migration too: 0007 adds `external_subscription_id`, null for old rows.
     await applyD1Migrations(db, env.TEST_MIGRATIONS);
 
     const events = await db.prepare("SELECT * FROM external_events ORDER BY id").all();
@@ -72,6 +73,7 @@ describe("migration 0006 (Paddle and claims)", () => {
         action: "created",
         installation_id: "42",
         payload_digest: "sha256:a",
+        external_subscription_id: null,
         occurred_at: null,
         received_at: 10,
         processing_state: "processed",
@@ -88,6 +90,7 @@ describe("migration 0006 (Paddle and claims)", () => {
         action: null,
         installation_id: null,
         payload_digest: "sha256:b",
+        external_subscription_id: null,
         occurred_at: null,
         received_at: 12,
         processing_state: "failed",

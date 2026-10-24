@@ -366,8 +366,13 @@ describe("credential/envelope-bound-to-row (database)", () => {
       aad: aad("api_key"),
     });
     const rewrap = { ...key(connection), field: "api_key" as const, previous, next };
-    expect(await rewrapPaddleEnvelope(db, rewrap)).toEqual({ ok: true });
-    expect(await rewrapPaddleEnvelope(db, rewrap)).toEqual({ ok: false, reason: "stale" });
+    const audited = workspaceEvent(connection.workspaceId);
+    expect(await rewrapPaddleEnvelope(db, rewrap, [audited])).toEqual({ ok: true });
+    expect(await auditCount(env.DB, audited.correlationId)).toBe(1);
+    // A second re-wrap from the same old envelope writes nothing, its audit event included.
+    const again = workspaceEvent(connection.workspaceId);
+    expect(await rewrapPaddleEnvelope(db, rewrap, [again])).toEqual({ ok: false, reason: "stale" });
+    expect(await auditCount(env.DB, again.correlationId)).toBe(0);
     const stored = (await getPaddleConnection(db, connection)) as PaddleConnection;
     expect(stored.apiKeyEnvelope).toBe(next);
     expect(await openSecret({ keyring: ROTATED, envelope: next, aad: aad("api_key") })).toEqual({
@@ -382,12 +387,16 @@ describe("credential/envelope-bound-to-row (database)", () => {
       aad: aad("webhook_secret"),
     });
     expect(
-      await rewrapPaddleEnvelope(db, {
-        ...key(connection),
-        field: "webhook_secret",
-        previous: webhookPrevious,
-        next: webhookNext,
-      }),
+      await rewrapPaddleEnvelope(
+        db,
+        {
+          ...key(connection),
+          field: "webhook_secret",
+          previous: webhookPrevious,
+          next: webhookNext,
+        },
+        [workspaceEvent(connection.workspaceId)],
+      ),
     ).toEqual({ ok: true });
     expect((await getPaddleConnection(db, connection))?.webhookSecretEnvelope).toBe(webhookNext);
   });

@@ -27,6 +27,7 @@ function event(overrides: Partial<NewExternalEvent> = {}): NewExternalEvent {
     eventType: "installation_repositories",
     action: "removed",
     installationId: "42",
+    externalSubscriptionId: null,
     payloadDigest: "sha256:abc",
     occurredAt: null,
     receivedAt: T0,

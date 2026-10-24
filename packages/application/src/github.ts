@@ -320,6 +320,7 @@ export async function ingestGitHubWebhook(
       eventType: envelope.event,
       action: envelope.action,
       installationId: envelope.installationId,
+      externalSubscriptionId: null,
       payloadDigest: await payloadDigest(input.rawBody),
       occurredAt: null,
       receivedAt: now,

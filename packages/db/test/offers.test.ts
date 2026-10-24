@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   createOffer,
   findOffersForItems,
+  findOfferWorkspaceId,
   getOffer,
   getOfferVersion,
   listOffers,
@@ -55,6 +56,14 @@ function change(
     ...overrides,
   };
 }
+
+describe("findOfferWorkspaceId (system lookup)", () => {
+  it("names the offer's workspace, and null for an unknown offer", async () => {
+    const { workspaceId, offer } = await subscribedWorkspace();
+    await expect(findOfferWorkspaceId(db, offer.offer.id)).resolves.toBe(workspaceId);
+    await expect(findOfferWorkspaceId(db, uniqueId("off"))).resolves.toBeNull();
+  });
+});
 
 describe("createOffer", () => {
   it("writes the offer, its version-1 snapshot, items, accesses and audit together", async () => {

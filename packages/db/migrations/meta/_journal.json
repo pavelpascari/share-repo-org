@@ -50,6 +50,13 @@
       "when": 1792858499613,
       "tag": "0006_paddle_and_claims",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1792861410038,
+      "tag": "0007_paddle_event_subscription",
+      "breakpoints": true
     }
   ]
 }

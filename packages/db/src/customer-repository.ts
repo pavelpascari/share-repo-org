@@ -4,7 +4,7 @@ import { type AuditEvents, conditionalAuditInserts } from "./audit-repository.ts
 import { runBatch, type Statement } from "./batch.ts";
 import { type ClaimConsumption, consumeForLink } from "./claim-repository.ts";
 import type { Db } from "./client.ts";
-import { dedupedOutboxInsert, type NewOutboxRow } from "./outbox-repository.ts";
+import { conditionalOutboxInsert, type NewOutboxRow } from "./outbox-repository.ts";
 import { customers, subjects, subscriptions } from "./schema/index.ts";
 
 /**
@@ -126,8 +126,10 @@ export type ApplyCustomerLinkResult =
  * `decideCustomerLink` decided), in one batch guarded on the customer still being linked to
  * `expectedSubjectId` (null: unlinked):
  *
- * 1. the audit events, and a deduplicated `refresh_subscription` (built by `makeRefreshRow`) for
- *    each of the customer's subscriptions, so their entitlements follow the new link;
+ * 1. the audit events, and a `refresh_subscription` (built by `makeRefreshRow`) for each of the
+ *    customer's subscriptions, so their entitlements follow the new link. Not deduplicated: a
+ *    refresh that is queued or already running may have read the old link (a link made during a
+ *    refresh, by its claim reference, is one), so a fresh one must follow it;
  * 2. the link itself: once it runs, the guard no longer holds;
  * 3. with `consume`, the single-use claim behind the link, consumed only if statement 2 linked.
  *
@@ -179,7 +181,7 @@ export async function applyCustomerLink(
   const statements: Statement[] = [
     ...conditionalAuditInserts(db, audit, applicable),
     ...owned.map((subscription) =>
-      dedupedOutboxInsert(db, input.makeRefreshRow(subscription), applicable),
+      conditionalOutboxInsert(db, input.makeRefreshRow(subscription), applicable),
     ),
     db.update(customers).set({ subjectId: input.subjectId, updatedAt: now }).where(guard),
   ];

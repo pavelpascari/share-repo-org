@@ -403,6 +403,13 @@ export const AUDIT_ACTIONS = {
       .strictObject({ previousStatus: liveConnectionStatus, status: liveConnectionStatus })
       .refine((d) => d.previousStatus !== d.status, { path: ["status"] }),
   },
+  // An envelope sealed under a retired master key was re-sealed under the current one (decision
+  // 0011, rotation). The secret itself is unchanged; `field` names which envelope.
+  "paddle.credentials_rewrapped": {
+    scope: "workspace",
+    targetType: "paddle_connection",
+    details: z.strictObject({ field: z.enum(["api_key", "webhook_secret"]) }),
+  },
   "paddle.catalog_synced": {
     scope: "workspace",
     targetType: "paddle_connection",

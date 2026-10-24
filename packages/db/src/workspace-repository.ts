@@ -91,6 +91,21 @@ export async function getWorkspaceForMember(
   return rows[0] ?? null;
 }
 
+/**
+ * System use (public pages such as `/c/:slug/claim`, and claim links): a workspace by ID, whoever
+ * asks. Callers expose only what a buyer may see (name and slug) and apply their own policy.
+ */
+export async function getWorkspace(db: Db, workspaceId: string): Promise<Workspace | null> {
+  const rows = await db.select().from(workspaces).where(eq(workspaces.id, workspaceId)).limit(1);
+  return rows[0] ?? null;
+}
+
+/** System use, like `getWorkspace`: a workspace by slug, whoever asks. */
+export async function findWorkspaceBySlug(db: Db, slug: WorkspaceSlug): Promise<Workspace | null> {
+  const rows = await db.select().from(workspaces).where(eq(workspaces.slug, slug)).limit(1);
+  return rows[0] ?? null;
+}
+
 /** Same as `getWorkspaceForMember`, by slug: null for a non-member and for an unknown slug alike. */
 export async function findWorkspaceForMemberBySlug(
   db: Db,

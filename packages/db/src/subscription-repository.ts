@@ -133,6 +133,26 @@ export async function getSubscription(
   return withItems(db, rows[0]);
 }
 
+/**
+ * The source's `updated_at` of every subscription the workspace stores from `source`, by external
+ * ID: what a repair sweep compares the source's list with, in one query.
+ */
+export async function listSubscriptionSourceVersions(
+  db: Db,
+  key: { workspaceId: string; source: CommercialSource },
+): Promise<Map<string, Instant>> {
+  const rows = await db
+    .select({
+      externalSubscriptionId: subscriptions.externalSubscriptionId,
+      sourceUpdatedAt: subscriptions.sourceUpdatedAt,
+    })
+    .from(subscriptions)
+    .where(
+      and(eq(subscriptions.workspaceId, key.workspaceId), eq(subscriptions.source, key.source)),
+    );
+  return new Map(rows.map((row) => [row.externalSubscriptionId, row.sourceUpdatedAt]));
+}
+
 const chronological = [asc(entitlements.createdAt), asc(entitlements.id)] as const;
 const live = eq(entitlements.state, "active");
 

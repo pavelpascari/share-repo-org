@@ -34,6 +34,10 @@ export const externalEvents = sqliteTable(
     eventType: text("event_type").notNull(),
     action: text("action"),
     installationId: text("installation_id"),
+    // Paddle: the subscription the event concerns (`data.id` of a `subscription.*` event,
+    // `data.subscription_id` of a `transaction.*` event), which processing refreshes. Null for
+    // other events and for GitHub. An ID only: the payload itself is never stored.
+    externalSubscriptionId: text("external_subscription_id"),
     payloadDigest: text("payload_digest").notNull(),
     // When the provider says the event happened, if it says (Paddle's `occurred_at`).
     occurredAt: integer("occurred_at").$type<Instant>(),

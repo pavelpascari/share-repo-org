@@ -6,6 +6,7 @@ import {
   type AuditEventInput,
   auditEvent,
   type CommercialSource,
+  carryPastDueSince,
   type EntitlementPlan,
   isNewerSnapshot,
   type LiveEntitlement,
@@ -16,6 +17,7 @@ import {
   type SubscriptionSnapshot,
 } from "@sharerepo/domain";
 import { ConflictError } from "@sharerepo/platform";
+import { linkCheckoutReference } from "./claims.ts";
 import { atOneInstant, type ServiceContext, type WorkspaceAuditAction } from "./context.ts";
 import {
   type CustomerLink,
@@ -59,7 +61,14 @@ export async function refreshSubscription(
   if (source.source !== ref.source) throw new Error("entitlement source does not match the ref");
   for (let attempt = 1; ; attempt += 1) {
     const result = await attemptRefresh(context, ref, source);
-    if (result !== "stale") return result;
+    if (result !== "stale") {
+      // A checkout reference links the customer after its facts are stored (decision 0012, path
+      // 1); the link queues another refresh, which grants the access.
+      if (result.claim !== null && source.claimSigningKey !== undefined) {
+        await linkCheckoutReference(context, ref.workspaceId, result.claim, source.claimSigningKey);
+      }
+      return result.summary;
+    }
     if (attempt === MAX_REFRESH_ATTEMPTS) {
       throw new ConflictError("subscription kept changing during refresh; retry later");
     }
@@ -73,16 +82,17 @@ const SUBJECT_KEY = [
 ] as const;
 
 /**
- * The workspace's subject for a linked GitHub account, created (and audited) on first sight in a
- * write of its own. Another refresh may create it first; then it is read again. A link reporting
+ * The workspace's subject for a linked GitHub account, created (and audited, by `actor`) on first
+ * sight in a write of its own. Another refresh may create it first; then it is read again. A link reporting
  * another login for the same immutable ID (the account was renamed) updates the login snapshot,
  * audited as `subject.login_updated`; a concurrent update of the same snapshot wins and this one
  * writes nothing.
  */
-async function subjectFor(
+export async function subjectFor(
   ctx: ServiceContext,
   workspaceId: string,
   link: CustomerLink,
+  actor: AuditEvent["actor"],
 ): Promise<repo.Subject> {
   const key = { workspaceId, provider: link.provider, externalSubjectId: link.externalSubjectId };
   const existing = await repo.findSubjectByExternalId(ctx.db, key);
@@ -103,7 +113,7 @@ async function subjectFor(
           "subject.login_updated",
           {
             workspaceId,
-            actor: SYSTEM,
+            actor,
             targetId: existing.id,
             details: {
               provider: link.provider,
@@ -136,7 +146,7 @@ async function subjectFor(
         "subject.created",
         {
           workspaceId,
-          actor: SYSTEM,
+          actor,
           targetId: subject.id,
           details: {
             provider: link.provider,
@@ -221,11 +231,21 @@ async function offersFor(
 const planSize = (plan: EntitlementPlan) =>
   plan.create.length + plan.update.length + plan.end.length;
 
+/** A checkout reference the source reported, with the customer as the refresh left it. */
+export interface ReportedClaim {
+  readonly customer: repo.Customer;
+  readonly reference: string;
+  /** The refresh applied a newer snapshot (rather than re-planning from stored facts). */
+  readonly newer: boolean;
+}
+
+type Attempt = { readonly summary: RefreshSummary; readonly claim: ReportedClaim | null };
+
 async function attemptRefresh(
   context: ServiceContext,
   ref: SubscriptionRef,
   port: EntitlementSourcePort,
-): Promise<RefreshSummary | "stale"> {
+): Promise<Attempt | "stale"> {
   const ctx = atOneInstant(context);
   const now = ctx.clock.now();
   const { workspaceId } = ref;
@@ -243,7 +263,7 @@ async function attemptRefresh(
     externalSubscriptionId: ref.externalSubscriptionId,
   });
   if (!observed.found && stored === null) {
-    return { outcome: "absent", created: 0, updated: 0, ended: 0 };
+    return { summary: { outcome: "absent", created: 0, updated: 0, ended: 0 }, claim: null };
   }
   const snapshot = observed.found && isNewerSnapshot(stored, observed.snapshot) ? observed : null;
   const audit: AuditEvent[] = [];
@@ -281,7 +301,7 @@ async function attemptRefresh(
     const subject =
       snapshot.customerLink === null
         ? null
-        : await subjectFor(ctx, workspaceId, snapshot.customerLink);
+        : await subjectFor(ctx, workspaceId, snapshot.customerLink, SYSTEM);
     if (customer === null) {
       customer = {
         id: ctx.ids.next(),
@@ -310,9 +330,24 @@ async function attemptRefresh(
     }
   }
   const { id: customerId, subjectId } = customer as repo.Customer;
+  const claim: ReportedClaim | null =
+    observed.found && observed.claimReference !== null
+      ? {
+          customer: customer as repo.Customer,
+          reference: observed.claimReference,
+          newer: snapshot !== null,
+        }
+      : null;
 
-  // The plan, from the newer snapshot or the stored facts.
-  const facts: Facts = snapshot?.snapshot ?? storedFacts(stored as repo.SubscriptionWithItems);
+  // The plan, from the newer snapshot or the stored facts. A subscription that stays past due
+  // keeps its earliest `pastDueSince`, so a later update never extends the grace period.
+  const facts: Facts =
+    snapshot === null
+      ? storedFacts(stored as repo.SubscriptionWithItems)
+      : {
+          ...snapshot.snapshot,
+          pastDueSince: carryPastDueSince(stored, snapshot.snapshot),
+        };
   const subscriptionId = stored?.id ?? ctx.ids.next();
   const planned: PlanSubscription | null = observed.found
     ? {
@@ -337,7 +372,9 @@ async function attemptRefresh(
     snapshot !== null ||
     planSize(plan) > 0 ||
     plan.nextEvaluationAt !== (stored as repo.SubscriptionWithItems).nextEvaluationAt;
-  if (!changed) return { outcome: "unchanged", created: 0, updated: 0, ended: 0 };
+  if (!changed) {
+    return { summary: { outcome: "unchanged", created: 0, updated: 0, ended: 0 }, claim };
+  }
 
   const subscription: repo.Subscription = {
     id: subscriptionId,
@@ -440,14 +477,18 @@ async function attemptRefresh(
   );
   if (!result.ok) return "stale";
   return {
-    outcome: "written",
-    created: plan.create.length,
-    updated: plan.update.length,
-    ended: plan.end.length,
+    summary: {
+      outcome: "written",
+      created: plan.create.length,
+      updated: plan.update.length,
+      ended: plan.end.length,
+    },
+    claim,
   };
 }
 
-function refreshOutboxRow(ctx: ServiceContext, ref: SubscriptionRef): repo.NewOutboxRow {
+/** A `refresh_subscription` outbox row for the subscription, available now. */
+export function refreshOutboxRow(ctx: ServiceContext, ref: SubscriptionRef): repo.NewOutboxRow {
   const now = ctx.clock.now();
   return {
     id: ctx.ids.next(),

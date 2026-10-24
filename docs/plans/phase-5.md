@@ -143,7 +143,7 @@ Public pages require sign-in. A signed-out visitor is sent through GitHub sign-i
 
 ### Audit actions (new)
 
-- `paddle.connected`, `paddle.reconnected`, `paddle.disconnected`, `paddle.status_changed`, `paddle.catalog_synced`.
+- `paddle.connected`, `paddle.reconnected`, `paddle.disconnected`, `paddle.status_changed`, `paddle.catalog_synced`, `paddle.credentials_rewrapped` (an envelope re-sealed under the current master key; added in T5).
 - `checkout.started`.
 - `claim.requested`, `claim.token_issued`, `claim.completed`, `claim.rejected` (with a reason code), `claim.conflict`.
 - `customer.relinked`, `customer.linked_manually`.
@@ -170,6 +170,7 @@ Public pages require sign-in. A signed-out visitor is sent through GitHub sign-i
   - `claim_rate_limits`.
 - **`external_events`** gains `connection_id` and `occurred_at`. The provider CHECK widens to `EVENT_PROVIDERS`, and the unique index becomes the connection-scoped expression index. This is a table rebuild, tested from a populated 0005 database.
 - **`outbox` kinds** add `send_claim_email`, `check_paddle_connection` and `sweep_paddle_subscriptions`. This is an outbox rebuild, as in 0005.
+- **Migration 0007** (added in T5) gives `external_events` a nullable `external_subscription_id`: the subscription a Paddle `subscription.*` or `transaction.*` event concerns, which processing refreshes without storing the payload.
 - **CHECKs:**
   - status and environment vocabularies;
   - envelopes are valid JSON;
