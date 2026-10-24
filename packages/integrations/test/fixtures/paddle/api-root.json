@@ -1,0 +1,29 @@
+{
+  "data": {
+    "api": {
+      "name": "Paddle API",
+      "version": "1",
+      "environment": "sandbox",
+      "documentation_url": "https://developer.paddle.com/api-reference/overview"
+    },
+    "caller": {
+      "auth_type": "api_key",
+      "account": {
+        "id": "slr_01jseller00000000000000001",
+        "name": "Octo Creator Ltd"
+      },
+      "permissions": [
+        "product.read",
+        "price.read",
+        "customer.read",
+        "subscription.read",
+        "transaction.read",
+        "transaction.write",
+        "notification_setting.write"
+      ]
+    }
+  },
+  "meta": {
+    "request_id": "5b2e8c1a-3f4d-4e6a-9b7c-0d1e2f3a4b5c"
+  }
+}

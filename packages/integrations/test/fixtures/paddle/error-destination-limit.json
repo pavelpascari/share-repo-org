@@ -1,0 +1,11 @@
+{
+  "error": {
+    "type": "request_error",
+    "code": "notification_maximum_active_settings_reached",
+    "detail": "Maximum number of notification settings reached.",
+    "documentation_url": "https://developer.paddle.com/errors/shared/notification_maximum_active_settings_reached"
+  },
+  "meta": {
+    "request_id": "5b2e8c1a-3f4d-4e6a-9b7c-0d1e2f3a4b5c"
+  }
+}

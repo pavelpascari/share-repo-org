@@ -1,0 +1,50 @@
+{
+  "data": [
+    {
+      "id": "pri_01jstarter0000000000000001",
+      "product_id": "pro_01jstarter0000000000000001",
+      "type": "standard",
+      "description": "One-time",
+      "name": "One-time",
+      "tax_mode": "account_setting",
+      "billing_cycle": null,
+      "trial_period": null,
+      "unit_price": {
+        "amount": "4900",
+        "currency_code": "USD"
+      },
+      "unit_price_overrides": [],
+      "custom_data": null,
+      "status": "archived",
+      "quantity": {
+        "minimum": 1,
+        "maximum": 1
+      },
+      "import_meta": null,
+      "created_at": "2026-09-01T10:00:00.000000Z",
+      "updated_at": "2026-09-01T10:00:00.000000Z",
+      "product": {
+        "id": "pro_01jstarter0000000000000001",
+        "name": "Starter kit",
+        "description": null,
+        "type": "standard",
+        "tax_category": "standard",
+        "image_url": null,
+        "custom_data": null,
+        "status": "active",
+        "import_meta": null,
+        "created_at": "2026-09-01T09:00:00.000Z",
+        "updated_at": "2026-09-01T09:00:00.000Z"
+      }
+    }
+  ],
+  "meta": {
+    "request_id": "5b2e8c1a-3f4d-4e6a-9b7c-0d1e2f3a4b5c",
+    "pagination": {
+      "per_page": 200,
+      "next": "https://api.paddle.test/prices?after=pri_01jstarter0000000000000001&include=product&per_page=200&status=active,archived",
+      "has_more": false,
+      "estimated_total": 3
+    }
+  }
+}
