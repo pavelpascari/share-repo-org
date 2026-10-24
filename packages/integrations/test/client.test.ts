@@ -1,7 +1,7 @@
 import { createSecretCanaries, expectNoCanaryLeak, FakeClock } from "@sharerepo/testing";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { nextLink, pathSegment } from "../src/github/client.ts";
-import { createGitHubApp, GitHubApiError } from "../src/index.ts";
+import { createGitHubApp, GitHubApiError, REQUEST_TIMEOUT_MS } from "../src/index.ts";
 import installation from "./fixtures/installation.json";
 import { appKey } from "./support/keys.ts";
 import {
@@ -120,9 +120,12 @@ describe("pagination", () => {
     expect(nextLink("garbage", API)).toBeNull();
   });
 
-  it("never follows a next link to another origin (it would leak the token)", () => {
-    expect(nextLink(`<https://evil.example/x>; rel="next"`, API)).toBeNull();
-    expect(nextLink(`<${API}.evil.example/x>; rel="next"`, API)).toBeNull();
+  it("refuses a next link to another origin (it would leak the token) as malformed", () => {
+    for (const url of ["https://evil.example/x", `${API}.evil.example/x`, API]) {
+      expect(() => nextLink(`<${url}>; rel="next"`, API)).toThrow(
+        expect.objectContaining({ kind: "malformed_response" }),
+      );
+    }
   });
 
   it("gives up after 50 pages", async () => {
@@ -215,6 +218,51 @@ describe("error classification", () => {
     });
   });
 
+  it("gives every request a timeout, and classifies one that timed out as transient", async () => {
+    const signals: (AbortSignal | null | undefined)[] = [];
+    const app = createGitHubApp({
+      appId: "1000",
+      privateKeyPem: (await appKey()).pem,
+      apiBaseUrl: API,
+      clock: new FakeClock(NOW),
+      fetch: (async (_input: RequestInfo | URL, init?: RequestInit) => {
+        signals.push(init?.signal);
+        throw new DOMException("The operation timed out.", "TimeoutError");
+      }) as typeof fetch,
+    });
+    expect(REQUEST_TIMEOUT_MS).toBe(20_000);
+    const error = await failure(app.getInstallation("42"));
+    expect(error).toMatchObject({
+      kind: "transient",
+      message: "GitHub get installation failed: network error",
+    });
+    expect(signals).toHaveLength(1);
+    expect(signals[0]).toBeInstanceOf(AbortSignal);
+    expect(signals[0]?.aborted).toBe(false);
+  });
+
+  it("aborts each request after REQUEST_TIMEOUT_MS", async () => {
+    const timeout = vi.spyOn(AbortSignal, "timeout");
+    try {
+      const signals: (AbortSignal | null | undefined)[] = [];
+      const app = createGitHubApp({
+        appId: "1000",
+        privateKeyPem: (await appKey()).pem,
+        apiBaseUrl: API,
+        clock: new FakeClock(NOW),
+        fetch: (async (_input: RequestInfo | URL, init?: RequestInit) => {
+          signals.push(init?.signal);
+          return jsonResponse(200, installation);
+        }) as typeof fetch,
+      });
+      await app.getInstallation("42");
+      expect(timeout.mock.calls).toEqual([[REQUEST_TIMEOUT_MS]]);
+      expect(signals).toEqual([timeout.mock.results[0]?.value]);
+    } finally {
+      timeout.mockRestore();
+    }
+  });
+
   it("classifies a malformed 200 body", async () => {
     const { app } = await client([
       on("GET", "/app/installations/42", () => jsonResponse(200, { id: "x" })),
@@ -240,113 +288,343 @@ describe("error classification", () => {
 });
 
 describe("collaborators and invitations", () => {
-  const repoPath = "/repos/octo-creator/course-code";
+  const REPO = "octo-creator/course-code";
+  const repoPath = `/repos/${REPO}`;
+  const noContent = () => new Response(null, { status: 204 });
+  const collaborator = (permissions: Record<string, boolean>) => ({
+    id: 6001,
+    login: "octo-subscriber",
+    permissions,
+  });
 
-  it("lists collaborators and invitations with IDs as strings", async () => {
+  it("asks for the affiliation, 100 per page, with the installation token", async () => {
     const { app, calls } = await client([
       tokenRoute("42"),
+      on("GET", `${repoPath}/collaborators`, () => jsonResponse(200, [])),
+      on("GET", `${repoPath}/invitations`, () => jsonResponse(200, [])),
+    ]);
+    await app.listCollaborators("42", REPO, "all");
+    await app.listCollaborators("42", REPO, "direct");
+    await app.listInvitations("42", REPO);
+    expect(calls.slice(1).map((call) => [call.method, call.url, call.authorization])).toEqual([
+      [
+        "GET",
+        `${API}${repoPath}/collaborators?affiliation=all&per_page=100`,
+        "Bearer ghs_token_42",
+      ],
+      [
+        "GET",
+        `${API}${repoPath}/collaborators?affiliation=direct&per_page=100`,
+        "Bearer ghs_token_42",
+      ],
+      ["GET", `${API}${repoPath}/invitations?per_page=100`, "Bearer ghs_token_42"],
+    ]);
+  });
+
+  it.each([
+    [{ admin: true, maintain: true, push: true, triage: true, pull: true }, "admin"],
+    [{ admin: false, maintain: true, push: false, triage: true, pull: true }, "write"],
+    [{ admin: false, push: true, pull: true }, "write"],
+    [{ admin: false, maintain: false, push: false, triage: true, pull: true }, "read"],
+    [{ admin: false, push: false, pull: true }, "read"],
+  ])("maps permissions %j to %s", async (permissions, permission) => {
+    const { app } = await client([
+      tokenRoute("42"),
+      on("GET", `${repoPath}/collaborators`, () => jsonResponse(200, [collaborator(permissions)])),
+    ]);
+    expect(await app.listCollaborators("42", REPO, "direct")).toEqual([
+      { id: "6001", login: "octo-subscriber", permission },
+    ]);
+  });
+
+  it("rejects a collaborator without a permissions object", async () => {
+    const { app } = await client([
+      tokenRoute("42"),
       on("GET", `${repoPath}/collaborators`, () =>
-        jsonResponse(200, [{ id: 5001, login: "octo-creator", type: "User" }]),
+        jsonResponse(200, [{ id: 6001, login: "octo-subscriber" }]),
       ),
+    ]);
+    expect((await failure(app.listCollaborators("42", REPO, "direct"))).kind).toBe(
+      "malformed_response",
+    );
+  });
+
+  it("treats an invitation without an expired flag as not expired", async () => {
+    const { app } = await client([
+      tokenRoute("42"),
       on("GET", `${repoPath}/invitations`, () =>
         jsonResponse(200, [
           {
             id: 77,
-            invitee: { id: 6001, login: "subscriber" },
-            permissions: "write",
-            expired: false,
+            invitee: { id: 6001, login: "octo-subscriber" },
             created_at: "2026-10-18T10:00:00Z",
-          },
-          {
-            id: 78,
-            invitee: null,
-            permissions: "write",
-            expired: true,
-            created_at: "2026-10-01T10:00:00Z",
           },
         ]),
       ),
     ]);
-    expect(await app.listCollaborators("42", "octo-creator", "course-code")).toEqual([
-      { id: "5001", login: "octo-creator" },
-    ]);
-    expect(await app.listInvitations("42", "octo-creator", "course-code")).toEqual([
+    expect(await app.listInvitations("42", REPO)).toEqual([
       {
         id: "77",
-        invitee: { id: "6001", login: "subscriber" },
-        permissions: "write",
-        expired: false,
+        inviteeId: "6001",
+        inviteeLogin: "octo-subscriber",
         createdAt: Date.parse("2026-10-18T10:00:00Z"),
-      },
-      {
-        id: "78",
-        invitee: null,
-        permissions: "write",
-        expired: true,
-        createdAt: Date.parse("2026-10-01T10:00:00Z"),
+        expired: false,
       },
     ]);
-    expect(calls.find((call) => call.url.includes("/collaborators"))?.url).toBe(
-      `${API}${repoPath}/collaborators?affiliation=direct&per_page=100`,
-    );
   });
 
-  it("adds a collaborator: 201 is a pending invitation, 204 already a collaborator", async () => {
+  it("gives up after 30 pages of collaborators or invitations, never truncating", async () => {
+    const endless = (path: string) =>
+      on("GET", path, () => jsonResponse(200, [], { link: `<${API}${path}?page=n>; rel="next"` }));
     const { app, calls } = await client([
       tokenRoute("42"),
-      on("PUT", `${repoPath}/collaborators/subscriber`, () => jsonResponse(201, { id: 77 })),
-      on("PUT", `${repoPath}/collaborators/member`, () => new Response(null, { status: 204 })),
+      endless(`${repoPath}/collaborators`),
+      endless(`${repoPath}/invitations`),
     ]);
-    expect(
-      await app.addCollaborator("42", "octo-creator", "course-code", "subscriber", "pull"),
-    ).toEqual({
-      status: 201,
-      invitationId: "77",
+    const error = await failure(app.listCollaborators("42", REPO, "direct"));
+    expect(error).toMatchObject({
+      kind: "malformed_response",
+      message: "GitHub list collaborators: too many pages",
     });
-    expect(calls.at(-1)?.body).toBe('{"permission":"pull"}');
-    expect(await app.addCollaborator("42", "octo-creator", "course-code", "member")).toEqual({
-      status: 204,
-    });
-    expect(calls.at(-1)?.body).toBe("{}");
+    expect(calls.filter((call) => call.method === "GET")).toHaveLength(30);
+    expect((await failure(app.listInvitations("42", REPO))).kind).toBe("malformed_response");
   });
 
-  it("treats an unexpected success status from PUT as malformed", async () => {
+  it("refuses a next link outside the API as malformed, without following it", async () => {
+    const { app, calls } = await client([
+      tokenRoute("42"),
+      on("GET", `${repoPath}/invitations`, () =>
+        jsonResponse(200, [], {
+          link: `<https://evil.example${repoPath}/invitations?page=2>; rel="next"`,
+        }),
+      ),
+    ]);
+    const error = await failure(app.listInvitations("42", REPO));
+    expect(error).toMatchObject({
+      kind: "malformed_response",
+      message: "GitHub pagination link points outside the API",
+    });
+    expect(calls.map((call) => new URL(call.url).host)).toEqual([
+      new URL(API).host,
+      new URL(API).host,
+    ]);
+  });
+
+  it("validates the repository, login, invitation ID and affiliation before any request", async () => {
+    const { app, calls } = await client([tokenRoute("42")]);
+    const refused = [
+      ["invalid repository", app.listInvitations("42", "course-code")],
+      ["invalid repository", app.listInvitations("42", "a/b/c")],
+      ["invalid login path segment", app.listInvitations("42", "../course-code")],
+      ["invalid repo path segment", app.listInvitations("42", "octo-creator/..")],
+      ["invalid login", app.addCollaborator("42", REPO, "..")],
+      ["invalid login", app.removeCollaborator("42", REPO, "octo/../x")],
+      ["invalid id path segment", app.cancelInvitation("42", REPO, "..")],
+      ["invalid id path segment", app.getUserById("42", "0")],
+      ["invalid affiliation", app.listCollaborators("42", REPO, "outside" as unknown as "direct")],
+    ] as const;
+    for (const [reason, call] of refused) {
+      const error = await failure(call);
+      expect(error).toMatchObject({
+        kind: "rejected",
+        message: `GitHub request refused: ${reason}`,
+      });
+    }
+    expect(calls).toEqual([]);
+  });
+
+  it("invites without a permission and reads the invitation from a 201", async () => {
+    const { app, calls } = await client([
+      tokenRoute("42"),
+      on("PUT", `${repoPath}/collaborators/octo-subscriber`, () =>
+        jsonResponse(201, { id: 77, created_at: "2026-10-18T10:00:00Z" }),
+      ),
+      on("PUT", `${repoPath}/collaborators/octo-member`, noContent),
+    ]);
+    expect(await app.addCollaborator("42", REPO, "octo-subscriber")).toEqual({
+      outcome: "invited",
+      invitationId: "77",
+      createdAt: Date.parse("2026-10-18T10:00:00Z"),
+    });
+    expect(calls.at(-1)?.body).toBe("{}");
+    expect(await app.addCollaborator("42", REPO, "octo-member")).toEqual({
+      outcome: "already_collaborator",
+    });
+  });
+
+  it("treats an unexpected PUT status or 201 body as malformed", async () => {
     const { app } = await client([
       tokenRoute("42"),
       on("PUT", `${repoPath}/collaborators/odd`, () => jsonResponse(200, {})),
+      on("PUT", `${repoPath}/collaborators/bodyless`, () => jsonResponse(201, { id: 77 })),
     ]);
-    expect(
-      (await failure(app.addCollaborator("42", "octo-creator", "course-code", "odd"))).kind,
-    ).toBe("malformed_response");
+    expect(await failure(app.addCollaborator("42", REPO, "odd"))).toMatchObject({
+      kind: "malformed_response",
+      status: 200,
+    });
+    expect((await failure(app.addCollaborator("42", REPO, "bodyless"))).kind).toBe(
+      "malformed_response",
+    );
   });
 
-  it("removes collaborators and deletes invitations, escaping path segments", async () => {
+  it("removes collaborators and cancels invitations", async () => {
     const { app, calls } = await client([
       tokenRoute("42"),
-      on(
-        "DELETE",
-        `${repoPath}/collaborators/subscriber`,
-        () => new Response(null, { status: 204 }),
-      ),
-      on("DELETE", `${repoPath}/invitations/77`, () => new Response(null, { status: 204 })),
+      on("DELETE", `${repoPath}/collaborators/octo-subscriber`, noContent),
+      on("DELETE", `${repoPath}/invitations/77`, noContent),
     ]);
-    expect(await app.removeCollaborator("42", "octo-creator", "course-code", "subscriber")).toBe(
-      204,
-    );
-    expect(await app.deleteInvitation("42", "octo-creator", "course-code", "77")).toBe(204);
-    const sent = calls.length;
-    for (const username of ["..", ".", "../../x", "a/b", ""]) {
-      const error = await failure(
-        app.removeCollaborator("42", "octo-creator", "course-code", username),
-      );
-      expect(error.kind).toBe("rejected");
-    }
-    await failure(app.removeCollaborator("42", "octo-creator", "..", "subscriber"));
-    await failure(app.deleteInvitation("42", "octo-creator", "course-code", ".."));
-    await failure(app.getInstallation("../42"));
-    // Refused before any request: `DELETE /repos/o/r/collaborators/..` would resolve to
-    // `DELETE /repos/o/r` and delete the repository.
-    expect(calls.length).toBe(sent);
+    expect(await app.removeCollaborator("42", REPO, "octo-subscriber")).toBe("removed");
+    expect(await app.cancelInvitation("42", REPO, "77")).toBe("cancelled");
+    expect(calls.slice(1).map((call) => `${call.method} ${call.url}`)).toEqual([
+      `DELETE ${API}${repoPath}/collaborators/octo-subscriber`,
+      `DELETE ${API}${repoPath}/invitations/77`,
+    ]);
+  });
+
+  it("keeps GitHub's 422 codes when an invitation is refused", async () => {
+    const { app } = await client([
+      tokenRoute("42"),
+      on("PUT", `${repoPath}/collaborators/flagged`, () =>
+        jsonResponse(422, {
+          message: "Validation Failed",
+          errors: [{ resource: "Repository", code: "custom", message: "flagged as spam" }],
+        }),
+      ),
+    ]);
+    const error = await failure(app.addCollaborator("42", REPO, "flagged"));
+    expect(error).toMatchObject({ kind: "rejected", status: 422, githubErrorCodes: ["custom"] });
+    expect(JSON.stringify(error) + error.message).not.toContain("spam");
+  });
+
+  it("classifies a missing permission, a rate limit and an outage on mutations", async () => {
+    const { app } = await client([
+      tokenRoute("42"),
+      on("PUT", `${repoPath}/collaborators/forbidden`, () =>
+        jsonResponse(403, { message: "Resource not accessible by integration" }),
+      ),
+      on("DELETE", `${repoPath}/collaborators/limited`, () =>
+        jsonResponse(403, {}, { "x-ratelimit-remaining": "0", "retry-after": "45" }),
+      ),
+      on("DELETE", `${repoPath}/invitations/77`, () => jsonResponse(502, {})),
+    ]);
+    expect(await failure(app.addCollaborator("42", REPO, "forbidden"))).toMatchObject({
+      kind: "rejected",
+      status: 403,
+      target: undefined,
+    });
+    expect(await failure(app.removeCollaborator("42", REPO, "limited"))).toMatchObject({
+      kind: "rate_limited",
+      retryAfterMs: 45_000,
+    });
+    expect(await failure(app.cancelInvitation("42", REPO, "77"))).toMatchObject({
+      kind: "transient",
+    });
+  });
+
+  describe("telling a missing repository from a missing account", () => {
+    const repository = (status: number) =>
+      on("GET", repoPath, () => jsonResponse(status, status === 200 ? { id: 9001 } : {}));
+
+    it("checks the repository once after a 404 on a change", async () => {
+      const { app, calls } = await client([tokenRoute("42"), repository(200)]);
+      expect(await failure(app.addCollaborator("42", REPO, "octo-ghost"))).toMatchObject({
+        kind: "not_found",
+        status: 404,
+        target: "account",
+        message: "GitHub add collaborator failed with status 404",
+      });
+      expect(await app.removeCollaborator("42", REPO, "octo-ghost")).toBe("not_found");
+      expect(await app.cancelInvitation("42", REPO, "77")).toBe("not_found");
+      expect(calls.slice(1).map((call) => `${call.method} ${new URL(call.url).pathname}`)).toEqual([
+        `PUT ${repoPath}/collaborators/octo-ghost`,
+        `GET ${repoPath}`,
+        `DELETE ${repoPath}/collaborators/octo-ghost`,
+        `GET ${repoPath}`,
+        `DELETE ${repoPath}/invitations/77`,
+        `GET ${repoPath}`,
+      ]);
+    });
+
+    it("reports the repository as not found when it 404s too", async () => {
+      const { app } = await client([tokenRoute("42"), repository(404)]);
+      for (const call of [
+        app.addCollaborator("42", REPO, "octo-ghost"),
+        app.removeCollaborator("42", REPO, "octo-ghost"),
+        app.cancelInvitation("42", REPO, "77"),
+      ]) {
+        expect(await failure(call)).toMatchObject({
+          kind: "not_found",
+          status: 404,
+          target: "repository",
+          message: "GitHub get repository failed with status 404",
+        });
+      }
+    });
+
+    it("passes on a failure of the repository check", async () => {
+      const { app } = await client([tokenRoute("42"), repository(503)]);
+      expect(await failure(app.removeCollaborator("42", REPO, "octo-ghost"))).toMatchObject({
+        kind: "transient",
+        target: undefined,
+      });
+    });
+
+    it("needs no check for lists: their 404 is the repository", async () => {
+      const { app, calls } = await client([tokenRoute("42")]);
+      expect(await failure(app.listCollaborators("42", REPO, "direct"))).toMatchObject({
+        kind: "not_found",
+        target: "repository",
+      });
+      expect(await failure(app.listInvitations("42", REPO))).toMatchObject({
+        target: "repository",
+      });
+      expect(calls).toHaveLength(3);
+    });
+
+    it("blames the installation, not the account, when the installation is gone", async () => {
+      const { app, calls } = await client([]);
+      const error = await failure(app.addCollaborator("404", REPO, "octo-subscriber"));
+      expect(error).toMatchObject({ kind: "not_found", target: "installation" });
+      expect(error.message).toBe("GitHub create installation token failed with status 404");
+      expect(calls).toHaveLength(1);
+      expect(await failure(app.listCollaborators("404", REPO, "all"))).toMatchObject({
+        kind: "not_found",
+        target: "installation",
+      });
+    });
+  });
+});
+
+describe("getUserById", () => {
+  it("looks the ID up with the installation token", async () => {
+    const { app, calls } = await client([
+      tokenRoute("42"),
+      on("GET", "/user/7001", () =>
+        jsonResponse(200, { id: 7001, login: "octo-renamed", type: "User" }),
+      ),
+    ]);
+    expect(await app.getUserById("42", "7001")).toEqual({
+      id: "7001",
+      login: "octo-renamed",
+      type: "User",
+    });
+    expect(calls.at(-1)).toMatchObject({
+      method: "GET",
+      url: `${API}/user/7001`,
+      authorization: "Bearer ghs_token_42",
+    });
+  });
+
+  it("reports an unknown ID as not_found and a bad body as malformed", async () => {
+    const { app } = await client([
+      tokenRoute("42"),
+      on("GET", "/user/7002", () => jsonResponse(200, { id: 7002, login: "" })),
+    ]);
+    expect(await failure(app.getUserById("42", "7003"))).toMatchObject({
+      kind: "not_found",
+      target: undefined,
+    });
+    expect((await failure(app.getUserById("42", "7002"))).kind).toBe("malformed_response");
   });
 });
 

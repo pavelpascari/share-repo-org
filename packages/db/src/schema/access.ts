@@ -8,6 +8,10 @@ import {
   GRANT_STATES,
   type GrantState,
   type Instant,
+  MUTATION_OPERATIONS,
+  MUTATION_STATUSES,
+  type MutationOperation,
+  type MutationStatus,
   RETRY_CLASSES,
   type RetryClass,
 } from "@sharerepo/domain";
@@ -117,7 +121,11 @@ export const grants = sqliteTable(
     accessLevel: text("access_level", { enum: ACCESS_LEVELS }).$type<AccessLevel>().notNull(),
     state: text("state", { enum: GRANT_STATES }).$type<GrantState>().notNull(),
     managed: integer("managed", { mode: "boolean" }).notNull(),
+    // Access that does not come from a direct grant (on a personal repository, the owner's own).
+    // Reported and never changed (decision 0010).
+    indirect: integer("indirect", { mode: "boolean" }).notNull().default(false),
     entitlementId: text("entitlement_id"),
+    // The provider invitation's ID while one is pending.
     externalGrantId: text("external_grant_id"),
     // When the provider invitation lapses, for pending invitations.
     expiresAt: integer("expires_at").$type<Instant>(),
@@ -125,6 +133,8 @@ export const grants = sqliteTable(
     lastAttemptAt: integer("last_attempt_at").$type<Instant>(),
     lastErrorCode: text("last_error_code"),
     retryClass: text("retry_class", { enum: RETRY_CLASSES }).$type<RetryClass>(),
+    // When an errored grant may be retried; null when it waits for a person ("Retry").
+    nextAttemptAt: integer("next_attempt_at").$type<Instant>(),
     createdAt: integer("created_at").$type<Instant>().notNull(),
     updatedAt: integer("updated_at").$type<Instant>().notNull(),
   },
@@ -168,5 +178,93 @@ export const grants = sqliteTable(
       sql`(state = 'error') = (last_error_code IS NOT NULL AND retry_class IS NOT NULL)`,
     ),
     check("grants_updated_after_created", sql`updated_at >= created_at`),
+  ],
+);
+
+/**
+ * A change ShareRepo asked an access provider to make (decision 0010; integrations.md
+ * § Reconciliation ownership). Written as `started` before the request is sent, then settled once.
+ * Rows are never deleted, and only `status`, `error_code`, `retry_class`, `external_id` and
+ * `finished_at` change, once, from `started` (enforced by triggers in migration 0005).
+ */
+export const providerMutations = sqliteTable(
+  "provider_mutations",
+  {
+    id: text("id").primaryKey(),
+    workspaceId: text("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "restrict" }),
+    connectionId: text("connection_id").notNull(),
+    grantId: text("grant_id").notNull(),
+    subjectId: text("subject_id").notNull(),
+    resourceId: text("resource_id").notNull(),
+    operation: text("operation", { enum: MUTATION_OPERATIONS })
+      .$type<MutationOperation>()
+      .notNull(),
+    accessLevel: text("access_level", { enum: ACCESS_LEVELS }).$type<AccessLevel>().notNull(),
+    status: text("status", { enum: MUTATION_STATUSES }).$type<MutationStatus>().notNull(),
+    errorCode: text("error_code"),
+    retryClass: text("retry_class", { enum: RETRY_CLASSES }).$type<RetryClass>(),
+    // The provider's ID for what the mutation created or removed, such as an invitation ID.
+    externalId: text("external_id"),
+    // JSON array of the entitlement IDs behind the decision.
+    entitlementIds: text("entitlement_ids").notNull(),
+    correlationId: text("correlation_id").notNull(),
+    startedAt: integer("started_at").$type<Instant>().notNull(),
+    finishedAt: integer("finished_at").$type<Instant>(),
+  },
+  (t) => [
+    unique("provider_mutations_workspace_id_id_unique").on(t.workspaceId, t.id),
+    index("provider_mutations_budget_idx").on(
+      t.workspaceId,
+      t.resourceId,
+      t.operation,
+      t.startedAt,
+    ),
+    foreignKey({
+      name: "provider_mutations_connection_fk",
+      columns: [t.workspaceId, t.connectionId],
+      foreignColumns: [connections.workspaceId, connections.id],
+    }).onDelete("restrict"),
+    foreignKey({
+      name: "provider_mutations_grant_fk",
+      columns: [t.workspaceId, t.grantId],
+      foreignColumns: [grants.workspaceId, grants.id],
+    }).onDelete("restrict"),
+    foreignKey({
+      name: "provider_mutations_subject_fk",
+      columns: [t.workspaceId, t.subjectId],
+      foreignColumns: [subjects.workspaceId, subjects.id],
+    }).onDelete("restrict"),
+    foreignKey({
+      name: "provider_mutations_resource_fk",
+      columns: [t.workspaceId, t.resourceId],
+      foreignColumns: [resources.workspaceId, resources.id],
+    }).onDelete("restrict"),
+    check(
+      "provider_mutations_operation_valid",
+      sql`operation IN (${literalList(MUTATION_OPERATIONS)})`,
+    ),
+    check(
+      "provider_mutations_access_level_valid",
+      sql`access_level IN (${literalList(ACCESS_LEVELS)})`,
+    ),
+    check("provider_mutations_status_valid", sql`status IN (${literalList(MUTATION_STATUSES)})`),
+    check(
+      "provider_mutations_retry_class_valid",
+      sql`retry_class IS NULL OR retry_class IN (${literalList(RETRY_CLASSES)})`,
+    ),
+    check(
+      "provider_mutations_failure_classified",
+      sql`(status = 'failed') = (error_code IS NOT NULL AND retry_class IS NOT NULL)`,
+    ),
+    check(
+      "provider_mutations_finished",
+      sql`(status = 'started') = (finished_at IS NULL) AND (finished_at IS NULL OR finished_at >= started_at)`,
+    ),
+    check(
+      "provider_mutations_entitlement_ids_json",
+      sql`json_valid(entitlement_ids) AND json_type(entitlement_ids) = 'array'`,
+    ),
   ],
 );

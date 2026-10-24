@@ -104,6 +104,13 @@ export function resourceRow(
     capabilities: JSON.stringify({ readOnlyGrant: false }),
     discoveredAt: T0,
     updatedAt: T0,
+    nextReconcileAt: null,
+    lastReconciledAt: null,
+    reconcileToken: null,
+    reconcileLeaseUntil: null,
+    reconcileRequestedAt: null,
+    reconcileFailures: 0,
+    lastReconcileError: null,
     ...overrides,
   };
 }

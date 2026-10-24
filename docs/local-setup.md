@@ -38,9 +38,20 @@ Outside production, each workspace has a **Simulator** page ([decision 0009](dec
 1. Connect GitHub (above) so repositories exist.
 2. On **Offers**, create an offer: pick repositories, set a grace period, and give it a commercial item ID such as `sim_monthly`.
 3. On **Simulator**, add a subscriber by GitHub login with that item ID, then drive their subscription: activate, mark past due, cancel, expire, reactivate.
-4. On **Access**, see the desired access for each subscriber and repository, and what ShareRepo would do. Observed access says "Not checked yet" until Phase 4 starts inspecting GitHub.
+4. On **Access**, see each subscriber and repository: the desired access, what GitHub shows, and what ShareRepo will do next.
 
-Simulator actions are processed by the jobs Worker, which `pnpm dev` runs alongside the web Worker. Nothing on GitHub changes in Phase 3. In production the Simulator page and its jobs are disabled.
+Simulator actions are processed by the jobs Worker, which `pnpm dev` runs alongside the web Worker. In production the Simulator page and its jobs are disabled.
+
+### GitHub provisioning (Phase 4)
+
+With a connected development App, simulated subscriptions change real access on your test repository ([decision 0010](decisions/0010-grant-ownership-and-reconciliation.md)):
+
+- **Activating a subscriber** invites their GitHub account. GitHub emails them the invitation, and the Access page shows "Invitation sent" until they accept.
+- **Ending a subscription** removes the collaborator, or cancels the pending invitation, but only if ShareRepo created it. Someone you added by hand is shown as "Has access ShareRepo does not manage" and left alone.
+- **Checks run on a schedule.** ShareRepo checks each repository again every 15 minutes while anything is pending, and every 6 hours otherwise. Owners can press **Check now** on a repository, and **Retry** on a row with an error.
+- **Each repository is limited to 40 ShareRepo invitations per 24 hours**, below GitHub's 50. Past that, invitations wait, and the Access page says the limit was reached. The next check after the 24-hour window opens sends them.
+
+Use a test repository and test accounts only: invitations are real and count against GitHub's limits.
 
 Tests never need these values. Workers-pool tests use test-only secrets from `apps/web/vitest.config.ts`, and `pnpm test:e2e` signs in through a local fake GitHub (`apps/web/e2e/support/fake-github.ts`) with the wrangler `e2e` environment, which is the only one that accepts GitHub endpoint overrides.
 

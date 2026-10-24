@@ -6,6 +6,7 @@ import type {
 } from "@sharerepo/application";
 import type {
   AccessDecisionReason,
+  GrantErrorCode,
   GrantState,
   OfferAccessError,
   OfferInputError,
@@ -107,20 +108,10 @@ export function accessReasonText(reason: string): string {
   return (ACCESS_REASONS as Record<string, string>)[reason] ?? "Unrecognized reason";
 }
 
-export const GRANT_STATE_LABELS: Record<GrantState, string> = {
-  unknown: "Unknown",
-  absent: "No access",
-  provisioning: "Being granted",
-  pending_invitation: "Invitation pending",
-  active: "Has access",
-  revoking: "Being removed",
-  error: "Error",
-};
-
 const PLANNED_ACTIONS: Record<ReconciliationAction, string> = {
   provision: "Will invite",
   verify: "Will check access",
-  wait: "Waiting for the subscriber to accept",
+  wait: "Waiting",
   retry: "Will retry",
   request_action: "Needs action",
   blocked: "Blocked",
@@ -148,21 +139,162 @@ const PLANNED_REASONS: Record<ReconciliationReason, string> = {
   revocation_in_progress: "removal in progress",
   unmanaged_access: "access not granted by ShareRepo, left as is",
   no_access: "no access",
+  invitation_quota: "invitation limit for this repository reached, waiting for it to reset",
+  indirect_access: "has access as the repository owner, left as is",
+};
+
+/** What a wait is for, by its reason; other waits read as "Waiting". */
+const WAITS: Partial<Record<ReconciliationReason, string>> = {
+  invitation_pending: "Waiting for the subscriber to accept",
+  invitation_quota: "Waiting: invitation limit for this repository reached",
+  transient_error: "Waiting to retry",
+  rate_limited: "Waiting to retry",
 };
 
 /**
  * What reconciliation will do, as a label and a detail: "Will invite" / "No access yet", or
- * "Blocked: repository not sellable" when a change is blocked.
+ * "Blocked: repository not sellable" when a change is blocked. A wait to retry names when, given
+ * the grant's next attempt.
  */
 export function plannedActionText(
   action: ReconciliationAction,
   reason: ReconciliationReason,
+  retryAt: number | null = null,
 ): { label: string; detail: string } {
   const why = PLANNED_REASONS[reason];
-  return {
-    label: action === "blocked" ? `Blocked: ${why}` : PLANNED_ACTIONS[action],
-    detail: why.charAt(0).toUpperCase() + why.slice(1),
-  };
+  let label = PLANNED_ACTIONS[action];
+  if (action === "blocked") label = `Blocked: ${why}`;
+  if (action === "wait") {
+    label = WAITS[reason] ?? label;
+    if (label === "Waiting to retry" && retryAt !== null) {
+      label = `${label} at ${formatInstant(retryAt)}`;
+    }
+  }
+  return { label, detail: why.charAt(0).toUpperCase() + why.slice(1) };
+}
+
+/** The observed side of an access row, as the access page shows it. */
+export interface ObservedRow {
+  readonly subjectLogin: string;
+  /** The row's current entitlement is live. */
+  readonly entitled: boolean;
+  readonly resourceLastReconciledAt: number | null;
+  readonly grant: {
+    readonly state: GrantState;
+    readonly managed: boolean;
+    readonly indirect: boolean;
+    readonly observedAt: number | null;
+    readonly expiresAt: number | null;
+    readonly lastErrorCode: string | null;
+    readonly nextAttemptAt: number | null;
+  } | null;
+}
+
+/** What GitHub showed, a hint for an error, when it is retried, and when it was checked. */
+export interface ObservedText {
+  readonly label: string;
+  readonly hint: string | null;
+  readonly retry: string | null;
+  readonly checked: string | null;
+}
+
+const GRANT_ERRORS: Record<GrantErrorCode, { message: string; hint: string }> = {
+  provider_unavailable: {
+    message: "GitHub was unavailable",
+    hint: "ShareRepo tries again automatically.",
+  },
+  rate_limited: {
+    message: "GitHub's rate limit was reached",
+    hint: "ShareRepo waits until GitHub allows more changes, then tries again.",
+  },
+  invitation_rejected: {
+    message: "GitHub refused the invitation",
+    hint: "The account may be blocked or flagged by GitHub. Check it with the subscriber, then press Retry.",
+  },
+  app_permission_missing: {
+    message: "The GitHub App can't manage collaborators on this repository",
+    hint: "Grant the App the “Administration: write” permission on GitHub, then press Retry.",
+  },
+  account_not_found: {
+    message: "The subscriber's GitHub account no longer exists",
+    hint: "Ask the subscriber which GitHub account to use. Retry won't help until it exists.",
+  },
+  provider_rejected: {
+    message: "GitHub refused the change",
+    hint: "Check the repository and the subscriber's account on GitHub, then press Retry.",
+  },
+};
+
+const UNKNOWN_GRANT_ERROR = {
+  message: "The last change on GitHub failed",
+  hint: "Press Retry, or wait for the next check.",
+};
+
+/** A stored grant error code as a message and a hint; an unrecognized one still reads well. */
+export function grantErrorText(code: string | null): { message: string; hint: string } {
+  return (
+    (GRANT_ERRORS as Record<string, { message: string; hint: string }>)[code ?? ""] ??
+    UNKNOWN_GRANT_ERROR
+  );
+}
+
+/** "just now", "5 min ago", or a UTC instant once it is an hour old or more. */
+export function checkedText(at: number, now: number): string {
+  const minutes = Math.floor(Math.max(0, now - at) / 60_000);
+  if (minutes < 1) return "Checked just now";
+  if (minutes < 60) return `Checked ${minutes} min ago`;
+  return `Checked ${formatInstant(at)}`;
+}
+
+/** A UTC day as `2026-10-26`. */
+export function formatDate(instant: number): string {
+  return new Date(instant).toISOString().slice(0, 10);
+}
+
+/**
+ * The observed access of one subscriber on one repository (phase-4 plan § Access view):
+ * invitation, active, removed, unmanaged or the owner's own access, or the error with what to do
+ * and when it is retried. `now` comes from the loader, so the server and browser agree.
+ */
+export function observedAccessText(row: ObservedRow, now: number): ObservedText {
+  const { grant } = row;
+  const latest = Math.max(grant?.observedAt ?? -1, row.resourceLastReconciledAt ?? -1);
+  const checked = latest < 0 ? null : checkedText(latest, now);
+  const text = (label: string, hint: string | null = null, retry: string | null = null) => ({
+    label,
+    hint,
+    retry,
+    checked,
+  });
+  if (grant === null || grant.state === "unknown") return text("Not checked yet");
+  const listed = grant.state === "active" || grant.state === "pending_invitation";
+  if (listed && grant.indirect) return text("Has access as the repository owner");
+  if (listed && !grant.managed) return text("Has access ShareRepo does not manage");
+  switch (grant.state) {
+    case "pending_invitation":
+      if (grant.expiresAt !== null && grant.expiresAt <= now) return text("Invitation expired");
+      return text(
+        `Invitation sent, waiting for @${row.subjectLogin} to accept${
+          grant.expiresAt === null ? "" : ` (expires ${formatDate(grant.expiresAt)})`
+        }`,
+      );
+    case "active":
+      return text("Active");
+    case "provisioning":
+      return text("Inviting…");
+    case "revoking":
+      return text("Removing…");
+    case "absent":
+      return text(row.entitled ? "No access" : "Removed");
+    case "error": {
+      const { message, hint } = grantErrorText(grant.lastErrorCode);
+      return text(
+        `Error: ${message}`,
+        hint,
+        grant.nextAttemptAt === null ? null : `Retrying at ${formatInstant(grant.nextAttemptAt)}`,
+      );
+    }
+  }
 }
 
 export const SUBSCRIPTION_STATE_LABELS: Record<SubscriptionState, string> = {

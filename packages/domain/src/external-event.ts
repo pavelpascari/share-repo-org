@@ -15,6 +15,8 @@ export const OutboxKind = {
   RefreshSubscription: "refresh_subscription",
   /** Recompute the entitlements of every subscription an offer covers. */
   RecomputeOffer: "recompute_offer",
+  /** Observe a repository's access and converge it to its entitlements (decision 0010). */
+  ReconcileResource: "reconcile_resource",
 } as const;
 export type OutboxKind = (typeof OutboxKind)[keyof typeof OutboxKind];
 /** Every outbox kind, in the order the database CHECK lists them. */
@@ -23,4 +25,5 @@ export const OUTBOX_KINDS = [
   OutboxKind.ResyncConnection,
   OutboxKind.RefreshSubscription,
   OutboxKind.RecomputeOffer,
+  OutboxKind.ReconcileResource,
 ] as const;

@@ -1,11 +1,15 @@
 import { type Clock, type Instant, parseGitHubLogin } from "@sharerepo/domain";
 import { z } from "zod";
-import { GitHubApiError } from "./errors.ts";
+import { GitHubApiError, type GitHubNotFoundTarget } from "./errors.ts";
 import { importPrivateKey, signAppJwt } from "./jwt.ts";
 import type {
+  AddCollaboratorResult,
   GitHubAccountType,
   GitHubAppPort,
+  GitHubCollaborator,
   GitHubInstallation,
+  GitHubInvitation,
+  GitHubPermission,
   GitHubRepository,
   GitHubUser,
 } from "./port.ts";
@@ -24,58 +28,24 @@ export interface GitHubAppOptions {
   readonly install?: { readonly slug: string; readonly webBaseUrl: string };
 }
 
-export interface GitHubCollaborator {
-  readonly id: string;
-  readonly login: string;
-}
-
-export interface GitHubInvitation {
-  readonly id: string;
-  readonly invitee: GitHubCollaborator | null;
-  readonly permissions: string;
-  readonly expired: boolean;
-  readonly createdAt: Instant;
-}
-
-export interface AddCollaboratorResult {
-  /** 201: an invitation was created (pending). 204: already a collaborator. */
-  readonly status: 201 | 204;
-  readonly invitationId?: string;
-}
-
 export interface GitHubAppClient extends GitHubAppPort {
   appJwt(): Promise<string>;
   installationToken(installationId: string): Promise<string>;
-  listCollaborators(
-    installationId: string,
-    owner: string,
-    repo: string,
-  ): Promise<GitHubCollaborator[]>;
-  listInvitations(installationId: string, owner: string, repo: string): Promise<GitHubInvitation[]>;
-  addCollaborator(
-    installationId: string,
-    owner: string,
-    repo: string,
-    username: string,
-    permission?: string,
-  ): Promise<AddCollaboratorResult>;
-  removeCollaborator(
-    installationId: string,
-    owner: string,
-    repo: string,
-    username: string,
-  ): Promise<204>;
-  deleteInvitation(
-    installationId: string,
-    owner: string,
-    repo: string,
-    invitationId: string,
-  ): Promise<204>;
 }
+
+/**
+ * How long one GitHub request may take, headers and body, before it is aborted and classified
+ * `transient`. A reconciliation run stops sending mutations when its lease has less than this
+ * left (plus a margin), so a slow request never outlives the lease it was sent under.
+ */
+export const REQUEST_TIMEOUT_MS = 20_000;
 
 /** Tokens are reused until 5 minutes before GitHub says they expire (they last an hour). */
 const TOKEN_REFRESH_MARGIN_MS = 5 * 60 * 1000;
 const PAGE_LIMIT = 50;
+/** Collaborator and invitation lists: 30 pages of 100 (phase 4 plan). */
+const REPOSITORY_LIST_PAGE_LIMIT = 30;
+const AFFILIATIONS = new Set(["direct", "all"]);
 const DEFAULT_RETRY_AFTER_MS = 60_000;
 
 const id = z
@@ -114,17 +84,29 @@ const repository = z.object({
   archived: z.boolean(),
 });
 const repositoriesPage = z.object({ repositories: z.array(repository) });
-const collaborators = z.array(user);
-const invitations = z.array(
+const collaborators = z.array(
   z.object({
     id,
-    invitee: user.nullable(),
-    permissions: z.string(),
-    expired: z.boolean(),
-    created_at: timestamp,
+    login: z.string().min(1),
+    permissions: z.object({
+      admin: z.boolean(),
+      maintain: z.boolean().optional(),
+      push: z.boolean(),
+      triage: z.boolean().optional(),
+      pull: z.boolean(),
+    }),
   }),
 );
-const invitationCreated = z.object({ id });
+const invitation = z.object({
+  id,
+  // `null` for an invitation sent to an email address rather than an account.
+  invitee: user.nullable(),
+  created_at: timestamp,
+  // Decision 0010: the field may be absent; a missing flag is not expired.
+  expired: z.boolean().optional().default(false),
+});
+const invitations = z.array(invitation);
+const invitationCreated = z.object({ id, created_at: timestamp });
 const errorBody = z
   .object({
     message: z.string().optional(),
@@ -149,9 +131,15 @@ export function createGitHubApp(options: GitHubAppOptions): GitHubAppClient {
     if (cached !== undefined && clock.now() < cached.expiresAt - TOKEN_REFRESH_MARGIN_MS) {
       return cached.token;
     }
-    const response = await request("create installation token", "POST", tokenPath(installationId), {
-      kind: "app",
-    });
+    // A 404 here means the installation itself is gone, whatever the request was about.
+    const response = await request(
+      "create installation token",
+      "POST",
+      tokenPath(installationId),
+      { kind: "app" },
+      undefined,
+      "installation",
+    );
     const body = parse("create installation token", tokenResponse, await json(response));
     tokens.set(installationId, { token: body.token, expiresAt: body.expires_at });
     return body.token;
@@ -163,6 +151,8 @@ export function createGitHubApp(options: GitHubAppOptions): GitHubAppClient {
     pathOrUrl: string,
     auth: Auth,
     body?: unknown,
+    /** What a 404 from this request (not from minting its token) means. */
+    notFound?: GitHubNotFoundTarget,
   ): Promise<Response> {
     const token = auth.kind === "app" ? await appJwt() : await installationToken(auth.id);
     const headers: Record<string, string> = {
@@ -176,39 +166,70 @@ export function createGitHubApp(options: GitHubAppOptions): GitHubAppClient {
     try {
       response = await options.fetch(
         pathOrUrl.startsWith("/") ? `${apiBaseUrl}${pathOrUrl}` : pathOrUrl,
-        { method, headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }) },
+        {
+          method,
+          headers,
+          signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+          ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        },
       );
     } catch {
+      // A network failure, or the timeout aborting the request.
       throw new GitHubApiError("transient", `GitHub ${operation} failed: network error`);
     }
     if (response.ok) return response;
-    throw await classify(operation, response, clock);
+    throw await classify(operation, response, clock, notFound);
   }
 
   const installation = (installationId: string): Auth => ({
     kind: "installation",
     id: installationId,
   });
-  const repoPath = (owner: string, repo: string) =>
-    `/repos/${pathSegment("login", owner)}/${pathSegment("repo", repo)}`;
 
   async function paginate<T>(
     operation: string,
     first: string,
     auth: Auth,
     read: (body: unknown) => T[],
+    limit = PAGE_LIMIT,
+    notFound?: GitHubNotFoundTarget,
   ): Promise<T[]> {
     const items: T[] = [];
     let next: string | null = first;
     for (let page = 0; next !== null; page += 1) {
-      if (page === PAGE_LIMIT) {
+      if (page === limit) {
         throw new GitHubApiError("malformed_response", `GitHub ${operation}: too many pages`);
       }
-      const response = await request(operation, "GET", next, auth);
+      const response = await request(operation, "GET", next, auth, undefined, notFound);
       items.push(...read(await json(response)));
       next = nextLink(response.headers.get("link"), apiBaseUrl);
     }
     return items;
+  }
+
+  /**
+   * Sends a collaborator or invitation change, and settles what a 404 meant. GitHub answers 404
+   * both when the repository is gone (renamed, transferred, deleted or no longer selected) and
+   * when the user, collaborator or invitation is; its body does not reliably say which. So a 404
+   * is followed by one `GET /repos/{owner}/{repo}` (Metadata: read): if that 404s too, the error
+   * is `not_found` with target `repository` (the caller resyncs); otherwise the change's 404 is
+   * returned as `null`, meaning the account, collaborator or invitation was not found.
+   */
+  async function mutate(
+    operation: string,
+    method: string,
+    repo: string,
+    path: string,
+    auth: Auth,
+    body?: unknown,
+  ): Promise<Response | null> {
+    try {
+      return await request(operation, method, `${repo}${path}`, auth, body, "account");
+    } catch (error) {
+      if (!(error instanceof GitHubApiError && error.target === "account")) throw error;
+      await request("get repository", "GET", repo, auth, undefined, "repository");
+      return null;
+    }
   }
 
   return {
@@ -264,90 +285,161 @@ export function createGitHubApp(options: GitHubAppOptions): GitHubAppClient {
 
     async getUserByLogin(installationId, login) {
       const operation = "get user";
-      const parsed = parseGitHubLogin(login);
-      if (!parsed.ok) {
-        throw new GitHubApiError("rejected", "GitHub request refused: invalid login");
-      }
       const response = await request(
         operation,
         "GET",
-        `/users/${pathSegment("login", parsed.value)}`,
+        `/users/${loginSegment(login)}`,
         installation(installationId),
       );
       const body = parse(operation, userResponse, await json(response));
       return { id: body.id, login: body.login, type: body.type } satisfies GitHubUser;
     },
 
-    async listCollaborators(installationId, owner, repo) {
+    async getUserById(installationId, userId) {
+      const operation = "get user by id";
+      const response = await request(
+        operation,
+        "GET",
+        `/user/${pathSegment("id", userId)}`,
+        installation(installationId),
+      );
+      const body = parse(operation, userResponse, await json(response));
+      return { id: body.id, login: body.login, type: body.type } satisfies GitHubUser;
+    },
+
+    async listCollaborators(installationId, repo, affiliation) {
       const operation = "list collaborators";
+      const path = repositoryPath(repo);
+      if (!AFFILIATIONS.has(affiliation)) {
+        throw new GitHubApiError("rejected", "GitHub request refused: invalid affiliation");
+      }
       return paginate(
         operation,
-        `${repoPath(owner, repo)}/collaborators?affiliation=direct&per_page=100`,
+        `${path}/collaborators?affiliation=${affiliation}&per_page=100`,
         installation(installationId),
-        (body) => parse(operation, collaborators, body),
+        (body) =>
+          parse(operation, collaborators, body).map(
+            (collaborator): GitHubCollaborator => ({
+              id: collaborator.id,
+              login: collaborator.login,
+              permission: highestPermission(collaborator.permissions),
+            }),
+          ),
+        REPOSITORY_LIST_PAGE_LIMIT,
+        "repository",
       );
     },
 
-    async listInvitations(installationId, owner, repo) {
+    async listInvitations(installationId, repo) {
       const operation = "list invitations";
       return paginate(
         operation,
-        `${repoPath(owner, repo)}/invitations?per_page=100`,
+        `${repositoryPath(repo)}/invitations?per_page=100`,
         installation(installationId),
         (body) =>
-          parse(operation, invitations, body).map((invitation) => ({
-            id: invitation.id,
-            invitee: invitation.invitee,
-            permissions: invitation.permissions,
-            expired: invitation.expired,
-            createdAt: invitation.created_at,
-          })),
+          parse(operation, invitations, body).flatMap((item): GitHubInvitation[] =>
+            item.invitee === null
+              ? []
+              : [
+                  {
+                    id: item.id,
+                    inviteeId: item.invitee.id,
+                    inviteeLogin: item.invitee.login,
+                    createdAt: item.created_at,
+                    expired: item.expired,
+                  },
+                ],
+          ),
+        REPOSITORY_LIST_PAGE_LIMIT,
+        "repository",
       );
     },
 
-    async addCollaborator(installationId, owner, repo, username, permission) {
+    async addCollaborator(installationId, repo, login): Promise<AddCollaboratorResult> {
       const operation = "add collaborator";
-      const response = await request(
+      const path = repositoryPath(repo);
+      const segment = `/collaborators/${loginSegment(login)}`;
+      // No `permission`: it is documented for organization repositories only (decision 0010).
+      const response = await mutate(
         operation,
         "PUT",
-        `${repoPath(owner, repo)}/collaborators/${pathSegment("login", username)}`,
+        path,
+        segment,
         installation(installationId),
-        permission === undefined ? {} : { permission },
+        {},
       );
-      if (response.status === 204) return { status: 204 };
+      if (response === null) {
+        throw new GitHubApiError("not_found", `GitHub ${operation} failed with status 404`, {
+          status: 404,
+          target: "account",
+        });
+      }
+      if (response.status === 204) return { outcome: "already_collaborator" };
       if (response.status !== 201) {
         throw new GitHubApiError(
           "malformed_response",
           `GitHub ${operation} returned ${response.status}`,
-          {
-            status: response.status,
-          },
+          { status: response.status },
         );
       }
       const body = parse(operation, invitationCreated, await json(response));
-      return { status: 201, invitationId: body.id };
+      return { outcome: "invited", invitationId: body.id, createdAt: body.created_at };
     },
 
-    async removeCollaborator(installationId, owner, repo, username) {
-      await request(
+    async removeCollaborator(installationId, repo, login) {
+      const path = repositoryPath(repo);
+      const segment = `/collaborators/${loginSegment(login)}`;
+      const response = await mutate(
         "remove collaborator",
         "DELETE",
-        `${repoPath(owner, repo)}/collaborators/${pathSegment("login", username)}`,
+        path,
+        segment,
         installation(installationId),
       );
-      return 204;
+      return response === null ? "not_found" : "removed";
     },
 
-    async deleteInvitation(installationId, owner, repo, invitationId) {
-      await request(
-        "delete invitation",
+    async cancelInvitation(installationId, repo, invitationId) {
+      const path = repositoryPath(repo);
+      const segment = `/invitations/${pathSegment("id", invitationId)}`;
+      const response = await mutate(
+        "cancel invitation",
         "DELETE",
-        `${repoPath(owner, repo)}/invitations/${pathSegment("id", invitationId)}`,
+        path,
+        segment,
         installation(installationId),
       );
-      return 204;
+      return response === null ? "not_found" : "cancelled";
     },
   };
+}
+
+/** `owner/name` as the `/repos/{owner}/{repo}` path, each part validated (never echoed). */
+export function repositoryPath(repo: string): string {
+  const parts = repo.split("/");
+  if (parts.length !== 2) {
+    throw new GitHubApiError("rejected", "GitHub request refused: invalid repository");
+  }
+  const [owner, name] = parts as [string, string];
+  return `/repos/${pathSegment("login", owner)}/${pathSegment("repo", name)}`;
+}
+
+/** A login checked with the domain's rules, then as a path segment. */
+export function loginSegment(login: string): string {
+  if (!parseGitHubLogin(login).ok) {
+    throw new GitHubApiError("rejected", "GitHub request refused: invalid login");
+  }
+  return pathSegment("login", login);
+}
+
+function highestPermission(permissions: {
+  admin: boolean;
+  maintain?: boolean | undefined;
+  push: boolean;
+}): GitHubPermission {
+  if (permissions.admin) return "admin";
+  if (permissions.maintain === true || permissions.push) return "write";
+  return "read";
 }
 
 const tokenPath = (installationId: string) =>
@@ -370,8 +462,9 @@ async function json(response: Response): Promise<unknown> {
 }
 
 /**
- * The `rel="next"` URL from a Link header, only if it stays on the API origin: the request
- * carries a token, which must never be sent elsewhere.
+ * The `rel="next"` URL from a Link header. It must stay under the API base URL: the request
+ * carries a token, which must never be sent elsewhere. A next link anywhere else is
+ * `malformed_response`: stopping there would silently truncate the list.
  */
 export function nextLink(header: string | null, apiBaseUrl: string): string | null {
   if (header === null) return null;
@@ -379,7 +472,11 @@ export function nextLink(header: string | null, apiBaseUrl: string): string | nu
     const match = /<([^>]+)>\s*;\s*rel="([^"]+)"/.exec(part.trim());
     if (match?.[2]?.split(/\s+/).includes("next")) {
       const url = match[1] as string;
-      return url.startsWith(`${apiBaseUrl}/`) ? url : null;
+      if (url.startsWith(`${apiBaseUrl}/`)) return url;
+      throw new GitHubApiError(
+        "malformed_response",
+        "GitHub pagination link points outside the API",
+      );
     }
   }
   return null;
@@ -389,6 +486,7 @@ async function classify(
   operation: string,
   response: Response,
   clock: Clock,
+  notFound: GitHubNotFoundTarget | undefined,
 ): Promise<GitHubApiError> {
   const { status } = response;
   const message = `GitHub ${operation} failed with status ${status}`;
@@ -404,7 +502,13 @@ async function classify(
   if (status === 403 && /suspended/i.test(body.message ?? "")) {
     return new GitHubApiError("suspended", message, details);
   }
-  if (status === 404) return new GitHubApiError("not_found", message, details);
+  if (status === 404) {
+    return new GitHubApiError(
+      "not_found",
+      message,
+      notFound === undefined ? details : { ...details, target: notFound },
+    );
+  }
   if (status >= 500) return new GitHubApiError("transient", message, details);
   return new GitHubApiError("rejected", message, {
     ...details,
@@ -438,5 +542,6 @@ export function pathSegment(kind: keyof typeof PATH_SEGMENT_FORMATS, value: stri
   if (!PATH_SEGMENT_FORMATS[kind].test(value)) {
     throw new GitHubApiError("rejected", `GitHub request refused: invalid ${kind} path segment`);
   }
-  return value;
+  // A no-op for the formats above; kept so a looser format can never inject a path.
+  return encodeURIComponent(value);
 }

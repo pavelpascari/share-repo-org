@@ -1,11 +1,9 @@
 // Provider adapters (architecture § Integrations). v1: GitHub.
 export {
-  type AddCollaboratorResult,
   createGitHubApp,
   type GitHubAppClient,
   type GitHubAppOptions,
-  type GitHubCollaborator,
-  type GitHubInvitation,
+  REQUEST_TIMEOUT_MS,
 } from "./github/client.ts";
 export {
   GITHUB_API_BASE_URL,
@@ -18,14 +16,21 @@ export {
 export {
   GITHUB_API_ERROR_KINDS,
   GitHubApiError,
+  type GitHubApiErrorDetails,
   type GitHubApiErrorKind,
+  type GitHubNotFoundTarget,
   InvalidWebhookError,
 } from "./github/errors.ts";
 export type {
+  AddCollaboratorResult,
   GitHubAccount,
   GitHubAccountType,
   GitHubAppPort,
+  GitHubCollaborator,
+  GitHubCollaboratorAffiliation,
   GitHubInstallation,
+  GitHubInvitation,
+  GitHubPermission,
   GitHubRepository,
   GitHubUser,
   GitHubUserType,

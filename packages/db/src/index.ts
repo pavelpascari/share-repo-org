@@ -31,7 +31,7 @@ export {
   type RecordExternalEventResult,
   recordExternalEvent,
 } from "./event-repository.ts";
-export { type Grant, listGrantsForWorkspace } from "./grant-repository.ts";
+export { type Grant, getGrant, listGrantsForWorkspace } from "./grant-repository.ts";
 export {
   type ExternalIdentity,
   type ExternalIdentitySnapshot,
@@ -63,14 +63,48 @@ export {
 } from "./offer-repository.ts";
 export {
   claimOutbox,
+  dedupedOutboxInsert,
   enqueueOutbox,
+  enqueueOutboxOnce,
   enqueueOutboxRows,
   markOutboxFailed,
   markOutboxSent,
   type NewOutboxRow,
   type OutboxRow,
   outboxInsert,
+  pendingOutbox,
+  pendingOutboxId,
 } from "./outbox-repository.ts";
+export {
+  applyGrantObservation,
+  type BeginMutation,
+  beginMutation,
+  claimDueReconciles,
+  claimReconcileLease,
+  enqueueReconcile,
+  type FinishMutation,
+  finishMutation,
+  type GrantObservation,
+  type GrantUpdate,
+  type GrantWritable,
+  type LatestMutation,
+  type LeaseGuardedResult,
+  type LeaseKey,
+  latestMutations,
+  listGrantsForResource,
+  listInviteStarts,
+  listLiveEntitlementsForResource,
+  listOpenMutations,
+  type ProviderMutation,
+  type ReleaseReconcileLease,
+  type ResetGrantRetryResult,
+  reconcileKey,
+  reconcileKeyOfRow,
+  reconcileRequest,
+  releaseReconcileLease,
+  requestReconcile,
+  resetGrantRetry,
+} from "./reconcile-repository.ts";
 export {
   type ApplyResourceSyncResult,
   applyResourceSync,

@@ -15,3 +15,4 @@ Each record has: **Status**, **Context**, **Decision**, **Consequences**.
 | [0007](0007-audit-events.md) | Append-only audit events written in the same batch | Accepted |
 | [0008](0008-v1-personal-account-repositories.md) | v1 sells personal-account repositories, with write access | Accepted |
 | [0009](0009-entitlement-policy-v1.md) | Entitlement policy v1: creator-set grace period, derived entitlements, simulated source | Accepted |
+| [0010](0010-grant-ownership-and-reconciliation.md) | ShareRepo manages only access it created; per-repository reconciliation | Accepted |

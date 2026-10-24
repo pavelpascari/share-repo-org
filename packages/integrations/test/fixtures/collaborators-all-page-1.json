@@ -1,0 +1,59 @@
+[
+  {
+    "login": "octo-creator",
+    "id": 5001,
+    "node_id": "U_5001",
+    "avatar_url": "https://avatars.githubusercontent.com/u/5001?v=4",
+    "url": "https://api.github.com/users/octo-creator",
+    "html_url": "https://github.com/octo-creator",
+    "type": "User",
+    "user_view_type": "public",
+    "site_admin": false,
+    "permissions": {
+      "admin": true,
+      "maintain": true,
+      "push": true,
+      "triage": true,
+      "pull": true
+    },
+    "role_name": "admin"
+  },
+  {
+    "login": "octo-subscriber",
+    "id": 6001,
+    "node_id": "U_6001",
+    "avatar_url": "https://avatars.githubusercontent.com/u/6001?v=4",
+    "url": "https://api.github.com/users/octo-subscriber",
+    "html_url": "https://github.com/octo-subscriber",
+    "type": "User",
+    "user_view_type": "public",
+    "site_admin": false,
+    "permissions": {
+      "admin": false,
+      "maintain": false,
+      "push": true,
+      "triage": true,
+      "pull": true
+    },
+    "role_name": "write"
+  },
+  {
+    "login": "octo-member",
+    "id": 6002,
+    "node_id": "U_6002",
+    "avatar_url": "https://avatars.githubusercontent.com/u/6002?v=4",
+    "url": "https://api.github.com/users/octo-member",
+    "html_url": "https://github.com/octo-member",
+    "type": "User",
+    "user_view_type": "public",
+    "site_admin": false,
+    "permissions": {
+      "admin": false,
+      "maintain": false,
+      "push": true,
+      "triage": true,
+      "pull": true
+    },
+    "role_name": "write"
+  }
+]

@@ -1,9 +1,11 @@
 import {
   decodeOfferKey,
+  decodeReconcileKey,
   decodeRefreshKey,
   type EntitlementSourcePort,
   processExternalEvent,
   recomputeOffer,
+  reconcileResource,
   refreshSubscription,
   resyncConnection,
   type ServiceContext,
@@ -97,6 +99,16 @@ export async function runJob(
       if (connection === undefined) return JobOutcome.OutOfScope;
       await resyncConnection(ctx, connection, deps.github, "outbox: resync_connection");
       return JobOutcome.Done;
+    }
+    case OutboxKind.ReconcileResource: {
+      // The workspace comes from the key and scopes every read and write of the run.
+      const key = decodeReconcileKey(job.subjectId);
+      if (!key.ok) throw new JobRejectedError(JobRejection.KeyInvalid);
+      const outcome = await reconcileResource(ctx, key.value, deps.github);
+      // `busy`: another run holds the repository; this delivery is done. The request that queued
+      // it was stamped on the repository, so the holder schedules another run at once when it
+      // releases, or, if it crashed, the sweep queues one once its lease expires.
+      return outcome === "out_of_scope" ? JobOutcome.OutOfScope : JobOutcome.Done;
     }
   }
 }

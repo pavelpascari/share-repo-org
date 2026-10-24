@@ -24,6 +24,7 @@ import {
   type OfferRef,
   type SubscriptionRef,
 } from "./entitlement-source.ts";
+import { reconcileOutboxRow } from "./reconciliation.ts";
 
 // Processing (phase-3 plan § Processing): commercial events are hints. A refresh re-reads the
 // source, applies the snapshot only if it is newer, recomputes the subscription's entitlements,
@@ -409,6 +410,12 @@ async function attemptRefresh(
   for (const { id, state, reason } of plan.end) {
     event("entitlement.ended", id, { state, reason });
   }
+  const touched = new Set([
+    ...created.map((row) => row.resourceId),
+    ...[...plan.update, ...plan.end].map(
+      ({ id }) => (previous.get(id) as repo.Entitlement).resourceId,
+    ),
+  ]);
 
   const result = await repo.applySubscriptionRefresh(
     ctx.db,
@@ -424,6 +431,10 @@ async function attemptRefresh(
       // retry plans from the new configuration: its recompute may already have run.
       offers: offers.map(({ offerId, version }) => ({ offerId, version })),
       entitlements: { create: created, update: plan.update, end: plan.end },
+      // Each repository whose entitlements change is reconciled after this write commits.
+      reconcile: [...touched]
+        .sort()
+        .map((resourceId) => reconcileOutboxRow(ctx, { workspaceId, resourceId })),
     },
     audit as [AuditEvent, ...AuditEvent[]],
   );

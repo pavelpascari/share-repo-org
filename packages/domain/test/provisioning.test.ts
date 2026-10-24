@@ -1,0 +1,1479 @@
+import fc from "fast-check";
+import { describe, expect, it } from "vitest";
+import {
+  CLOCK_SKEW_MS,
+  classifyMutationFailure,
+  classifyObservationFailure,
+  GRANT_STATES,
+  type GrantFields,
+  type GrantObservationChange,
+  INVITATION_BUDGET,
+  INVITATION_LIFETIME_MS,
+  INVITATION_WINDOW_MS,
+  invitationBudget,
+  inviteMayStillAppear,
+  type LatestMutation,
+  MUTATION_OPERATIONS,
+  MUTATION_STATUSES,
+  MUTATION_STOP_REASONS,
+  type MutationOperation,
+  nextReconcileAt,
+  OBSERVATION_GRACE_MS,
+  type ObservableGrant,
+  type ObservedCollaborator,
+  type ObservedInvitation,
+  observeGrants,
+  type ProviderFailure,
+  planReconciliation,
+  RECONCILE_IDLE_MS,
+  RECONCILE_POLL_MS,
+  RETRY_CLASSES,
+  type RepositoryObservation,
+  retryBackoff,
+} from "../src/index.ts";
+
+const NOW = 1_700_000_000_000;
+const MINUTE = 60_000;
+const HOUR = 60 * MINUTE;
+const LONG_AGO = NOW - HOUR;
+
+const SUBJECTS = [{ id: "s1", externalSubjectId: "101" }];
+
+const stored = (overrides: Partial<ObservableGrant> = {}): ObservableGrant => ({
+  id: "g1",
+  subjectId: "s1",
+  accessLevel: "write",
+  state: "absent",
+  managed: false,
+  indirect: false,
+  externalGrantId: null,
+  expiresAt: null,
+  lastErrorCode: null,
+  retryClass: null,
+  nextAttemptAt: null,
+  updatedAt: LONG_AGO,
+  observedAt: null,
+  lastMutation: null,
+  ...overrides,
+});
+
+/** A grant's latest mutation, started a minute after LONG_AGO unless overridden. */
+const mutation = (
+  operation: MutationOperation,
+  status: LatestMutation["status"] = "started",
+  overrides: Partial<LatestMutation> = {},
+): LatestMutation => ({
+  operation,
+  status,
+  retryClass: status === "failed" ? "retryable" : null,
+  errorCode: status === "failed" ? "provider_unavailable" : null,
+  startedAt: LONG_AGO + MINUTE,
+  ...overrides,
+});
+
+const collaborator = (overrides: Partial<ObservedCollaborator> = {}): ObservedCollaborator => ({
+  userId: "101",
+  login: "octocat",
+  accessLevel: "write",
+  direct: true,
+  ...overrides,
+});
+
+const invitation = (overrides: Partial<ObservedInvitation> = {}): ObservedInvitation => ({
+  invitationId: "i1",
+  userId: "101",
+  login: "octocat",
+  createdAt: LONG_AGO,
+  expired: false,
+  ...overrides,
+});
+
+const lapse = (createdAt: number) => createdAt + INVITATION_LIFETIME_MS;
+
+interface Observe {
+  readonly grants?: readonly ObservableGrant[];
+  readonly collaborators?: readonly ObservedCollaborator[];
+  readonly invitations?: readonly ObservedInvitation[];
+  readonly subjects?: readonly { id: string; externalSubjectId: string }[];
+  readonly now?: number;
+}
+
+function observe(input: Observe = {}): GrantObservationChange[] {
+  let n = 0;
+  return observeGrants({
+    now: input.now ?? NOW,
+    subjects: input.subjects ?? SUBJECTS,
+    grants: input.grants ?? [],
+    observation: {
+      collaborators: input.collaborators ?? [],
+      invitations: input.invitations ?? [],
+    },
+    newGrantId: () => `n${++n}`,
+  });
+}
+
+const fieldsOf = (g: ObservableGrant): GrantFields => ({
+  state: g.state,
+  accessLevel: g.accessLevel,
+  managed: g.managed,
+  indirect: g.indirect,
+  externalGrantId: g.externalGrantId,
+  expiresAt: g.expiresAt,
+  lastErrorCode: g.lastErrorCode,
+  retryClass: g.retryClass,
+  nextAttemptAt: g.nextAttemptAt,
+});
+
+const NO_ERROR = { lastErrorCode: null, retryClass: null, nextAttemptAt: null } as const;
+
+/** The single stored grant's update for an observation, or null when nothing changes. */
+function update(grant: ObservableGrant, listed: Omit<Observe, "grants"> = {}) {
+  const changes = observe({ ...listed, grants: [grant] });
+  if (changes.length === 0) return null;
+  expect(changes).toHaveLength(1);
+  const [change] = changes as [GrantObservationChange];
+  if (change.kind !== "update") throw new Error("expected an update");
+  expect(change.from).toEqual(fieldsOf(grant));
+  expect(change.grantId).toBe(grant.id);
+  // `set` only names what changes.
+  for (const [key, value] of Object.entries(change.set)) {
+    expect(value).not.toEqual(change.from[key as keyof GrantFields]);
+  }
+  return { fields: { ...change.from, ...change.set }, settlesIntent: change.settlesIntent };
+}
+
+const ACTIVE = { state: "active", externalGrantId: null, expiresAt: null, ...NO_ERROR } as const;
+const ABSENT = {
+  state: "absent",
+  managed: false,
+  indirect: false,
+  externalGrantId: null,
+  expiresAt: null,
+  ...NO_ERROR,
+} as const;
+const PENDING = {
+  state: "pending_invitation",
+  indirect: false,
+  externalGrantId: "i1",
+  expiresAt: lapse(LONG_AGO),
+  ...NO_ERROR,
+} as const;
+
+describe("observeGrants: a subject with no grant", () => {
+  it("stores nothing when nothing is listed", () => {
+    expect(observe()).toEqual([]);
+  });
+
+  it("records a listed collaborator as unmanaged, active access", () => {
+    expect(observe({ collaborators: [collaborator({ accessLevel: "read" })] })).toEqual([
+      {
+        kind: "create",
+        grantId: "n1",
+        subjectId: "s1",
+        set: {
+          state: "active",
+          accessLevel: "read",
+          managed: false,
+          indirect: false,
+          externalGrantId: null,
+          expiresAt: null,
+          ...NO_ERROR,
+        },
+      },
+    ]);
+  });
+
+  it("records a collaborator only the full list has as indirect", () => {
+    expect(observe({ collaborators: [collaborator({ direct: false })] })).toEqual([
+      expect.objectContaining({ set: expect.objectContaining({ indirect: true, managed: false }) }),
+    ]);
+  });
+
+  it("records a listed invitation as an unmanaged pending invitation", () => {
+    expect(observe({ invitations: [invitation()] })).toEqual([
+      {
+        kind: "create",
+        grantId: "n1",
+        subjectId: "s1",
+        set: {
+          state: "pending_invitation",
+          accessLevel: "write",
+          managed: false,
+          indirect: false,
+          externalGrantId: "i1",
+          expiresAt: lapse(LONG_AGO),
+          ...NO_ERROR,
+        },
+      },
+    ]);
+  });
+
+  it("records an invitation the provider calls expired as lapsed by now at the latest", () => {
+    const expiresAt = (createdAt: number) =>
+      observe({ invitations: [invitation({ createdAt, expired: true })] })[0]?.set.expiresAt;
+    expect(expiresAt(LONG_AGO)).toBe(NOW);
+    const old = NOW - INVITATION_LIFETIME_MS - HOUR;
+    expect(expiresAt(old)).toBe(lapse(old));
+  });
+
+  it("prefers a listed collaborator over an invitation for the same person", () => {
+    expect(observe({ collaborators: [collaborator()], invitations: [invitation()] })).toEqual([
+      expect.objectContaining({ set: expect.objectContaining({ state: "active" }) }),
+    ]);
+  });
+
+  it("matches people by immutable user ID, never by login", () => {
+    expect(observe({ collaborators: [collaborator({ userId: "202" })] })).toEqual([]);
+    expect(observe({ invitations: [invitation({ userId: "202" })] })).toEqual([]);
+    expect(
+      observe({ collaborators: [collaborator({ login: "someone-else" })] }).map((c) => c.subjectId),
+    ).toEqual(["s1"]);
+  });
+
+  it("stores grants only for the given subjects, sorted by subject, with fresh IDs", () => {
+    const changes = observe({
+      subjects: [
+        { id: "s3", externalSubjectId: "303" },
+        { id: "s2", externalSubjectId: "202" },
+        { id: "s1", externalSubjectId: "101" },
+      ],
+      collaborators: [
+        collaborator({ userId: "303" }),
+        collaborator({ userId: "999" }),
+        collaborator({ userId: "202" }),
+      ],
+    });
+    expect(changes.map((c) => [c.subjectId, c.grantId])).toEqual([
+      ["s2", "n1"],
+      ["s3", "n2"],
+    ]);
+  });
+});
+
+describe("observeGrants: what is listed for a person", () => {
+  const created = (listed: Omit<Observe, "grants">, grants: ObservableGrant[] = []) =>
+    observe({ ...listed, grants })[0]?.set as Partial<GrantFields>;
+
+  it("prefers direct access, then the higher level", () => {
+    const level = (...collaborators: ObservedCollaborator[]) => {
+      const set = created({ collaborators });
+      return `${set.accessLevel}/${set.indirect ? "indirect" : "direct"}`;
+    };
+    expect(level(collaborator({ accessLevel: "read" }), collaborator({ direct: false }))).toBe(
+      "read/direct",
+    );
+    expect(level(collaborator({ direct: false }), collaborator({ accessLevel: "read" }))).toBe(
+      "read/direct",
+    );
+    expect(level(collaborator({ accessLevel: "read" }), collaborator())).toBe("write/direct");
+    expect(level(collaborator(), collaborator({ accessLevel: "read" }))).toBe("write/direct");
+    expect(
+      level(
+        collaborator({ accessLevel: "read", direct: false }),
+        collaborator({ accessLevel: "write", direct: false }),
+      ),
+    ).toBe("write/indirect");
+    expect(level(collaborator({ accessLevel: "read", direct: false }))).toBe("read/indirect");
+  });
+
+  it("prefers the grant's own invitation, then a live one, the newest, the lowest ID", () => {
+    const chosen = (invitations: ObservedInvitation[], grants: ObservableGrant[] = []) =>
+      created({ invitations }, grants)?.externalGrantId ??
+      (observe({ invitations, grants }).length === 0 ? "unchanged" : "none");
+    const pending = stored({ state: "pending_invitation", externalGrantId: "i3", expiresAt: NOW });
+    expect(
+      chosen(
+        [invitation({ invitationId: "i2" }), invitation({ invitationId: "i3", expired: true })],
+        [pending],
+      ),
+    ).toBe("unchanged");
+    expect(
+      chosen([
+        invitation({ invitationId: "i1", expired: true, createdAt: NOW - 1 }),
+        invitation({ invitationId: "i2", createdAt: LONG_AGO }),
+      ]),
+    ).toBe("i2");
+    expect(
+      chosen([
+        invitation({ invitationId: "i2", createdAt: LONG_AGO }),
+        invitation({ invitationId: "i1", expired: true, createdAt: NOW - 1 }),
+      ]),
+    ).toBe("i2");
+    expect(
+      chosen([
+        invitation({ invitationId: "i1", createdAt: LONG_AGO }),
+        invitation({ invitationId: "i2", createdAt: LONG_AGO + 1 }),
+      ]),
+    ).toBe("i2");
+    expect(
+      chosen([
+        invitation({ invitationId: "i2", createdAt: LONG_AGO + 1 }),
+        invitation({ invitationId: "i1", createdAt: LONG_AGO }),
+      ]),
+    ).toBe("i2");
+    expect(chosen([invitation({ invitationId: "i2" }), invitation({ invitationId: "i1" })])).toBe(
+      "i1",
+    );
+    expect(chosen([invitation({ invitationId: "i1" }), invitation({ invitationId: "i2" })])).toBe(
+      "i1",
+    );
+  });
+
+  it("keeps the lapse instant stored for an expired invitation, so it does not move", () => {
+    const earlier = NOW - 10 * MINUTE;
+    const grant = stored({
+      state: "pending_invitation",
+      externalGrantId: "i1",
+      expiresAt: earlier,
+    });
+    expect(update(grant, { invitations: [invitation({ expired: true })] })).toBeNull();
+    // A stored instant not yet passed is brought forward to now.
+    const later = stored({ ...grant, expiresAt: NOW + MINUTE });
+    expect(update(later, { invitations: [invitation({ expired: true })] })?.fields.expiresAt).toBe(
+      NOW,
+    );
+    // Another invitation's instant is not reused.
+    const other = stored({ ...grant, externalGrantId: "i0" });
+    expect(update(other, { invitations: [invitation({ expired: true })] })?.fields.expiresAt).toBe(
+      NOW,
+    );
+    // Without a stored instant, now.
+    const none = stored({ ...grant, expiresAt: null });
+    expect(update(none, { invitations: [invitation({ expired: true })] })?.fields.expiresAt).toBe(
+      NOW,
+    );
+  });
+
+  it("keeps the preferred grant's level when another of the subject's grants holds the listed one", () => {
+    const grants = [stored({ id: "g1", accessLevel: "read" }), stored({ id: "g2" })];
+    expect(observe({ grants, collaborators: [collaborator({ accessLevel: "read" })] })).toEqual([
+      expect.objectContaining({
+        grantId: "g2",
+        set: expect.not.objectContaining({ accessLevel: "read" }),
+      }),
+    ]);
+    const settled = [grants[0] as ObservableGrant, stored({ id: "g2", ...ACTIVE })];
+    expect(
+      observe({ grants: settled, collaborators: [collaborator({ accessLevel: "read" })] }),
+    ).toEqual([]);
+    // Without a sibling at that level, the level follows the listing.
+    expect(
+      observe({
+        grants: [stored({ id: "g2", ...ACTIVE })],
+        collaborators: [collaborator({ accessLevel: "read" })],
+      }),
+    ).toEqual([expect.objectContaining({ set: { accessLevel: "read" } })]);
+  });
+
+  it("updates only the preferred grant when a subject has several", () => {
+    const grants = [
+      stored({ id: "g3", accessLevel: "read" }),
+      stored({ id: "g2" }),
+      stored({ id: "g1", accessLevel: "read" }),
+      stored({ id: "g4" }),
+    ];
+    expect(observe({ grants, collaborators: [collaborator()] }).map((c) => c.grantId)).toEqual([
+      "g2",
+    ]);
+  });
+});
+
+describe("observeGrants: unknown and absent grants", () => {
+  it("records nothing listed as absent", () => {
+    expect(update(stored({ state: "unknown", managed: true }))).toEqual({
+      fields: { ...fieldsOf(stored()), ...ABSENT },
+      settlesIntent: false,
+    });
+    expect(update(stored({ state: "absent" }))).toBeNull();
+  });
+
+  it.each(["unknown", "absent"] as const)(
+    "records access found on a %s grant as unmanaged",
+    (state) => {
+      const grant = stored({ state, managed: true });
+      expect(update(grant, { collaborators: [collaborator({ accessLevel: "read" })] })).toEqual({
+        fields: { ...fieldsOf(grant), ...ACTIVE, accessLevel: "read", managed: false },
+        settlesIntent: false,
+      });
+      expect(update(grant, { invitations: [invitation()] })).toEqual({
+        fields: { ...fieldsOf(grant), ...PENDING, managed: false },
+        settlesIntent: false,
+      });
+    },
+  );
+});
+
+describe("observeGrants: provisioning (ShareRepo's intent)", () => {
+  const provisioning = stored({
+    state: "provisioning",
+    managed: true,
+    lastMutation: mutation("invite"),
+  });
+
+  it("makes the access it finds managed and settles the intent", () => {
+    expect(update(provisioning, { collaborators: [collaborator({ direct: false })] })).toEqual({
+      fields: { ...fieldsOf(provisioning), ...ACTIVE, managed: true, indirect: true },
+      settlesIntent: true,
+    });
+    expect(update(provisioning, { invitations: [invitation()] })).toEqual({
+      fields: { ...fieldsOf(provisioning), ...PENDING, managed: true },
+      settlesIntent: true,
+    });
+  });
+
+  it("waits out the grace window before deciding the invitation never landed", () => {
+    const at = (updatedAt: number) => update(stored({ ...provisioning, updatedAt }));
+    expect(at(NOW)).toBeNull();
+    expect(at(NOW - OBSERVATION_GRACE_MS + 1)).toBeNull();
+    expect(at(NOW - OBSERVATION_GRACE_MS)).toEqual({
+      fields: { ...fieldsOf(provisioning), ...ABSENT },
+      settlesIntent: true,
+    });
+  });
+
+  it("settles at once when the access is listed within the grace window", () => {
+    const fresh = stored({ ...provisioning, updatedAt: NOW });
+    expect(update(fresh, { invitations: [invitation()] })?.settlesIntent).toBe(true);
+  });
+});
+
+describe("invitation/pending-is-not-active", () => {
+  const pending = stored({ ...PENDING, managed: true });
+
+  it("keeps a listed invitation pending, never active", () => {
+    expect(update(pending, { invitations: [invitation()] })).toBeNull();
+    expect(observe({ invitations: [invitation()] })[0]?.set).toEqual(
+      expect.objectContaining({ state: "pending_invitation" }),
+    );
+  });
+
+  it("makes the grant active only once the collaborator is listed, keeping ownership", () => {
+    for (const managed of [true, false]) {
+      const grant = stored({ ...pending, managed });
+      expect(update(grant, { collaborators: [collaborator()] })).toEqual({
+        fields: { ...fieldsOf(grant), ...ACTIVE },
+        settlesIntent: false,
+      });
+    }
+  });
+
+  it("makes a fresh invitation accepted at once active, grace window or not", () => {
+    const fresh = stored({ ...pending, expiresAt: lapse(NOW) });
+    expect(update(fresh, { collaborators: [collaborator()] })?.fields.state).toBe("active");
+    expect(update(fresh, { invitations: [invitation({ createdAt: NOW })] })).toBeNull();
+  });
+
+  it("plans to wait for a pending invitation, not to verify it", () => {
+    const [decision] = planReconciliation({
+      now: NOW,
+      entitlements: [
+        { id: "e1", subjectId: "s1", resourceId: "r1", accessLevel: "write", validUntil: null },
+      ],
+      grants: [
+        {
+          ...stored({ ...pending }),
+          resourceId: "r1",
+          connectionId: "c1",
+        },
+      ],
+      resources: [],
+      connections: [],
+    });
+    expect(decision).toEqual(
+      expect.objectContaining({ action: "wait", reason: "invitation_pending" }),
+    );
+  });
+});
+
+describe("observeGrants: pending invitations", () => {
+  const pending = stored({ ...PENDING, managed: true });
+
+  it("refreshes the invitation and keeps ownership only of its own invitation", () => {
+    const listed = { invitations: [invitation({ invitationId: "i2", createdAt: NOW - MINUTE })] };
+    const refreshed = { externalGrantId: "i2", expiresAt: lapse(NOW - MINUTE) };
+    expect(update(pending, listed)).toEqual({
+      fields: { ...fieldsOf(pending), ...refreshed, managed: false },
+      settlesIntent: false,
+    });
+    // Even one stamped within its invite's window: it recorded another.
+    const invited = mutation("invite", "succeeded", { startedAt: NOW - MINUTE });
+    expect(update(stored({ ...pending, lastMutation: invited }), listed)?.fields.managed).toBe(
+      false,
+    );
+    // A managed grant that has not recorded its invitation yet takes the one its own invite
+    // could have created, and no other.
+    const unrecorded = stored({
+      ...pending,
+      externalGrantId: null,
+      lastMutation: mutation("invite", "succeeded", { startedAt: NOW - MINUTE }),
+    });
+    expect(update(unrecorded, listed)).toEqual({
+      fields: { ...fieldsOf(unrecorded), ...refreshed, managed: true },
+      settlesIntent: false,
+    });
+    expect(update(stored({ ...unrecorded, lastMutation: null }), listed)?.fields.managed).toBe(
+      false,
+    );
+    // An unmanaged grant never becomes managed.
+    for (const externalGrantId of ["i2", null]) {
+      const unmanaged = stored({ ...pending, managed: false, externalGrantId });
+      expect(update(unmanaged, listed)?.fields.managed ?? false).toBe(false);
+    }
+    // Its own invitation, with a new lapse instant.
+    const own = { invitations: [invitation({ createdAt: NOW - MINUTE })] };
+    expect(update(pending, own)).toEqual({
+      fields: { ...fieldsOf(pending), expiresAt: lapse(NOW - MINUTE) },
+      settlesIntent: false,
+    });
+  });
+
+  it("records an invitation no longer listed as absent and no longer managed", () => {
+    expect(update(pending)).toEqual({
+      fields: { ...fieldsOf(pending), ...ABSENT },
+      settlesIntent: false,
+    });
+  });
+
+  it("waits out the grace window for ShareRepo's own fresh invitation", () => {
+    const sent = (createdAt: number, managed = true) =>
+      update(stored({ ...pending, managed, expiresAt: lapse(createdAt) }));
+    expect(sent(NOW)).toBeNull();
+    expect(sent(NOW - OBSERVATION_GRACE_MS + 1)).toBeNull();
+    expect(sent(NOW - OBSERVATION_GRACE_MS)?.fields.state).toBe("absent");
+    expect(sent(NOW, false)?.fields.state).toBe("absent");
+    expect(update(stored({ ...pending, expiresAt: null }))?.fields.state).toBe("absent");
+  });
+});
+
+describe("observeGrants: active grants", () => {
+  const active = stored({ ...ACTIVE, managed: true });
+
+  it("changes nothing while the collaborator is listed as stored", () => {
+    expect(update(active, { collaborators: [collaborator()] })).toBeNull();
+  });
+
+  it("follows the listed level and indirectness, keeping ownership", () => {
+    expect(update(active, { collaborators: [collaborator({ accessLevel: "read" })] })).toEqual({
+      fields: { ...fieldsOf(active), accessLevel: "read" },
+      settlesIntent: false,
+    });
+    const unmanaged = stored({ ...active, managed: false });
+    expect(update(unmanaged, { collaborators: [collaborator({ direct: false })] })).toEqual({
+      fields: { ...fieldsOf(unmanaged), indirect: true },
+      settlesIntent: false,
+    });
+  });
+
+  it("records a collaborator removed by hand as absent and no longer managed (drift)", () => {
+    expect(update(active)).toEqual({
+      fields: { ...fieldsOf(active), ...ABSENT },
+      settlesIntent: false,
+    });
+  });
+
+  it("records an invitation instead as pending, managed only if it is the grant's own", () => {
+    const listed = { invitations: [invitation()] };
+    expect(update(active, listed)?.fields).toEqual({
+      ...fieldsOf(active),
+      ...PENDING,
+      managed: false,
+    });
+    const own = stored({ ...active, externalGrantId: "i1" });
+    expect(update(own, listed)?.fields).toEqual({ ...fieldsOf(own), ...PENDING, managed: true });
+    const unmanaged = stored({ ...own, managed: false });
+    expect(update(unmanaged, listed)?.fields.managed).toBe(false);
+  });
+});
+
+describe("observeGrants: revoking (ShareRepo's intent)", () => {
+  // The DELETE was sent; its outcome is not known yet.
+  const revoking = stored({
+    state: "revoking",
+    managed: true,
+    lastMutation: mutation("remove_collaborator"),
+  });
+
+  it("records the access gone as absent and settles the intent, at once", () => {
+    for (const updatedAt of [NOW, LONG_AGO]) {
+      expect(update(stored({ ...revoking, updatedAt }))).toEqual({
+        fields: { ...fieldsOf(revoking), ...ABSENT },
+        settlesIntent: true,
+      });
+    }
+  });
+
+  it("restores access still listed after the grace window, keeping ownership", () => {
+    expect(update(revoking, { collaborators: [collaborator()] })).toEqual({
+      fields: { ...fieldsOf(revoking), ...ACTIVE },
+      settlesIntent: true,
+    });
+    const unmanaged = stored({ ...revoking, managed: false });
+    expect(update(unmanaged, { invitations: [invitation()] })).toEqual({
+      fields: { ...fieldsOf(unmanaged), ...PENDING },
+      settlesIntent: true,
+    });
+  });
+
+  it("leaves access still listed within the grace window alone", () => {
+    const at = (updatedAt: number) =>
+      update(stored({ ...revoking, updatedAt }), { collaborators: [collaborator()] });
+    expect(at(NOW)).toBeNull();
+    expect(at(NOW - OBSERVATION_GRACE_MS + 1)).toBeNull();
+    expect(at(NOW - OBSERVATION_GRACE_MS)?.fields.state).toBe("active");
+  });
+
+  it("restores only an invitation created before the revoke started, while its outcome is unknown", () => {
+    const pending = stored({ ...revoking, lastMutation: mutation("cancel_invitation") });
+    const before = invitation({ createdAt: LONG_AGO + MINUTE - 1 });
+    expect(update(pending, { invitations: [before] })?.fields.managed).toBe(true);
+    for (const createdAt of [LONG_AGO + MINUTE, LONG_AGO + 2 * MINUTE]) {
+      expect(update(pending, { invitations: [invitation({ createdAt })] })).toEqual({
+        fields: { ...fieldsOf(pending), ...PENDING, expiresAt: lapse(createdAt), managed: false },
+        settlesIntent: true,
+      });
+    }
+    // A collaborator may be ShareRepo's that the DELETE never removed.
+    expect(update(pending, { collaborators: [collaborator()] })?.fields.managed).toBe(true);
+    // With no mutation on record, the stored ownership stands for a collaborator and the
+    // recorded invitation only.
+    const unknown = stored({ ...revoking, lastMutation: null });
+    const listed = { invitations: [invitation({ createdAt: NOW })] };
+    expect(update(unknown, listed)?.fields.managed).toBe(false);
+    const recorded = stored({ ...unknown, externalGrantId: "i1" });
+    expect(update(recorded, listed)?.fields.managed).toBe(true);
+    expect(update(unknown, { collaborators: [collaborator()] })?.fields.managed).toBe(true);
+  });
+
+  it.each(["remove_collaborator", "cancel_invitation"] as const)(
+    "records access listed after a %s that succeeded as the creator's, unmanaged",
+    (operation) => {
+      const revoked = stored({ ...revoking, lastMutation: mutation(operation, "succeeded") });
+      expect(update(revoked, { collaborators: [collaborator()] })).toEqual({
+        fields: { ...fieldsOf(revoked), ...ACTIVE, managed: false },
+        settlesIntent: true,
+      });
+      expect(update(revoked, { invitations: [invitation({ createdAt: LONG_AGO })] })).toEqual({
+        fields: { ...fieldsOf(revoked), ...PENDING, managed: false },
+        settlesIntent: true,
+      });
+      // Within the grace window the lists may still lag the DELETE.
+      const fresh = stored({ ...revoked, updatedAt: NOW });
+      expect(update(fresh, { collaborators: [collaborator()] })).toBeNull();
+      // Gone: absent, as for any revoke.
+      expect(update(revoked)?.fields).toEqual({ ...fieldsOf(revoked), ...ABSENT });
+    },
+  );
+});
+
+describe("observeGrants: errors", () => {
+  const ERROR = {
+    state: "error",
+    lastErrorCode: "provider_unavailable",
+    retryClass: "retryable",
+    nextAttemptAt: NOW + MINUTE,
+  } as const;
+  const failed = (operation: MutationOperation | null, overrides: Partial<ObservableGrant> = {}) =>
+    stored({
+      ...ERROR,
+      managed: true,
+      lastMutation: operation === null ? null : mutation(operation, "failed"),
+      ...overrides,
+    });
+
+  it("settles a failed invitation that landed after all as managed access", () => {
+    const grant = failed("invite");
+    expect(update(grant, { collaborators: [collaborator()] })).toEqual({
+      fields: { ...fieldsOf(grant), ...ACTIVE, managed: true },
+      settlesIntent: true,
+    });
+    expect(update(grant, { invitations: [invitation()] })).toEqual({
+      fields: { ...fieldsOf(grant), ...PENDING, managed: true },
+      settlesIntent: true,
+    });
+  });
+
+  it.each(["rate_limited", "user_action_required", "terminal"] as const)(
+    "records access listed after an invitation that failed %s as unmanaged",
+    (retryClass) => {
+      // GitHub refused the invitation, so what is listed was made by hand.
+      const grant = failed("invite", {
+        lastMutation: mutation("invite", "failed", { retryClass }),
+      });
+      expect(update(grant, { collaborators: [collaborator()] })).toEqual({
+        fields: { ...fieldsOf(grant), ...ACTIVE, managed: false },
+        settlesIntent: true,
+      });
+      expect(update(grant, { invitations: [invitation()] })).toEqual({
+        fields: { ...fieldsOf(grant), ...PENDING, managed: false },
+        settlesIntent: true,
+      });
+    },
+  );
+
+  it("keeps a failed invitation's error while nothing is listed", () => {
+    expect(update(failed("invite"))).toBeNull();
+    expect(update(failed(null))).toBeNull();
+  });
+
+  it.each(["remove_collaborator", "cancel_invitation"] as const)(
+    "settles a failed %s once the access is gone",
+    (operation) => {
+      const grant = failed(operation, { ...PENDING, ...ERROR });
+      expect(update(grant)).toEqual({
+        fields: { ...fieldsOf(grant), ...ABSENT },
+        settlesIntent: true,
+      });
+    },
+  );
+
+  it.each(["remove_collaborator", "cancel_invitation"] as const)(
+    "keeps a failed %s's error while the access is listed, refreshing its details",
+    (operation) => {
+      const grant = failed(operation, { ...PENDING, ...ERROR });
+      expect(update(grant, { invitations: [invitation()] })).toBeNull();
+      expect(
+        update(grant, { collaborators: [collaborator({ accessLevel: "read", direct: false })] }),
+      ).toEqual({
+        fields: {
+          ...fieldsOf(grant),
+          accessLevel: "read",
+          indirect: true,
+          externalGrantId: null,
+          expiresAt: null,
+        },
+        settlesIntent: false,
+      });
+      const later = invitation({ invitationId: "i2", createdAt: NOW - MINUTE });
+      expect(update(grant, { invitations: [later] })).toEqual({
+        fields: {
+          ...fieldsOf(grant),
+          externalGrantId: "i2",
+          expiresAt: lapse(NOW - MINUTE),
+          managed: false,
+        },
+        settlesIntent: false,
+      });
+    },
+  );
+
+  it("treats an error with no known mutation like unknown, never as managed", () => {
+    const grant = failed(null);
+    expect(update(grant, { collaborators: [collaborator()] })).toEqual({
+      fields: { ...fieldsOf(grant), ...ACTIVE, managed: false },
+      settlesIntent: false,
+    });
+    expect(update(grant, { invitations: [invitation()] })).toEqual({
+      fields: { ...fieldsOf(grant), ...PENDING, managed: false },
+      settlesIntent: false,
+    });
+  });
+});
+
+describe("observeGrants: what ShareRepo's own request could have created (decision 0010)", () => {
+  const STARTED = LONG_AGO + MINUTE;
+  const ERROR = {
+    state: "error",
+    managed: true,
+    lastErrorCode: "provider_unavailable",
+    retryClass: "retryable",
+    nextAttemptAt: NOW + MINUTE,
+  } as const;
+  const managedOf = (grant: ObservableGrant, listed: Omit<Observe, "grants">) =>
+    update(grant, listed)?.fields.managed ?? grant.managed;
+  const invitedAt = (createdAt: number) => ({ invitations: [invitation({ createdAt })] });
+  const listedCollaborator = { collaborators: [collaborator()] };
+
+  it.each(MUTATION_STOP_REASONS)(
+    "an invite that stopped the run on %s never reached GitHub: listed access is the creator's",
+    (errorCode) => {
+      // Stored `retryable` only because the CHECK needs a class; the grant was restored.
+      const grant = stored({
+        ...ERROR,
+        lastMutation: mutation("invite", "failed", { retryClass: "retryable", errorCode }),
+      });
+      expect(managedOf(grant, invitedAt(STARTED))).toBe(false);
+      expect(managedOf(grant, listedCollaborator)).toBe(false);
+    },
+  );
+
+  it("adopts an invitation after a retryable invite failure only within the invite's window", () => {
+    const grant = stored({ ...ERROR, lastMutation: mutation("invite", "failed") });
+    expect(managedOf(grant, invitedAt(STARTED - CLOCK_SKEW_MS))).toBe(true);
+    expect(managedOf(grant, invitedAt(STARTED + OBSERVATION_GRACE_MS))).toBe(true);
+    // Sent by hand before ShareRepo's request, or long after it.
+    expect(managedOf(grant, invitedAt(STARTED - CLOCK_SKEW_MS - 1))).toBe(false);
+    expect(managedOf(grant, invitedAt(STARTED + OBSERVATION_GRACE_MS + 1))).toBe(false);
+  });
+
+  it("adopts a collaborator after a retryable invite failure only until an observation past the window saw nothing", () => {
+    const at = (observedAt: number | null) =>
+      stored({ ...ERROR, observedAt, lastMutation: mutation("invite", "failed") });
+    expect(managedOf(at(null), listedCollaborator)).toBe(true);
+    expect(managedOf(at(STARTED + OBSERVATION_GRACE_MS - 1), listedCollaborator)).toBe(true);
+    // The invite did not land: what is listed later was added by hand.
+    expect(managedOf(at(STARTED + OBSERVATION_GRACE_MS), listedCollaborator)).toBe(false);
+    // The error stands while nothing is listed, so the retry still goes out.
+    expect(update(at(STARTED + OBSERVATION_GRACE_MS))).toBeNull();
+  });
+
+  it("adopts on a provisioning grant only an invitation its own invite could have created", () => {
+    const provisioning = stored({
+      state: "provisioning",
+      managed: true,
+      lastMutation: mutation("invite"),
+    });
+    const older = invitation({ createdAt: STARTED - CLOCK_SKEW_MS - 1 });
+    expect(update(provisioning, { invitations: [older] })).toEqual({
+      fields: {
+        ...fieldsOf(provisioning),
+        ...PENDING,
+        expiresAt: lapse(older.createdAt),
+        managed: false,
+      },
+      settlesIntent: true,
+    });
+    expect(managedOf(provisioning, invitedAt(STARTED + OBSERVATION_GRACE_MS + 1))).toBe(false);
+    expect(managedOf(provisioning, invitedAt(STARTED))).toBe(true);
+    expect(managedOf(stored({ ...provisioning, lastMutation: null }), invitedAt(STARTED))).toBe(
+      false,
+    );
+    // A collaborator has no time: it may be ShareRepo's accepted invitation.
+    expect(managedOf(provisioning, listedCollaborator)).toBe(true);
+  });
+
+  it.each(["remove_collaborator", "cancel_invitation"] as const)(
+    "after a %s that failed, keeps managed only the grant's own invitation or one older than the revoke",
+    (operation) => {
+      const retryable = stored({ ...ERROR, lastMutation: mutation(operation, "failed") });
+      expect(managedOf(retryable, invitedAt(STARTED - 1))).toBe(true);
+      expect(managedOf(retryable, invitedAt(STARTED))).toBe(false);
+      expect(managedOf(retryable, listedCollaborator)).toBe(true);
+      // GitHub refused the revoke: only what the grant recorded is its own.
+      const refused = stored({
+        ...ERROR,
+        retryClass: "terminal",
+        lastMutation: mutation(operation, "failed", {
+          retryClass: "terminal",
+          errorCode: "provider_rejected",
+        }),
+      });
+      expect(managedOf(refused, invitedAt(STARTED - 1))).toBe(false);
+      const own = stored({ ...refused, externalGrantId: "i1" });
+      expect(managedOf(own, invitedAt(STARTED - 1))).toBe(true);
+      expect(managedOf(own, invitedAt(STARTED + 1))).toBe(true);
+    },
+  );
+
+  it("after a lapsed invitation was cancelled and the reissue stopped, listed access is the creator's", () => {
+    // The cancel succeeded, the invite stopped on a suspension, and the grant was restored to
+    // `revoking`, its latest mutation the invite.
+    const restored = stored({
+      state: "revoking",
+      managed: true,
+      externalGrantId: "i1",
+      lastMutation: mutation("invite", "failed", { errorCode: "suspended" }),
+    });
+    const byHand = invitation({ invitationId: "i2", createdAt: STARTED + MINUTE });
+    expect(update(restored, { invitations: [byHand] })).toEqual({
+      fields: {
+        ...fieldsOf(restored),
+        ...PENDING,
+        externalGrantId: "i2",
+        expiresAt: lapse(byHand.createdAt),
+        managed: false,
+      },
+      settlesIntent: true,
+    });
+    expect(managedOf(restored, listedCollaborator)).toBe(false);
+  });
+});
+
+describe("inviteMayStillAppear", () => {
+  const STARTED = LONG_AGO + MINUTE;
+  const at = (
+    lastMutation: LatestMutation | null,
+    now: number,
+    state: ObservableGrant["state"] = "error",
+  ) => inviteMayStillAppear({ state, lastMutation }, now);
+
+  it("holds while ShareRepo's invite may have landed and its window is open", () => {
+    // A revoke now would be blind: removing a collaborator does not cancel an invitation.
+    for (const [state, invite] of [
+      ["provisioning", mutation("invite")],
+      ["error", mutation("invite", "failed")],
+    ] as const) {
+      expect(at(invite, STARTED, state)).toBe(true);
+      expect(at(invite, STARTED + OBSERVATION_GRACE_MS - 1, state)).toBe(true);
+      expect(at(invite, STARTED + OBSERVATION_GRACE_MS, state)).toBe(false);
+    }
+  });
+
+  it("does not hold once the invitation was recorded or accepted", () => {
+    for (const state of ["pending_invitation", "active", "revoking", "absent"] as const) {
+      expect(at(mutation("invite", "succeeded"), STARTED, state)).toBe(false);
+    }
+  });
+
+  it("does not hold for an invite GitHub refused or that never left, nor for anything else", () => {
+    const refused = mutation("invite", "failed", {
+      retryClass: "user_action_required",
+      errorCode: "invitation_rejected",
+    });
+    const stopped = mutation("invite", "failed", { errorCode: "suspended" });
+    for (const last of [refused, stopped, mutation("remove_collaborator"), null]) {
+      expect(at(last, STARTED)).toBe(false);
+    }
+  });
+});
+
+// Property tests over any stored grant and any listing.
+
+const USERS = ["101", "202", "303"] as const;
+const PROPERTY_SUBJECTS = [
+  { id: "s1", externalSubjectId: "101" },
+  { id: "s2", externalSubjectId: "202" },
+];
+const instantArb = fc.integer({ min: NOW - 2 * OBSERVATION_GRACE_MS, max: NOW });
+
+const grantArb: fc.Arbitrary<ObservableGrant> = fc
+  .record({
+    subjectId: fc.constantFrom("s1", "s2"),
+    accessLevel: fc.constantFrom("read" as const, "write" as const),
+    state: fc.constantFrom(...GRANT_STATES),
+    managed: fc.boolean(),
+    indirect: fc.boolean(),
+    externalGrantId: fc.option(fc.constantFrom("i1", "i2")),
+    expiresAt: fc.option(fc.integer({ min: NOW - 1, max: lapse(NOW) })),
+    retryClass: fc.constantFrom(...RETRY_CLASSES),
+    nextAttemptAt: fc.option(instantArb),
+    updatedAt: instantArb,
+    observedAt: fc.option(instantArb),
+    lastMutation: fc.option(
+      fc.record({
+        operation: fc.constantFrom(...MUTATION_OPERATIONS),
+        status: fc.constantFrom(...MUTATION_STATUSES),
+        retryClass: fc.option(fc.constantFrom(...RETRY_CLASSES)),
+        errorCode: fc.option(fc.constantFrom("provider_unavailable", ...MUTATION_STOP_REASONS)),
+        startedAt: instantArb,
+      }),
+    ),
+  })
+  .map((g) => ({
+    ...g,
+    id: "",
+    // The grants CHECK: an error, and only an error, is classified.
+    lastErrorCode: g.state === "error" ? "provider_unavailable" : null,
+    retryClass: g.state === "error" ? g.retryClass : null,
+    nextAttemptAt: g.state === "error" ? g.nextAttemptAt : null,
+  }));
+
+const observationArb: fc.Arbitrary<RepositoryObservation> = fc.record({
+  collaborators: fc.array(
+    fc.record({
+      userId: fc.constantFrom(...USERS),
+      login: fc.constant("someone"),
+      accessLevel: fc.constantFrom("read" as const, "write" as const),
+      direct: fc.boolean(),
+    }),
+    { maxLength: 3 },
+  ),
+  // The provider lists each invitation once.
+  invitations: fc.uniqueArray(
+    fc.record({
+      invitationId: fc.constantFrom("i1", "i2", "i3"),
+      userId: fc.constantFrom(...USERS),
+      login: fc.constant("someone"),
+      // Mostly near the mutations' instants, so both sides of each window are exercised.
+      createdAt: fc.oneof(
+        fc.integer({ min: NOW - 3 * OBSERVATION_GRACE_MS, max: NOW }),
+        fc.integer({ min: NOW - INVITATION_LIFETIME_MS - 1, max: NOW }),
+      ),
+      expired: fc.boolean(),
+    }),
+    { maxLength: 3, selector: (i) => i.invitationId },
+  ),
+});
+
+const scenarioArb = fc.record({
+  grants: fc
+    // The grants unique key: one grant per subject and level.
+    .uniqueArray(grantArb, { maxLength: 4, selector: (g) => `${g.subjectId}/${g.accessLevel}` })
+    .map((grants) => grants.map((g, i) => ({ ...g, id: `g${i}` }))),
+  observation: observationArb,
+});
+
+function run(grants: readonly ObservableGrant[], observation: RepositoryObservation) {
+  let n = 0;
+  return observeGrants({
+    now: NOW,
+    subjects: PROPERTY_SUBJECTS,
+    grants,
+    observation,
+    newGrantId: () => `new${++n}`,
+  });
+}
+
+/** The grants after the changes, as the caller would store them. */
+function applied(
+  grants: readonly ObservableGrant[],
+  changes: readonly GrantObservationChange[],
+): ObservableGrant[] {
+  const byId = new Map(grants.map((g) => [g.id, g]));
+  for (const change of changes) {
+    const base =
+      byId.get(change.grantId) ?? stored({ id: change.grantId, subjectId: change.subjectId });
+    byId.set(change.grantId, { ...base, ...change.set, updatedAt: NOW });
+  }
+  // Every grant of the repository is stamped as observed.
+  return [...byId.values()].map((g) => ({ ...g, observedAt: NOW }));
+}
+
+const PROPERTY_TIMEOUT = 60_000;
+
+describe("observeGrants properties", () => {
+  it(
+    "never makes access managed without ShareRepo's intent",
+    () => {
+      fc.assert(
+        fc.property(scenarioArb, ({ grants, observation }) => {
+          const byId = new Map(grants.map((g) => [g.id, g]));
+          for (const change of run(grants, observation)) {
+            if (change.kind === "create") {
+              expect(change.set.managed).toBe(false);
+              continue;
+            }
+            // Only ShareRepo's invite write-ahead sets `managed`; observation only keeps or
+            // clears it.
+            const before = byId.get(change.grantId) as ObservableGrant;
+            if (!before.managed) expect(change.set.managed ?? false).toBe(false);
+          }
+        }),
+      );
+    },
+    PROPERTY_TIMEOUT,
+  );
+
+  it(
+    "never adopts an invitation created before ShareRepo's invite could have created it",
+    () => {
+      fc.assert(
+        fc.property(scenarioArb, ({ grants, observation }) => {
+          const byId = new Map(grants.map((g) => [g.id, g]));
+          for (const change of run(grants, observation)) {
+            if (change.kind === "create") continue;
+            const before = byId.get(change.grantId) as ObservableGrant;
+            const after = { ...change.from, ...change.set };
+            const last = before.lastMutation;
+            // Its recorded invitation, or a pending invitation's refresh, is the grant's own.
+            if (!after.managed || after.state !== "pending_invitation") continue;
+            if (after.externalGrantId === before.externalGrantId) continue;
+            const listed = observation.invitations.find(
+              (i) => i.invitationId === after.externalGrantId,
+            ) as ObservedInvitation;
+            if (last === null || last.operation === "invite") {
+              expect(last).not.toBeNull();
+              expect(listed.createdAt).toBeGreaterThanOrEqual(
+                (last as LatestMutation).startedAt - CLOCK_SKEW_MS,
+              );
+              expect(listed.createdAt).toBeLessThanOrEqual(
+                (last as LatestMutation).startedAt + OBSERVATION_GRACE_MS,
+              );
+            } else {
+              // A revoke's: never one created once the revoke started, nor after it succeeded.
+              expect(last.status).not.toBe("succeeded");
+              expect(listed.createdAt).toBeLessThan(last.startedAt);
+            }
+          }
+        }),
+      );
+    },
+    PROPERTY_TIMEOUT,
+  );
+
+  it(
+    "never keeps access managed that is listed after ShareRepo's revoke succeeded",
+    () => {
+      fc.assert(
+        fc.property(scenarioArb, ({ grants, observation }) => {
+          const byId = new Map(grants.map((g) => [g.id, g]));
+          for (const change of run(grants, observation)) {
+            if (change.kind === "create") continue;
+            const before = byId.get(change.grantId) as ObservableGrant;
+            const last = before.lastMutation;
+            const revoked =
+              before.state === "revoking" &&
+              last !== null &&
+              (last.operation === "invite" || last.status === "succeeded");
+            if (revoked) expect(change.set.managed ?? before.managed).toBe(false);
+          }
+        }),
+      );
+    },
+    PROPERTY_TIMEOUT,
+  );
+
+  it(
+    "is idempotent: observing the same lists again changes nothing",
+    () => {
+      fc.assert(
+        fc.property(scenarioArb, ({ grants, observation }) => {
+          const after = applied(grants, run(grants, observation));
+          expect(run(after, observation)).toEqual([]);
+        }),
+      );
+    },
+    PROPERTY_TIMEOUT,
+  );
+
+  it(
+    "keeps every grant classified as an error exactly when it is one",
+    () => {
+      fc.assert(
+        fc.property(scenarioArb, ({ grants, observation }) => {
+          for (const g of applied(grants, run(grants, observation))) {
+            expect(g.lastErrorCode !== null).toBe(g.state === "error");
+            expect(g.retryClass !== null).toBe(g.state === "error");
+            if (g.state !== "error") expect(g.nextAttemptAt).toBeNull();
+          }
+        }),
+      );
+    },
+    PROPERTY_TIMEOUT,
+  );
+
+  it(
+    "prefers a listed collaborator over an invitation, and an invitation is never active",
+    () => {
+      fc.assert(
+        fc.property(scenarioArb, ({ grants, observation }) => {
+          for (const change of run(grants, observation)) {
+            const subject = PROPERTY_SUBJECTS.find((s) => s.id === change.subjectId);
+            const userId = subject?.externalSubjectId;
+            const listed = observation.collaborators.some((c) => c.userId === userId);
+            const invited = observation.invitations.some((i) => i.userId === userId);
+            if (listed) expect(change.set.state).not.toBe("pending_invitation");
+            if (!listed && invited) expect(change.set.state).not.toBe("active");
+            if (!listed && !invited) expect(change.set.managed ?? false).toBe(false);
+          }
+        }),
+      );
+    },
+    PROPERTY_TIMEOUT,
+  );
+
+  it(
+    "only stores grants for the given subjects, one change per subject",
+    () => {
+      fc.assert(
+        fc.property(scenarioArb, ({ grants, observation }) => {
+          const subjects = run(grants, observation).map((c) => c.subjectId);
+          expect(subjects).toEqual([...new Set(subjects)].sort());
+          for (const s of subjects) expect(["s1", "s2"]).toContain(s);
+        }),
+      );
+    },
+    PROPERTY_TIMEOUT,
+  );
+});
+
+describe("classifyMutationFailure", () => {
+  const classify = (operation: MutationOperation, failure: ProviderFailure, attempt = 1) =>
+    classifyMutationFailure({ operation, failure, attempt, now: NOW });
+
+  it.each(["transient", "malformed_response"] as const)(
+    "retries a %s failure with backoff by attempt",
+    (kind) => {
+      for (const operation of MUTATION_OPERATIONS) {
+        expect(classify(operation, { kind, status: 502 }, 2)).toEqual({
+          outcome: "failed",
+          errorCode: "provider_unavailable",
+          retryClass: "retryable",
+          nextAttemptAt: NOW + 5 * MINUTE,
+          stopRun: false,
+        });
+      }
+    },
+  );
+
+  it("backs off 1, 5, 15 and 60 minutes, then stays at 60", () => {
+    expect([0, 1, 2, 3, 4, 5, 50].map(retryBackoff)).toEqual(
+      [1, 1, 5, 15, 60, 60, 60].map((m) => m * MINUTE),
+    );
+  });
+
+  it("honours the provider's retry-after for a rate limit, at least a minute, and stops", () => {
+    const limited = (retryAfterMs?: number) =>
+      classify(
+        "invite",
+        retryAfterMs === undefined
+          ? { kind: "rate_limited" }
+          : { kind: "rate_limited", retryAfterMs },
+      );
+    expect(limited(5 * MINUTE)).toEqual({
+      outcome: "failed",
+      errorCode: "rate_limited",
+      retryClass: "rate_limited",
+      nextAttemptAt: NOW + 5 * MINUTE,
+      stopRun: true,
+    });
+    expect(limited(MINUTE + 1)).toEqual(
+      expect.objectContaining({ nextAttemptAt: NOW + MINUTE + 1 }),
+    );
+    expect(limited(1_000)).toEqual(expect.objectContaining({ nextAttemptAt: NOW + MINUTE }));
+    expect(limited()).toEqual(expect.objectContaining({ nextAttemptAt: NOW + MINUTE }));
+  });
+
+  it.each([
+    ["invite", 422, "invitation_rejected", "user_action_required"],
+    ["invite", 403, "app_permission_missing", "user_action_required"],
+    ["remove_collaborator", 403, "app_permission_missing", "user_action_required"],
+    ["cancel_invitation", 403, "app_permission_missing", "user_action_required"],
+    ["remove_collaborator", 422, "provider_rejected", "terminal"],
+    ["cancel_invitation", 422, "provider_rejected", "terminal"],
+    ["invite", 400, "provider_rejected", "terminal"],
+    ["invite", undefined, "provider_rejected", "terminal"],
+  ] as const)(
+    "classifies %s rejected with %s as %s",
+    (operation, status, errorCode, retryClass) => {
+      const failure: ProviderFailure =
+        status === undefined ? { kind: "rejected" } : { kind: "rejected", status };
+      expect(classify(operation, failure)).toEqual({
+        outcome: "failed",
+        errorCode,
+        retryClass,
+        nextAttemptAt: null,
+        stopRun: false,
+      });
+    },
+  );
+
+  it("asks a person to act when the invitee's account is gone", () => {
+    for (const failure of [
+      { kind: "not_found", target: "account" },
+      { kind: "not_found" },
+    ] as const) {
+      expect(classify("invite", failure)).toEqual({
+        outcome: "failed",
+        errorCode: "account_not_found",
+        retryClass: "user_action_required",
+        nextAttemptAt: null,
+        stopRun: false,
+      });
+    }
+  });
+
+  it.each(["remove_collaborator", "cancel_invitation"] as const)(
+    "counts %s of something already gone as done",
+    (operation) => {
+      expect(classify(operation, { kind: "not_found", target: "account" })).toEqual({
+        outcome: "already_done",
+      });
+      expect(classify(operation, { kind: "not_found", status: 404 })).toEqual({
+        outcome: "already_done",
+      });
+    },
+  );
+
+  it.each(MUTATION_OPERATIONS)("stops the run for a missing repository on %s", (operation) => {
+    expect(classify(operation, { kind: "not_found", target: "repository" })).toEqual({
+      outcome: "stop_run",
+      reason: "repository_not_found",
+    });
+  });
+
+  it.each(MUTATION_OPERATIONS)("stops the run for a suspended installation on %s", (operation) => {
+    expect(classify(operation, { kind: "suspended", status: 403 })).toEqual({
+      outcome: "stop_run",
+      reason: "suspended",
+    });
+  });
+
+  it.each(MUTATION_OPERATIONS)("stops the run for a missing installation on %s", (operation) => {
+    expect(classify(operation, { kind: "not_found", target: "installation" })).toEqual({
+      outcome: "stop_run",
+      reason: "installation_missing",
+    });
+  });
+});
+
+describe("classifyObservationFailure", () => {
+  const classify = (failure: ProviderFailure, failures = 1) =>
+    classifyObservationFailure({ failure, failures, now: NOW });
+
+  it.each([
+    ["transient", "provider_unavailable"],
+    ["rejected", "provider_rejected"],
+    ["malformed_response", "malformed_response"],
+  ] as const)("backs a %s failure off by the failure count as %s", (kind, errorCode) => {
+    expect([1, 2, 3, 4, 9].map((failures) => classify({ kind, status: 500 }, failures))).toEqual(
+      [1, 5, 15, 60, 60].map((minutes) => ({
+        errorCode,
+        nextReconcileAt: NOW + minutes * MINUTE,
+        resync: false,
+      })),
+    );
+  });
+
+  it("waits out a rate limit, and at least the backoff", () => {
+    expect(classify({ kind: "rate_limited", retryAfterMs: 30 * MINUTE }, 2)).toEqual({
+      errorCode: "rate_limited",
+      nextReconcileAt: NOW + 30 * MINUTE,
+      resync: false,
+    });
+    expect(classify({ kind: "rate_limited", retryAfterMs: MINUTE }, 3)).toEqual(
+      expect.objectContaining({ nextReconcileAt: NOW + 15 * MINUTE }),
+    );
+    expect(classify({ kind: "rate_limited" }, 2)).toEqual(
+      expect.objectContaining({ nextReconcileAt: NOW + 5 * MINUTE }),
+    );
+  });
+
+  it("queues a resync for a suspended or missing installation, and waits the idle interval", () => {
+    for (const [failure, errorCode] of [
+      [{ kind: "suspended" }, "suspended"],
+      [{ kind: "not_found", target: "installation" }, "installation_missing"],
+    ] as const) {
+      expect(classify(failure, 3)).toEqual({
+        errorCode,
+        nextReconcileAt: NOW + RECONCILE_IDLE_MS,
+        resync: true,
+      });
+    }
+  });
+
+  it("queues a resync for a repository that is gone or renamed, and polls", () => {
+    for (const failure of [
+      { kind: "not_found", target: "repository" },
+      { kind: "not_found" },
+    ] as const) {
+      expect(classify(failure, 5)).toEqual({
+        errorCode: "repository_not_found",
+        nextReconcileAt: NOW + RECONCILE_POLL_MS,
+        resync: true,
+      });
+    }
+  });
+});
+
+describe("invitationBudget", () => {
+  const starts = (count: number, at: (i: number) => number) =>
+    Array.from({ length: count }, (_, i) => at(i));
+
+  it("allows the full budget when nothing was sent", () => {
+    expect(invitationBudget([], NOW)).toEqual({ remaining: INVITATION_BUDGET, opensAt: null });
+  });
+
+  it("counts starts within the rolling window only", () => {
+    expect(
+      invitationBudget(
+        [NOW - INVITATION_WINDOW_MS, NOW - INVITATION_WINDOW_MS + 1, NOW, NOW + 1],
+        NOW,
+      ),
+    ).toEqual({ remaining: INVITATION_BUDGET - 2, opensAt: null });
+  });
+
+  it("reports when a spent budget opens again", () => {
+    const full = starts(INVITATION_BUDGET, (i) => NOW - 1000 + i).reverse();
+    expect(invitationBudget(full, NOW)).toEqual({
+      remaining: 0,
+      opensAt: NOW - 1000 + INVITATION_WINDOW_MS,
+    });
+    expect(invitationBudget(full.slice(1), NOW)).toEqual({ remaining: 1, opensAt: null });
+  });
+
+  it("waits for enough starts to leave the window when over budget", () => {
+    const over = starts(INVITATION_BUDGET + 2, (i) => NOW - 1000 + i);
+    expect(invitationBudget(over, NOW)).toEqual({
+      remaining: 0,
+      opensAt: NOW - 1000 + 2 + INVITATION_WINDOW_MS,
+    });
+  });
+
+  it("opens exactly when the oldest start leaves the window", () => {
+    const full = starts(INVITATION_BUDGET, (i) => NOW + i * 10);
+    const { opensAt } = invitationBudget(full, NOW + 1000);
+    expect(invitationBudget(full, (opensAt as number) - 1).remaining).toBe(0);
+    expect(invitationBudget(full, opensAt as number).remaining).toBe(1);
+  });
+});
+
+describe("nextReconcileAt", () => {
+  type Grant = Parameters<typeof nextReconcileAt>[0]["grants"][number];
+  const g = (overrides: Partial<Grant> = {}): Grant => ({
+    state: "active",
+    nextAttemptAt: null,
+    expiresAt: null,
+    retryClass: null,
+    ...overrides,
+  });
+  const next = (
+    grants: Grant[],
+    budget: { remaining: number; opensAt: number | null } | null = null,
+  ) => nextReconcileAt({ now: NOW, grants, budget, leftover: false });
+
+  it("runs again at once when decisions were left over", () => {
+    expect(
+      nextReconcileAt({
+        now: NOW,
+        grants: [g({ state: "provisioning" })],
+        budget: null,
+        leftover: true,
+      }),
+    ).toBe(NOW);
+  });
+
+  it("waits the idle interval when nothing is in flight", () => {
+    expect(next([])).toBe(NOW + RECONCILE_IDLE_MS);
+    expect(next([g(), g({ state: "absent" }), g({ state: "unknown" })])).toBe(
+      NOW + RECONCILE_IDLE_MS,
+    );
+    expect(next([g({ state: "error", retryClass: "user_action_required" })])).toBe(
+      NOW + RECONCILE_IDLE_MS,
+    );
+    expect(next([g({ state: "error", retryClass: "terminal" })])).toBe(NOW + RECONCILE_IDLE_MS);
+  });
+
+  it.each(["pending_invitation", "provisioning", "revoking"] as const)(
+    "polls soon while a grant is %s",
+    (state) => {
+      expect(next([g(), g({ state })])).toBe(NOW + RECONCILE_POLL_MS);
+    },
+  );
+
+  it.each(["retryable", "rate_limited"] as const)("polls soon after a %s error", (retryClass) => {
+    expect(next([g({ state: "error", retryClass })])).toBe(NOW + RECONCILE_POLL_MS);
+    // Only an errored grant's retry class counts.
+    expect(next([g({ retryClass })])).toBe(NOW + RECONCILE_IDLE_MS);
+  });
+
+  it("runs at an error's retry time when that is sooner", () => {
+    expect(
+      next([g({ state: "error", retryClass: "retryable", nextAttemptAt: NOW + MINUTE })]),
+    ).toBe(NOW + MINUTE);
+    expect(next([g({ state: "error", retryClass: "terminal", nextAttemptAt: NOW + HOUR })])).toBe(
+      NOW + HOUR,
+    );
+    expect(next([g({ nextAttemptAt: NOW + MINUTE })])).toBe(NOW + RECONCILE_IDLE_MS);
+  });
+
+  it("runs when a pending invitation lapses, if that is still ahead", () => {
+    const pending = (expiresAt: number | null) =>
+      next([g({ state: "pending_invitation", expiresAt })]);
+    expect(pending(NOW + MINUTE)).toBe(NOW + MINUTE);
+    expect(pending(NOW)).toBe(NOW + RECONCILE_POLL_MS);
+    expect(pending(null)).toBe(NOW + RECONCILE_POLL_MS);
+    expect(next([g({ expiresAt: NOW + MINUTE })])).toBe(NOW + RECONCILE_IDLE_MS);
+  });
+
+  it("runs when a spent invitation budget opens", () => {
+    expect(next([], { remaining: 0, opensAt: NOW + HOUR })).toBe(NOW + HOUR);
+    expect(next([], { remaining: 3, opensAt: null })).toBe(NOW + RECONCILE_IDLE_MS);
+  });
+
+  it("is never earlier than now", () => {
+    expect(next([g({ state: "error", retryClass: "retryable", nextAttemptAt: NOW - HOUR })])).toBe(
+      NOW,
+    );
+    expect(next([], { remaining: 0, opensAt: NOW - 1 })).toBe(NOW);
+  });
+});

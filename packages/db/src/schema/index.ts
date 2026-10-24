@@ -1,4 +1,4 @@
-export { entitlements, grants } from "./access.ts";
+export { entitlements, grants, providerMutations } from "./access.ts";
 export { auditEvents } from "./audit.ts";
 export {
   authAccounts,

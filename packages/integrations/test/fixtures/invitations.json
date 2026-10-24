@@ -1,0 +1,112 @@
+[
+  {
+    "id": 8101,
+    "node_id": "RI_8101",
+    "repository": {
+      "id": 9001,
+      "node_id": "R_9001",
+      "name": "course-code",
+      "full_name": "octo-creator/course-code",
+      "private": true,
+      "owner": {
+        "login": "octo-creator",
+        "id": 5001,
+        "type": "User",
+        "site_admin": false
+      },
+      "html_url": "https://github.com/octo-creator/course-code"
+    },
+    "invitee": {
+      "login": "octo-lapsed",
+      "id": 6005,
+      "node_id": "U_6005",
+      "avatar_url": "https://avatars.githubusercontent.com/u/6005?v=4",
+      "url": "https://api.github.com/users/octo-lapsed",
+      "html_url": "https://github.com/octo-lapsed",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "inviter": {
+      "login": "octo-creator",
+      "id": 5001,
+      "type": "User",
+      "site_admin": false
+    },
+    "permissions": "write",
+    "created_at": "2026-10-01T09:00:00Z",
+    "expired": true,
+    "url": "https://api.github.com/user/repository_invitations/8101",
+    "html_url": "https://github.com/octo-creator/course-code/invitations"
+  },
+  {
+    "id": 8102,
+    "node_id": "RI_8102",
+    "repository": {
+      "id": 9001,
+      "node_id": "R_9001",
+      "name": "course-code",
+      "full_name": "octo-creator/course-code",
+      "private": true,
+      "owner": {
+        "login": "octo-creator",
+        "id": 5001,
+        "type": "User",
+        "site_admin": false
+      },
+      "html_url": "https://github.com/octo-creator/course-code"
+    },
+    "invitee": null,
+    "inviter": {
+      "login": "octo-creator",
+      "id": 5001,
+      "type": "User",
+      "site_admin": false
+    },
+    "permissions": "write",
+    "created_at": "2026-10-10T12:00:00Z",
+    "expired": false,
+    "url": "https://api.github.com/user/repository_invitations/8102",
+    "html_url": "https://github.com/octo-creator/course-code/invitations"
+  },
+  {
+    "id": 8103,
+    "node_id": "RI_8103",
+    "repository": {
+      "id": 9001,
+      "node_id": "R_9001",
+      "name": "course-code",
+      "full_name": "octo-creator/course-code",
+      "private": true,
+      "owner": {
+        "login": "octo-creator",
+        "id": 5001,
+        "type": "User",
+        "site_admin": false
+      },
+      "html_url": "https://github.com/octo-creator/course-code"
+    },
+    "invitee": {
+      "login": "octo-pending",
+      "id": 6004,
+      "node_id": "U_6004",
+      "avatar_url": "https://avatars.githubusercontent.com/u/6004?v=4",
+      "url": "https://api.github.com/users/octo-pending",
+      "html_url": "https://github.com/octo-pending",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "inviter": {
+      "login": "octo-creator",
+      "id": 5001,
+      "type": "User",
+      "site_admin": false
+    },
+    "permissions": "write",
+    "created_at": "2026-10-17T08:30:00Z",
+    "expired": false,
+    "url": "https://api.github.com/user/repository_invitations/8103",
+    "html_url": "https://github.com/octo-creator/course-code/invitations"
+  }
+]

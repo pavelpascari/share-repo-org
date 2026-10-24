@@ -36,6 +36,7 @@ function refresh(ws: Ws, overrides: Partial<SubscriptionRefresh> = {}): Subscrip
     subscription: { ...ws.subscription, version: 2, updatedAt: NOW, lastObservedAt: NOW },
     items: [ws.item],
     offers: [{ offerId: ws.offer.offer.id, version: 1 }],
+    reconcile: [],
     entitlements: { create: [], update: [], end: [] },
     ...overrides,
   };
@@ -83,6 +84,7 @@ describe("applySubscriptionRefresh: new subscription", () => {
           subscription,
           items: ["sim_a", "sim_b"],
           offers: [],
+          reconcile: [],
           entitlements: { create: [], update: [], end: [] },
           outbox: [outbox],
         },
@@ -115,6 +117,7 @@ describe("applySubscriptionRefresh: new subscription", () => {
           subscription: duplicate,
           items: ["sim_z"],
           offers: [],
+          reconcile: [],
           entitlements: { create: [], update: [], end: [] },
           outbox: [outboxRow("refresh_subscription", duplicate.id)],
         },
@@ -147,6 +150,7 @@ describe("applySubscriptionRefresh: new subscription", () => {
           subscription,
           items: ["sim_a"],
           offers: [],
+          reconcile: [],
           entitlements: { create: [], update: [], end: [] },
           outbox: [outbox],
         },
@@ -179,6 +183,7 @@ describe("applySubscriptionRefresh: new subscription", () => {
           subscription,
           items: [],
           offers: [],
+          reconcile: [],
           entitlements: {
             create: [
               entitlementRow({
@@ -430,6 +435,7 @@ describe("applySubscriptionRefresh: existing subscription", () => {
         subscription: subscriptionRow(ws.workspaceId, existing.id),
         items: [],
         offers: [],
+        reconcile: [],
         entitlements: { create: [], update: [], end: [] },
       },
       [workspaceEvent(ws.workspaceId)],
@@ -481,6 +487,7 @@ describe("applySubscriptionRefresh: existing subscription", () => {
         subscription: sibling,
         items: [],
         offers: [],
+        reconcile: [],
         entitlements: { create: [siblingEntitlement], update: [], end: [] },
       },
       [workspaceEvent(ws.workspaceId)],
@@ -645,6 +652,7 @@ describe("applySubscriptionRefresh: offers changed since the read", () => {
           subscription,
           items: [ws.item],
           offers: [{ offerId: ws.offer.offer.id, version: 1 }],
+          reconcile: [],
           entitlements: { create: [], update: [], end: [] },
         },
         [event],

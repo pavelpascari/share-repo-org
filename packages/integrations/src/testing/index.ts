@@ -4,6 +4,9 @@ export {
   createFakeGitHubApp,
   FAKE_INSTALL_BASE,
   type FakeGitHubApp,
+  type FakeGitHubAppOptions,
+  type FakeGitHubOperation,
   type FakeInstallationInput,
+  type FakeRepositoryAccess,
 } from "./fake-github-app.ts";
 export { signWebhook } from "./sign-webhook.ts";

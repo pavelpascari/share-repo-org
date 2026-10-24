@@ -7,6 +7,7 @@ export type {
   AuditEventInput,
   AuditScope,
   OfferChange,
+  ReconciliationRequestKind,
   SignInRefusalReason,
 } from "./audit.ts";
 export {
@@ -15,6 +16,7 @@ export {
   AUDIT_SCOPES,
   auditEvent,
   OFFER_CHANGES,
+  RECONCILIATION_REQUEST_KINDS,
   SIGN_IN_REFUSAL_REASONS,
 } from "./audit.ts";
 export type { WorkspaceMembership, WorkspacePermission, WorkspaceScope } from "./authorization.ts";
@@ -50,8 +52,20 @@ export type {
 export { planEntitlements } from "./entitlement-plan.ts";
 export type { ExternalEventState } from "./external-event.ts";
 export { EXTERNAL_EVENT_STATES, OUTBOX_KINDS, OutboxKind } from "./external-event.ts";
-export type { GrantState, RetryClass, SubjectType } from "./grant.ts";
-export { GRANT_STATES, RETRY_CLASSES, SUBJECT_TYPES } from "./grant.ts";
+export type {
+  GrantState,
+  MutationOperation,
+  MutationStatus,
+  RetryClass,
+  SubjectType,
+} from "./grant.ts";
+export {
+  GRANT_STATES,
+  MUTATION_OPERATIONS,
+  MUTATION_STATUSES,
+  RETRY_CLASSES,
+  SUBJECT_TYPES,
+} from "./grant.ts";
 export type {
   GitHubLogin,
   GitHubLoginError,
@@ -93,6 +107,51 @@ export {
 export type { AccessDecision, AccessDecisionReason, PolicySubscription } from "./policy.ts";
 export { ACCESS_DECISION_REASONS, decideAccess } from "./policy.ts";
 export type {
+  GrantErrorCode,
+  GrantFields,
+  GrantObservationChange,
+  GrantObservationCreate,
+  GrantObservationInput,
+  GrantObservationUpdate,
+  LatestMutation,
+  MutationFailureInput,
+  MutationFailureOutcome,
+  MutationStopReason,
+  NextReconcileInput,
+  ObservableGrant,
+  ObservationErrorCode,
+  ObservationFailureInput,
+  ObservationFailureOutcome,
+  ObservedCollaborator,
+  ObservedInvitation,
+  ProviderFailure,
+  ProviderFailureKind,
+  RepositoryObservation,
+} from "./provisioning.ts";
+export {
+  CLOCK_SKEW_MS,
+  classifyMutationFailure,
+  classifyObservationFailure,
+  GRANT_ERROR_CODES,
+  INVITATION_BUDGET,
+  INVITATION_LIFETIME_MS,
+  INVITATION_WINDOW_MS,
+  invitationBudget,
+  inviteMayStillAppear,
+  MAX_MUTATIONS_PER_RUN,
+  MUTATION_STOP_REASONS,
+  nextReconcileAt,
+  OBSERVATION_ERROR_CODES,
+  OBSERVATION_GRACE_MS,
+  observeGrants,
+  PROVIDER_FAILURE_KINDS,
+  RECONCILE_IDLE_MS,
+  RECONCILE_POLL_MS,
+  RETRY_BACKOFF_MS,
+  retryBackoff,
+} from "./provisioning.ts";
+export type {
+  InvitationBudget,
   ReconciliationAction,
   ReconciliationDecision,
   ReconciliationEntitlement,

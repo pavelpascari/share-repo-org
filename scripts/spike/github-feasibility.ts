@@ -15,7 +15,6 @@ import {
   createGitHubApp,
   GitHubApiError,
   type GitHubAppClient,
-  type GitHubInvitation,
   parseGitHubAppConfig,
 } from "../../packages/integrations/src/index.ts";
 import { parseDotenv } from "./dotenv.ts";
@@ -61,24 +60,32 @@ function loadConfig() {
   );
 }
 
-async function githubGet(
+async function githubRequest(
   apiBaseUrl: string,
+  method: string,
   path: string,
   bearer: string,
+  body?: unknown,
 ): Promise<{ status: number; body: unknown }> {
   const response = await fetch(`${apiBaseUrl}${path}`, {
+    method,
     headers: {
       accept: "application/vnd.github+json",
       authorization: `Bearer ${bearer}`,
       "user-agent": "ShareRepo",
       "x-github-api-version": "2022-11-28",
+      ...(body === undefined ? {} : { "content-type": "application/json" }),
     },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
-  const body: unknown = response.headers.get("content-type")?.includes("json")
+  const parsed: unknown = response.headers.get("content-type")?.includes("json")
     ? await response.json()
     : null;
-  return { status: response.status, body };
+  return { status: response.status, body: parsed };
 }
+
+const githubGet = (apiBaseUrl: string, path: string, bearer: string) =>
+  githubRequest(apiBaseUrl, "GET", path, bearer);
 
 const field = (body: unknown, ...path: string[]): unknown =>
   path.reduce<unknown>(
@@ -91,6 +98,7 @@ const field = (body: unknown, ...path: string[]): unknown =>
 
 interface Context {
   readonly app: GitHubAppClient;
+  readonly apiBaseUrl: string;
   readonly installationId: string;
   readonly owner: string;
   readonly repo: string;
@@ -98,16 +106,49 @@ interface Context {
   readonly steps: StepResult[];
 }
 
+/** An invitation as listed, with the `permissions` the port does not expose (decision 0010). */
+interface SpikeInvitation {
+  readonly id: string;
+  readonly login: string | undefined;
+  readonly permissions: unknown;
+  readonly expired: unknown;
+}
+
 const isSubscriber = (ctx: Context, login: string | undefined) =>
   login?.toLowerCase() === ctx.subscriber.toLowerCase();
 
-async function subscriberInvitations(ctx: Context): Promise<GitHubInvitation[]> {
-  const invitations = await ctx.app.listInvitations(ctx.installationId, ctx.owner, ctx.repo);
-  return invitations.filter((invitation) => isSubscriber(ctx, invitation.invitee?.login));
+const fullName = (ctx: Context) => `${ctx.owner}/${ctx.repo}`;
+
+// The spike reads invitations and sends `permission` directly: both are questions about GitHub's
+// behaviour the port deliberately does not model.
+async function subscriberInvitations(ctx: Context): Promise<SpikeInvitation[]> {
+  const response = await githubRequest(
+    ctx.apiBaseUrl,
+    "GET",
+    `/repos/${fullName(ctx)}/invitations?per_page=100`,
+    await ctx.app.installationToken(ctx.installationId),
+  );
+  if (response.status !== 200 || !Array.isArray(response.body)) {
+    throw new GitHubApiError("rejected", "GitHub list invitations failed", {
+      status: response.status,
+    });
+  }
+  return response.body
+    .map((invitation: unknown) => ({
+      id: String(field(invitation, "id")),
+      login: field(invitation, "invitee", "login") as string | undefined,
+      permissions: field(invitation, "permissions"),
+      expired: field(invitation, "expired"),
+    }))
+    .filter((invitation) => isSubscriber(ctx, invitation.login));
 }
 
 async function subscriberIsCollaborator(ctx: Context): Promise<boolean> {
-  const collaborators = await ctx.app.listCollaborators(ctx.installationId, ctx.owner, ctx.repo);
+  const collaborators = await ctx.app.listCollaborators(
+    ctx.installationId,
+    fullName(ctx),
+    "direct",
+  );
   return collaborators.some((collaborator) => isSubscriber(ctx, collaborator.login));
 }
 
@@ -138,7 +179,7 @@ async function step<T>(
   }
 }
 
-const invitationFacts = (invitations: GitHubInvitation[]) =>
+const invitationFacts = (invitations: SpikeInvitation[]) =>
   invitations.map((invitation) => ({
     id: invitation.id,
     permissions: invitation.permissions,
@@ -172,9 +213,9 @@ async function cleanUp(ctx: Context, name: string) {
       ctx,
       `${name}: cancel invitation`,
       "DELETE /repos/{owner}/{repo}/invitations/{id}",
-      () => ctx.app.deleteInvitation(ctx.installationId, ctx.owner, ctx.repo, invitation.id),
-      (status) => ({
-        status: String(status),
+      () => ctx.app.cancelInvitation(ctx.installationId, fullName(ctx), invitation.id),
+      (outcome) => ({
+        status: outcome === "cancelled" ? "204" : "404",
         observed: { invitationId: invitation.id },
         interpretation: "Cancelled a pending invitation.",
       }),
@@ -185,9 +226,9 @@ async function cleanUp(ctx: Context, name: string) {
       ctx,
       `${name}: remove collaborator`,
       "DELETE /repos/{owner}/{repo}/collaborators/{username}",
-      () => ctx.app.removeCollaborator(ctx.installationId, ctx.owner, ctx.repo, ctx.subscriber),
-      (status) => ({
-        status: String(status),
+      () => ctx.app.removeCollaborator(ctx.installationId, fullName(ctx), ctx.subscriber),
+      (outcome) => ({
+        status: outcome === "removed" ? "204" : "404",
         observed: {},
         interpretation: "Removed the subscriber's access.",
       }),
@@ -200,11 +241,35 @@ async function invite(ctx: Context, name: string, permission: string | undefined
     ctx,
     name,
     `PUT /repos/{owner}/{repo}/collaborators/{username}${permission === undefined ? " (no permission)" : ` {"permission":"${permission}"}`}`,
-    () =>
-      ctx.app.addCollaborator(ctx.installationId, ctx.owner, ctx.repo, ctx.subscriber, permission),
+    async () => {
+      if (permission === undefined) {
+        const result = await ctx.app.addCollaborator(
+          ctx.installationId,
+          fullName(ctx),
+          ctx.subscriber,
+        );
+        return result.outcome === "invited"
+          ? { status: 201, invitationId: result.invitationId }
+          : { status: 204, invitationId: null };
+      }
+      const response = await githubRequest(
+        ctx.apiBaseUrl,
+        "PUT",
+        `/repos/${fullName(ctx)}/collaborators/${ctx.subscriber}`,
+        await ctx.app.installationToken(ctx.installationId),
+        { permission },
+      );
+      if (response.status !== 201 && response.status !== 204) {
+        throw new GitHubApiError("rejected", "GitHub add collaborator failed", {
+          status: response.status,
+        });
+      }
+      const id = field(response.body, "id");
+      return { status: response.status, invitationId: id === undefined ? null : String(id) };
+    },
     (result) => ({
       status: String(result.status),
-      observed: { invitationId: result.invitationId ?? null },
+      observed: { invitationId: result.invitationId },
       interpretation:
         result.status === 201
           ? "201: an invitation was created; access is pending until accepted."
@@ -230,9 +295,9 @@ async function runLive(ctx: Context): Promise<Conclusion[]> {
     ctx,
     "4 remove pending invitee as collaborator",
     "DELETE /repos/{owner}/{repo}/collaborators/{username}",
-    () => ctx.app.removeCollaborator(ctx.installationId, ctx.owner, ctx.repo, ctx.subscriber),
-    (status) => ({
-      status: String(status),
+    () => ctx.app.removeCollaborator(ctx.installationId, fullName(ctx), ctx.subscriber),
+    (outcome) => ({
+      status: outcome === "removed" ? "204" : "404",
       observed: {},
       interpretation: "Status of a collaborator DELETE for someone with only a pending invitation.",
     }),
@@ -249,9 +314,9 @@ async function runLive(ctx: Context): Promise<Conclusion[]> {
       ctx,
       "5 cancel invitation",
       "DELETE /repos/{owner}/{repo}/invitations/{id}",
-      () => ctx.app.deleteInvitation(ctx.installationId, ctx.owner, ctx.repo, invitation.id),
-      (status) => ({
-        status: String(status),
+      () => ctx.app.cancelInvitation(ctx.installationId, fullName(ctx), invitation.id),
+      (outcome) => ({
+        status: outcome === "cancelled" ? "204" : "404",
         observed: { invitationId: invitation.id },
         interpretation: "Invitation DELETE cancels a pending invitation.",
       }),
@@ -271,9 +336,9 @@ async function runLive(ctx: Context): Promise<Conclusion[]> {
       ctx,
       "6 cancel invitation",
       "DELETE /repos/{owner}/{repo}/invitations/{id}",
-      () => ctx.app.deleteInvitation(ctx.installationId, ctx.owner, ctx.repo, invitation.id),
-      (status) => ({
-        status: String(status),
+      () => ctx.app.cancelInvitation(ctx.installationId, fullName(ctx), invitation.id),
+      (outcome) => ({
+        status: outcome === "cancelled" ? "204" : "404",
         observed: { invitationId: invitation.id },
         interpretation: "Clean-up.",
       }),
@@ -382,7 +447,14 @@ async function main(argv: readonly string[]): Promise<number> {
     await app.installationToken(installationId),
   );
 
-  const ctx: Context = { app, installationId, ...target, subscriber, steps: [] };
+  const ctx: Context = {
+    app,
+    apiBaseUrl: config.apiBaseUrl,
+    installationId,
+    ...target,
+    subscriber,
+    steps: [],
+  };
   ctx.steps.push({
     step: "1 installation",
     operation:

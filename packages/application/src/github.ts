@@ -31,6 +31,7 @@ import {
   type UserActor,
   type WorkspaceAuditAction,
 } from "./context.ts";
+import { reconcileOutboxRow } from "./reconciliation.ts";
 import { openWorkspace } from "./workspaces.ts";
 
 // GitHub App connections (Phase 2 plan): an intent binds an installation to a workspace and user;
@@ -517,6 +518,13 @@ async function attemptResync(
       capabilities: JSON.stringify(GITHUB_PERSONAL_REPOSITORY_CAPABILITIES),
       discoveredAt: now,
       updatedAt: now,
+      nextReconcileAt: null,
+      lastReconciledAt: null,
+      reconcileToken: null,
+      reconcileLeaseUntil: null,
+      reconcileRequestedAt: null,
+      reconcileFailures: 0,
+      lastReconcileError: null,
     };
   });
   const updates = new Map<string, repo.ResourceChanges>();
@@ -550,6 +558,20 @@ async function attemptResync(
       }),
     );
   }
+  // Reconcile every repository whose eligibility may have changed: its selection, privacy or
+  // archive state, or, when the connection's status changed, every repository of the connection.
+  const affected = new Set(
+    status === stored.status
+      ? [
+          ...plan.updated
+            .filter(
+              ({ changes }) => changes.private !== undefined || changes.archived !== undefined,
+            )
+            .map(({ id }) => id),
+          ...plan.selectionChanged.map(({ id }) => id),
+        ]
+      : current.map((resource) => resource.id),
+  );
   const summary = {
     status,
     discovered: plan.discovered.length,
@@ -574,6 +596,9 @@ async function attemptResync(
       syncToken: ctx.ids.next(),
       inserts,
       updates: [...updates].map(([id, set]) => ({ id, set })),
+      reconcile: [...affected]
+        .sort()
+        .map((resourceId) => reconcileOutboxRow(ctx, { workspaceId, resourceId })),
       connection: {
         status,
         ...(installation === null

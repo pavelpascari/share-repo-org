@@ -54,7 +54,7 @@ An entitlement may exist while provisioning is pending or failing.
 
 ### Grant
 
-The latest known provider-side access state for a subject and resource, including pending invitation, provisioned, absent, revocation pending, or error.
+The latest known provider-side access state for a subject and resource, including pending invitation, provisioned, absent, revocation pending, or error. It records whether ShareRepo manages the access (`managed`) and whether it is `indirect`; see State sketches § Grant.
 
 > Grant is observed actual state.
 
@@ -296,6 +296,21 @@ active -> revoking -> absent
 ```
 
 `error` must include a normalized error code and retry classification. The reconciler should be able to recover from stale intermediate states.
+
+**Ownership (decision 0010).** A grant is `managed` only when ShareRepo created it.
+
+- The flag is set when ShareRepo records its intent (`provisioning`), before the invitation is sent. It stays set while observation keeps finding the access, and it is cleared when the grant becomes `absent`.
+- Access observed without that intent is unmanaged: a collaborator the creator added by hand, or an invitation the creator sent. Unmanaged access is reported and never revoked.
+- So is access listed after ShareRepo's own invitation was refused (a failure that is not retryable), after its revoke succeeded, or when GitHub answers an invitation with `204` (already a collaborator): GitHub created nothing for ShareRepo, so the creator granted it.
+- Access that is not direct (on a personal repository, the owner's own) is recorded as `indirect`. It is also never changed.
+
+**Recovering intermediate states.** `provisioning` and `revoking` are write-ahead intents, each with a `provider_mutations` row in status `started`. The next observation settles them, so a lost response or a crash never causes a blind retry:
+
+- for `provisioning`, an invitation or collaborator found means the request landed;
+- for `revoking`, nothing found means the removal landed; access still listed after a removal that succeeded is the creator's, and unmanaged;
+- otherwise the planner acts again.
+
+The observation runs at the start of the next reconciliation of the repository. A 5-minute grace period covers GitHub's list lag.
 
 ## Identity linking
 

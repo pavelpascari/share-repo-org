@@ -1,8 +1,10 @@
 // The GitHub App half of the E2E fake GitHub: the install page, the App and installation REST
 // endpoints ShareRepo calls, and control endpoints a test uses to register a user, or to change
 // an installation and send a signed webhook. Response shapes follow GitHub's (see packages/integrations fixtures).
+// Collaborators, invitations and their controls live in fake-github-collaborators.ts.
 import { createHmac, randomInt } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { createFakeCollaborators } from "./fake-github-collaborators.ts";
 import { WEB_URL } from "./ports.ts";
 
 export const FAKE_APP_SLUG = "sharerepo-e2e";
@@ -26,6 +28,36 @@ export function createFakeGitHubApp(webhookSecret: string) {
   const tokens = new Map<string, number>();
   /** Accounts registered through `/_control/users`, keyed by lower-cased login. */
   const users = new Map<string, Installation["account"]>();
+
+  const installationOf = (token: string) => {
+    const id = tokens.get(token);
+    return id === undefined ? undefined : installations.get(id);
+  };
+  const accounts = () => [
+    ...users.values(),
+    ...[...installations.values()].map((installation) => installation.account),
+  ];
+  const repositoryIn = (installation: Installation, fullName: string) => {
+    const repository = installation.repositories.find((r) => r.name === fullName);
+    return repository === undefined ? null : { id: repository.id, owner: installation.account };
+  };
+  const collaborators = createFakeCollaborators({
+    repositoryFor(token, fullName) {
+      const installation = installationOf(token);
+      return installation === undefined ? "unauthorized" : repositoryIn(installation, fullName);
+    },
+    repositoryNamed(fullName) {
+      for (const installation of installations.values()) {
+        const found = repositoryIn(installation, fullName);
+        if (found !== null) return found;
+      }
+      return null;
+    },
+    userByLogin: (login) => accounts().find((a) => a.login.toLowerCase() === login.toLowerCase()),
+    userById: (id) => accounts().find((a) => a.id === id),
+    registerUser: (account) => users.set(account.login.toLowerCase(), account),
+    isInstallationToken: (token) => installationOf(token) !== undefined,
+  });
 
   function installationJson(installation: Installation) {
     return {
@@ -165,7 +197,7 @@ export function createFakeGitHubApp(webhookSecret: string) {
       await deliverWebhook("installation_repositories", "removed", installation.id);
       return json(res, 200, { ok: true });
     }
-    return false;
+    return collaborators.handle(req, res, url, body);
   }
 
   async function deliverWebhook(event: string, action: string, installationId: number) {

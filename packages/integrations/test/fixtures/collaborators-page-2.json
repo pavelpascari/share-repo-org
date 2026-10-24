@@ -1,0 +1,21 @@
+[
+  {
+    "login": "octo-reader",
+    "id": 6003,
+    "node_id": "U_6003",
+    "avatar_url": "https://avatars.githubusercontent.com/u/6003?v=4",
+    "url": "https://api.github.com/users/octo-reader",
+    "html_url": "https://github.com/octo-reader",
+    "type": "User",
+    "user_view_type": "public",
+    "site_admin": false,
+    "permissions": {
+      "admin": false,
+      "maintain": false,
+      "push": false,
+      "triage": true,
+      "pull": true
+    },
+    "role_name": "triage"
+  }
+]

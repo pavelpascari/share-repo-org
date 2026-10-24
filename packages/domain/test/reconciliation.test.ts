@@ -34,8 +34,10 @@ const grant = (id: string, overrides: Partial<ReconciliationGrant> = {}): Reconc
   accessLevel: "write",
   state: "active",
   managed: true,
+  indirect: false,
   expiresAt: null,
   retryClass: null,
+  nextAttemptAt: null,
   ...overrides,
 });
 
@@ -252,7 +254,7 @@ describe("planReconciliation: access not desired", () => {
   const undesired = (g: ReconciliationGrant, overrides: Partial<ReconciliationInput> = {}) =>
     outcome({ entitlements: [], grants: [g], ...overrides });
 
-  it.each(["active", "pending_invitation", "provisioning", "error"] as const)(
+  it.each(["active", "pending_invitation", "error"] as const)(
     "revokes a managed grant that is %s",
     (state) => {
       expect(undesired(grant("g1", { state }))).toBe("revoke/not_entitled");
@@ -290,6 +292,17 @@ describe("planReconciliation: access not desired", () => {
     expect(undesired(grant("g1", { state: "revoking" }))).toBe("verify/revocation_in_progress");
   });
 
+  it("waits for observation to settle a provisioning grant, never revoking it blind", () => {
+    // Its invitation may not be listed yet: removing a collaborator would not cancel it, and the
+    // invitation would then look like the creator's (decision 0010).
+    expect(undesired(grant("g1", { state: "provisioning" }))).toBe("verify/intermediate_state");
+    expect(
+      undesired(grant("g1", { state: "provisioning" }), {
+        connections: [{ id: "c1", status: "deleted" }],
+      }),
+    ).toBe("verify/intermediate_state");
+  });
+
   it.each(["active", "pending_invitation", "provisioning", "revoking", "error"] as const)(
     "never revokes unmanaged access that is %s",
     (state) => {
@@ -300,6 +313,131 @@ describe("planReconciliation: access not desired", () => {
   it.each(["absent", "unknown"] as const)("does nothing for a grant that is %s", (state) => {
     expect(undesired(grant("g1", { state }))).toBe("noop/no_access");
     expect(undesired(grant("g1", { state, managed: false }))).toBe("noop/no_access");
+  });
+});
+
+describe("planReconciliation: retry times (phase 4)", () => {
+  const failed = (retryClass: "retryable" | "rate_limited", nextAttemptAt: number | null) => ({
+    grants: [grant("g1", { state: "error", retryClass, nextAttemptAt })],
+  });
+
+  it.each([
+    ["retryable", "transient_error"],
+    ["rate_limited", "rate_limited"],
+  ] as const)("waits for a %s error's retry time, then retries", (retryClass, reason) => {
+    expect(outcome(failed(retryClass, NOW + 1))).toBe(`wait/${reason}`);
+    expect(outcome(failed(retryClass, NOW))).toBe(`retry/${reason}`);
+    expect(outcome(failed(retryClass, NOW - 1))).toBe(`retry/${reason}`);
+    expect(outcome(failed(retryClass, null))).toBe(`retry/${reason}`);
+  });
+
+  it("reports a blocked change before the retry time", () => {
+    expect(
+      outcome({
+        ...failed("retryable", NOW + 1),
+        connections: [{ id: "c1", status: "suspended" }],
+      }),
+    ).toBe("blocked/connection_inactive");
+  });
+
+  it("ignores the retry time of an error that needs a person", () => {
+    expect(
+      outcome({
+        grants: [
+          grant("g1", {
+            state: "error",
+            retryClass: "user_action_required",
+            nextAttemptAt: NOW + 1,
+          }),
+        ],
+      }),
+    ).toBe("request_action/user_action_required");
+  });
+});
+
+describe("planReconciliation: invitation budget (phase 4)", () => {
+  const spent = (remaining: number, resourceId = "r1") => ({
+    invitationBudgets: new Map([[resourceId, { remaining, opensAt: NOW + 10 }]]),
+  });
+
+  it("waits to provision while the repository's budget is spent", () => {
+    expect(outcome(spent(0))).toBe("wait/invitation_quota");
+    expect(outcome(spent(-1))).toBe("wait/invitation_quota");
+    expect(outcome(spent(1))).toBe("provision/grant_missing");
+  });
+
+  it("applies only the decision's own repository's budget", () => {
+    expect(outcome(spent(0, "r2"))).toBe("provision/grant_missing");
+    expect(outcome({ invitationBudgets: new Map() })).toBe("provision/grant_missing");
+  });
+
+  it.each([
+    ["a reissue", grant("g1", { state: "pending_invitation", expiresAt: NOW })],
+    ["a level change", grant("g1", { accessLevel: "read" })],
+    ["a due retry", grant("g1", { state: "error", retryClass: "retryable" })],
+    ["a rate-limited retry", grant("g1", { state: "error", retryClass: "rate_limited" })],
+  ])("waits for %s too", (_, g) => {
+    expect(
+      outcome({
+        ...spent(0),
+        grants: [g],
+        resources: [resource("r1", { capabilities: { readOnlyGrant: true } })],
+      }),
+    ).toBe("wait/invitation_quota");
+  });
+
+  it("reports a blocked change and a retry time first", () => {
+    expect(outcome({ ...spent(0), resources: [resource("r1", { archived: true })] })).toBe(
+      "blocked/resource_unavailable",
+    );
+    expect(
+      outcome({
+        ...spent(0),
+        grants: [grant("g1", { state: "error", retryClass: "retryable", nextAttemptAt: NOW + 1 })],
+      }),
+    ).toBe("wait/transient_error");
+  });
+
+  it("does not hold back anything that sends no invitation", () => {
+    expect(outcome({ ...spent(0), grants: [grant("g1")] })).toBe("verify/grant_active");
+    expect(outcome({ ...spent(0), entitlements: [], grants: [grant("g1")] })).toBe(
+      "revoke/not_entitled",
+    );
+  });
+});
+
+describe("planReconciliation: indirect access (phase 4)", () => {
+  const indirect = (overrides: Partial<ReconciliationGrant> = {}) =>
+    grant("g1", { indirect: true, managed: false, ...overrides });
+
+  it("verifies indirect access when access is desired, whatever its level", () => {
+    expect(outcome({ grants: [indirect()] })).toBe("verify/grant_active");
+    expect(
+      outcome({
+        resources: [resource("r1", { capabilities: { readOnlyGrant: true } })],
+        grants: [
+          indirect({ accessLevel: "read" }),
+          indirect({ accessLevel: "read", managed: true }),
+        ],
+      }),
+    ).toBe("verify/grant_active");
+  });
+
+  it.each(["active", "pending_invitation", "error"] as const)(
+    "never revokes indirect access that is %s, even if marked managed",
+    (state) => {
+      for (const managed of [true, false]) {
+        expect(outcome({ entitlements: [], grants: [indirect({ state, managed })] })).toBe(
+          "noop/indirect_access",
+        );
+      }
+    },
+  );
+
+  it("reports no access for an absent grant first", () => {
+    expect(outcome({ entitlements: [], grants: [indirect({ state: "absent" })] })).toBe(
+      "noop/no_access",
+    );
   });
 });
 
@@ -372,8 +510,10 @@ const inputArb: fc.Arbitrary<ReconciliationInput> = fc.record({
         accessLevel: fc.constantFrom(...LEVELS),
         state: fc.constantFrom(...GRANT_STATES),
         managed: fc.boolean(),
+        indirect: fc.boolean(),
         expiresAt: fc.option(fc.integer({ min: NOW - 2, max: NOW + 2 })),
         retryClass: fc.option(fc.constantFrom(...RETRY_CLASSES)),
+        nextAttemptAt: fc.option(fc.integer({ min: NOW - 2, max: NOW + 2 })),
       }),
       {
         selector: (g) => `${g.connectionId}/${g.subjectId}/${g.resourceId}/${g.accessLevel}`,
@@ -396,6 +536,14 @@ const inputArb: fc.Arbitrary<ReconciliationInput> = fc.record({
     fc.record({ id: fc.constantFrom("c1", "c2"), status: fc.constantFrom(...CONNECTION_STATUSES) }),
     { selector: (c) => c.id },
   ),
+  invitationBudgets: fc
+    .array(
+      fc.tuple(
+        fc.constantFrom(...RESOURCES),
+        fc.record({ remaining: fc.integer({ min: -1, max: 2 }), opensAt: fc.constant(null) }),
+      ),
+    )
+    .map((entries) => new Map(entries)),
 });
 
 const shuffled = <T>(items: readonly T[]) =>
@@ -405,16 +553,23 @@ const PROPERTY_TIMEOUT = 60_000;
 
 describe("planReconciliation properties", () => {
   it(
-    "never revokes unmanaged access",
+    "drift/unmanaged-access-is-not-revoked: never revokes or changes unmanaged or indirect access",
     () => {
       fc.assert(
         fc.property(inputArb, (input) => {
           const grants = new Map(input.grants.map((g) => [g.id, g]));
           for (const decision of planReconciliation(input)) {
             const target = decision.grantId === null ? undefined : grants.get(decision.grantId);
-            if (decision.action === "revoke") expect(target?.managed).toBe(true);
-            // Unmanaged access that exists is never changed either way.
-            if (target !== undefined && !target.managed && target.state === "active") {
+            if (decision.action === "revoke") {
+              expect(target?.managed).toBe(true);
+              expect(target?.indirect).toBe(false);
+            }
+            // Unmanaged or indirect access that exists is never changed either way.
+            if (
+              target !== undefined &&
+              (!target.managed || target.indirect) &&
+              target.state === "active"
+            ) {
               expect(["verify", "blocked", "noop"]).toContain(decision.action);
             }
           }
@@ -466,6 +621,7 @@ describe("planReconciliation properties", () => {
                 grants: shuffled(input.grants),
                 resources: shuffled(input.resources),
                 connections: shuffled(input.connections),
+                invitationBudgets: fc.constant(input.invitationBudgets ?? new Map()),
               }),
             ),
           ),

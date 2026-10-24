@@ -13,7 +13,7 @@ permissions:
   contents: read
 
 env:
-  CURRENT_PHASE: "3"
+  CURRENT_PHASE: "4"
 
 jobs:
   checks:

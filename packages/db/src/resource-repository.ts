@@ -2,6 +2,8 @@ import type { ConnectionStatus, Instant, ResourceSelection } from "@sharerepo/do
 import { and, asc, eq, getTableColumns, ne, sql } from "drizzle-orm";
 import { type AuditEvents, conditionalAuditInserts } from "./audit-repository.ts";
 import type { Db } from "./client.ts";
+import { assertReconcileRows, type NewOutboxRow } from "./outbox-repository.ts";
+import { reconcileRequest } from "./reconcile-repository.ts";
 import { connections, resources } from "./schema/index.ts";
 
 /** Domain `Resource`: keyed by the provider's immutable ID within its connection. */
@@ -26,6 +28,12 @@ export interface ResourceSync {
   updates: readonly { id: string; set: ResourceChanges }[];
   /** Connection facts observed during the resync; `last_synced_at` is always set to `now`. */
   connection: { status?: ConnectionStatus; permissions?: string; accountLoginSnapshot?: string };
+  /**
+   * `reconcile_resource` rows for resources whose selection, privacy, archive state or connection
+   * status changed. Each is inserted only if no row with its key is pending, and stamps the
+   * resource's reconcile request either way.
+   */
+  reconcile?: readonly NewOutboxRow[];
 }
 
 export type ApplyResourceSyncResult =
@@ -73,8 +81,9 @@ export async function getResource(
  * Applies one resync of a connection in one atomic batch, with optimistic concurrency. The
  * connection update succeeds only if its `sync_version` is still the one this resync read and it
  * is not deleted; it then bumps the version and stamps `sync_token`. Every other statement (new
- * resources, changes, audit events) runs only if the connection carries this resync's token, so a
- * stale resync writes nothing and cannot overwrite newer state, nor revive a deleted connection.
+ * resources, changes, reconcile outbox rows, audit events) runs only if the connection carries
+ * this resync's token, so a stale resync writes nothing and cannot overwrite newer state, nor
+ * revive a deleted connection.
  */
 export async function applyResourceSync(
   db: Db,
@@ -82,6 +91,7 @@ export async function applyResourceSync(
   audit: AuditEvents,
 ): Promise<ApplyResourceSyncResult> {
   const { workspaceId, connectionId, now } = sync;
+  assertReconcileRows(sync.reconcile ?? [], workspaceId, "applyResourceSync");
   const ours = sql`EXISTS (SELECT 1 FROM ${connections} WHERE ${connections.id} = ${connectionId} AND ${connections.syncToken} = ${sync.syncToken})`;
   const inConnection = (id: string) =>
     and(
@@ -123,6 +133,7 @@ export async function applyResourceSync(
         .set({ ...set, updatedAt: now })
         .where(inConnection(id)),
     ),
+    ...(sync.reconcile ?? []).flatMap((row) => reconcileRequest(db, workspaceId, row, ours)),
     ...conditionalAuditInserts(db, audit, ours),
   ]);
   return update.meta.changes > 0 ? { ok: true } : { ok: false, reason: "stale" };
