@@ -61,6 +61,9 @@ const TOKEN_PATTERNS: readonly (readonly [RegExp, string])[] = [
   [/\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]+/gi, `$1 ${REDACTED}`],
   [/\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})/g, REDACTED],
   [/\bpdl_[A-Za-z0-9_]{10,}/g, REDACTED],
+  // Claim references (`v1.<checkoutClaimId>.<mac>`) and claim links (`/claim/<token>`).
+  [/\bv1\.[A-Za-z0-9_-]{1,128}\.[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])/g, REDACTED],
+  [/\/claim\/[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])/g, `/claim/${REDACTED}`],
 ];
 
 // `key=value`, `key: value`, `"key":"value"`. A key is a whole run of key characters (the
