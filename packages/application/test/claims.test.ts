@@ -1232,7 +1232,12 @@ describe("claims by email (path 2)", () => {
       },
     });
     const confirmed = await confirmClaim(serviceContext(), { token: token as string, user });
-    expect(confirmed).toEqual({ ok: true, workspaceSlug: s.slug, outcome: "linked" });
+    expect(confirmed).toEqual({
+      ok: true,
+      workspaceId: s.workspaceId,
+      workspaceSlug: s.slug,
+      outcome: "linked",
+    });
     await drainPaddle(s);
     expect(live(await entitlementsOf(s.workspaceId, sub.id))).toHaveLength(s.resources.length);
     const stored = await customerRow(s, customer.id);
@@ -1311,6 +1316,7 @@ describe("claims by email (path 2)", () => {
     ).toMatchObject({ ok: true, view: { linked: "other" } });
     expect(await confirmClaim(serviceContext(), { token: token as string, user: second })).toEqual({
       ok: true,
+      workspaceId: s.workspaceId,
       workspaceSlug: s.slug,
       outcome: "relinked",
     });
@@ -1346,6 +1352,7 @@ describe("claims by email (path 2)", () => {
     });
     expect(await confirmClaim(serviceContext(), { token: token as string, user })).toEqual({
       ok: true,
+      workspaceId: s.workspaceId,
       workspaceSlug: s.slug,
       outcome: "already_linked",
     });

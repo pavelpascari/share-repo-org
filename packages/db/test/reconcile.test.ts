@@ -15,6 +15,7 @@ import {
   listOpenMutations,
   pendingOutboxId,
   pendingOutboxMessage,
+  pendingOutboxSince,
   type ReleaseReconcileLease,
   releaseReconcileLease,
   requestReconcile,
@@ -1012,6 +1013,49 @@ describe("requestReconcile", () => {
       .bind(NOW, failed.id)
       .run();
     await expect(pendingOutboxMessage(db, failed.id)).resolves.toBeNull();
+  });
+
+  it("pendingOutboxSince lists due, pending rows of the kinds queued since a time", async () => {
+    const workspace = uniqueId("ws");
+    const other = uniqueId("ws");
+    const since = T0 + 3_600_000;
+    const row = (
+      kind: Parameters<typeof outboxRow>[0],
+      subject: string,
+      createdAt: number,
+      availableAt = createdAt,
+    ) => ({ ...outboxRow(kind, `${subject}:x`), createdAt, availableAt });
+    const first = row("refresh_subscription", workspace, since);
+    const second = row("check_paddle_connection", workspace, since + 1);
+    const rows = [
+      second,
+      first,
+      row("refresh_subscription", workspace, since - 1), // before `since`
+      row("reconcile_resource", workspace, since + 2), // another kind
+      row("refresh_subscription", workspace, since + 3, since + 60_000), // not due yet
+      row("refresh_subscription", other, since + 4), // another workspace
+    ];
+    const sent = row("refresh_subscription", workspace, since + 5);
+    for (const value of [...rows, sent]) await enqueueOutboxOnce(db, value);
+    await env.DB.prepare("UPDATE outbox SET sent_at = ? WHERE id = ?").bind(NOW, sent.id).run();
+    const query = {
+      kinds: ["refresh_subscription", "check_paddle_connection"] as const,
+      since,
+      now: since + 10,
+      limit: 10,
+    };
+    const pick = ({ id, kind, subjectId }: typeof first) => ({ id, kind, subjectId });
+
+    await expect(
+      pendingOutboxSince(db, { ...query, subjectPrefix: `${workspace}:` }),
+    ).resolves.toEqual([pick(first), pick(second)]);
+    await expect(
+      pendingOutboxSince(db, { ...query, subjectPrefix: `${workspace}:`, limit: 1 }),
+    ).resolves.toEqual([pick(first)]);
+    const unscoped = await pendingOutboxSince(db, query);
+    expect(unscoped.map((r) => r.subjectId)).toEqual(
+      expect.arrayContaining([first.subjectId, `${other}:x`]),
+    );
   });
 
   it("rejects a row of another kind, workspace or resource", async () => {

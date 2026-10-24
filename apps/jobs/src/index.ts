@@ -24,4 +24,6 @@ export default createJobsWorker({
     }),
   mail: (transport, from) =>
     createMailPort(transport, { from, fetch: globalThis.fetch.bind(globalThis) }),
+  // The jobs Worker produces to the queue it consumes, for follow-up work (decision 0003).
+  followUps: (env) => env.EVENTS,
 }) satisfies ExportedHandler<Env>;

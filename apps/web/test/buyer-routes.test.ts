@@ -375,7 +375,7 @@ describe("claim link (/claim/:token)", () => {
 
   it("claims with a same-origin POST, once, and the purchase shows in My access", async () => {
     const { s, buyer, token } = await claimable();
-    const { context } = harness();
+    const { context, sent, settle } = harness();
     const params = { token };
     expect(
       await thrownStatus(
@@ -391,6 +391,14 @@ describe("claim link (/claim/:token)", () => {
     });
     const again = await claim.action(call(post(`/claim/${token}`, buyer, {}), context, params));
     expect(again.data).toEqual({ ok: false, error: CLAIM_ERRORS.already_used });
+    // The link's refresh goes straight to the queue, once.
+    await settle();
+    expect(sent).toEqual([
+      expect.objectContaining({
+        kind: "refresh_subscription",
+        subjectId: expect.stringMatching(new RegExp(`^${s.workspaceId}:paddle:sub_`)),
+      }),
+    ]);
 
     await drain(s);
     const access = await myAccess.loader(call(get("/me/access", buyer), context, {}));
@@ -407,6 +415,22 @@ describe("claim link (/claim/:token)", () => {
       }),
     ]);
     expect(access.githubWeb).toBe("https://github.com");
+  });
+
+  it("logs a failed queue hand-off of the claim's refresh; the outbox drain delivers", async () => {
+    const { buyer, token } = await claimable();
+    const h = harness({ sendFails: true });
+    const claimed = await claim.action(
+      call(post(`/claim/${token}`, buyer, {}), h.context, { token }),
+    );
+    expect(claimed.data).toMatchObject({ ok: true, outcome: "linked" });
+    await h.settle();
+    expect(h.logs().filter((line) => line.level === "warn")).toEqual([
+      expect.objectContaining({
+        msg: "queue send failed; the outbox drain will deliver",
+        errorName: "Error",
+      }),
+    ]);
   });
 
   it("tells the buyer when the purchase is linked to someone else, and relinks on claim", async () => {

@@ -112,6 +112,7 @@ export {
   pendingOutbox,
   pendingOutboxId,
   pendingOutboxMessage,
+  pendingOutboxSince,
 } from "./outbox-repository.ts";
 export {
   type CreatePaddleConnectionResult,

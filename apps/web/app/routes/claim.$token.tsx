@@ -3,6 +3,7 @@ import { ConflictError } from "@sharerepo/platform";
 import { data, Form, Link, useNavigation } from "react-router";
 import { servicesFor } from "../auth/server.ts";
 import { getSignedInUser } from "../auth/session.server.ts";
+import { enqueueRefreshesSince } from "../commerce.server.ts";
 import { CLAIM_ERRORS } from "../commerce-messages.ts";
 import { GitHubAccount, SignInPrompt } from "../components/sign-in-prompt.tsx";
 import { cloudflareContext } from "../context.ts";
@@ -58,14 +59,20 @@ export async function action({ request, params, context }: Route.ActionArgs) {
   assertSameOrigin(request, context.get(cloudflareContext).env.auth.baseURL);
   const user = await getSignedInUser(request, context);
   if (user === null) throw data(null, { status: 401, headers: REFERRER_POLICY });
+  const services = servicesFor(context);
+  const since = services.clock.now();
   let result: Awaited<ReturnType<typeof confirmClaim>>;
   try {
-    result = await confirmClaim(servicesFor(context), { token: params.token, user });
+    result = await confirmClaim(services, { token: params.token, user });
   } catch (error) {
     if (error instanceof ConflictError) {
       return data({ ok: false, error: CONFLICT_MESSAGE } satisfies ActionData, REFERRER_INIT);
     }
     throw asResponse(error);
+  }
+  // The link queued a refresh of each of the customer's subscriptions.
+  if (result.ok && result.outcome !== "already_linked") {
+    enqueueRefreshesSince(context, result.workspaceId, since);
   }
   const body: ActionData = result.ok
     ? { ok: true, workspaceSlug: result.workspaceSlug, outcome: result.outcome, error: null }

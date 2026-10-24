@@ -102,6 +102,52 @@ describe("Paddle events and refreshes", () => {
     expect(s.paddle.calls).toContain("getSubscription");
   });
 
+  it("hands the refresh a Paddle event queued straight to the queue", async () => {
+    const s = await paddleShop();
+    const { subscription } = directPurchase(s);
+    const sent: unknown[] = [];
+    const target = paddleWorker(s, {
+      followUps: () => ({
+        send: async (message) => {
+          sent.push(message);
+        },
+      }),
+    });
+    await deliver(target, [await webhookFor(s, subscription.id)]);
+    const subjectId = refreshKey(s, subscription.id);
+    const [outboxId] = await queued("refresh_subscription", subjectId);
+    expect(sent).toContainEqual({ kind: "refresh_subscription", subjectId, outboxId });
+    expect(await sentAt(outboxId as string)).toBeNull();
+  });
+
+  it("logs a failed hand-off and still acknowledges the job; the outbox drain delivers", async () => {
+    const s = await paddleShop();
+    const { subscription } = directPurchase(s);
+    const target = paddleWorker(s, {
+      followUps: () => ({ send: () => Promise.reject(new TypeError("queue down")) }),
+    });
+    const result = await deliver(target, [await webhookFor(s, subscription.id)]);
+    expect(result.explicitAcks).toHaveLength(1);
+    const [outboxId] = await queued("refresh_subscription", refreshKey(s, subscription.id));
+    expect(await sentAt(outboxId as string)).toBeNull();
+    expect(logged()).toContainEqual(
+      expect.objectContaining({
+        msg: "follow-up hand-off failed; the outbox drain will deliver",
+        errorName: "TypeError",
+      }),
+    );
+  });
+
+  it("leaves follow-up work to the outbox drain without a queue to hand it to", async () => {
+    const s = await paddleShop();
+    const { subscription } = directPurchase(s);
+    await deliver(paddleWorker(s, { followUps: () => undefined }), [
+      await webhookFor(s, subscription.id),
+    ]);
+    const [outboxId] = await queued("refresh_subscription", refreshKey(s, subscription.id));
+    expect(await sentAt(outboxId as string)).toBeNull();
+  });
+
   it("queue/redelivery-is-idempotent for Paddle events and refreshes", async () => {
     const s = await paddleShop();
     const { subscription } = directPurchase(s);

@@ -316,7 +316,7 @@ describe("customers route", () => {
     const s = await paddleShop();
     await unclaimedPurchase(s);
     const accounts = new PaddleAccounts();
-    const { context } = paddleHarness(accounts, { github: s.github });
+    const { context, sent, settle } = paddleHarness(accounts, { github: s.github });
     const path = `/w/${s.slug}/customers`;
     const [entry] = (await customers.loader(args(get(path, s.owner), s, context))).customers;
     const customerId = entry?.id as string;
@@ -339,6 +339,14 @@ describe("customers route", () => {
       customerId,
       error: null,
     });
+    // The link's refresh of the customer's subscription goes straight to the queue.
+    await settle();
+    expect(sent).toEqual([
+      expect.objectContaining({
+        kind: "refresh_subscription",
+        subjectId: expect.stringMatching(new RegExp(`^${s.workspaceId}:paddle:sub_`)),
+      }),
+    ]);
     expect(await submit({ githubLogin: "subscriber-1", reason: "Again" })).toMatchObject({
       ok: true,
       notice: "This customer is already linked to @subscriber-1.",

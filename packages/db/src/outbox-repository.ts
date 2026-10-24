@@ -1,5 +1,5 @@
 import { type Instant, OutboxKind } from "@sharerepo/domain";
-import { and, asc, eq, inArray, isNull, lt, lte, type SQL, sql } from "drizzle-orm";
+import { and, asc, eq, gte, inArray, isNull, lt, lte, type SQL, sql } from "drizzle-orm";
 import { runBatch } from "./batch.ts";
 import { chunked } from "./chunks.ts";
 import type { Db } from "./client.ts";
@@ -131,6 +131,41 @@ export async function pendingOutboxMessage(
     .where(and(eq(outbox.id, id), isNull(outbox.sentAt), isNull(outbox.failedAt)))
     .limit(1);
   return row ?? null;
+}
+
+/**
+ * Pending, due rows of these kinds created at or after `since`, oldest first, at most `limit`;
+ * with `subjectPrefix`, only rows whose subject starts with it (a workspace's keys start with its
+ * ID). Lets a step that just queued work hand it to the queue rather than leave it for the drain.
+ */
+export async function pendingOutboxSince(
+  db: Db,
+  input: {
+    kinds: readonly NewOutboxRow["kind"][];
+    since: Instant;
+    now: Instant;
+    limit: number;
+    subjectPrefix?: string;
+  },
+): Promise<Pick<OutboxRow, "id" | "kind" | "subjectId">[]> {
+  const prefix = input.subjectPrefix;
+  return db
+    .select({ id: outbox.id, kind: outbox.kind, subjectId: outbox.subjectId })
+    .from(outbox)
+    .where(
+      and(
+        inArray(outbox.kind, [...input.kinds]),
+        isNull(outbox.sentAt),
+        isNull(outbox.failedAt),
+        gte(outbox.createdAt, input.since),
+        lte(outbox.availableAt, input.now),
+        prefix === undefined
+          ? undefined
+          : sql`substr(${outbox.subjectId}, 1, ${prefix.length}) = ${prefix}`,
+      ),
+    )
+    .orderBy(asc(outbox.createdAt), asc(outbox.id))
+    .limit(input.limit);
 }
 
 /** Adds work on its own, outside any other change. */

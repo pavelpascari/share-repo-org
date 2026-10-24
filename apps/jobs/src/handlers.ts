@@ -16,6 +16,7 @@ import {
   markOutboxFailed,
   markOutboxSent,
   type OutboxRow,
+  pendingOutboxSince,
 } from "@sharerepo/db";
 import { type Clock, type IdGenerator, OutboxKind } from "@sharerepo/domain";
 import {
@@ -38,7 +39,7 @@ import {
   withCorrelationId,
 } from "@sharerepo/platform";
 import { type JobsConfig, parseJobsEnv } from "./env.ts";
-import { jobMessageSchema } from "./messages.ts";
+import { type JobMessage, jobMessageSchema } from "./messages.ts";
 import { type JobDeps, JobOutcome, retryDelaySeconds, runJob } from "./work.ts";
 
 export interface JobsWorkerDeps {
@@ -58,6 +59,11 @@ export interface JobsWorkerDeps {
   }) => PaddlePort;
   /** The mail port for a configured transport and sender; tests return a `FakeMail`. */
   readonly mail: (transport: MailTransportConfig, from: string) => MailPort;
+  /**
+   * Where the queue consumer hands follow-up work a job queued (the `EVENTS` producer binding),
+   * or undefined to leave it to the outbox drain. Tests leave it out or record the messages.
+   */
+  readonly followUps?: (env: Env) => { send(message: JobMessage): Promise<unknown> } | undefined;
 }
 
 const HEALTH_PATH = "/healthz";
@@ -82,6 +88,13 @@ export const OUTBOX_MAX_ATTEMPTS = 10;
 export const DUE_EVALUATION_BATCH = 100;
 /** Repositories due for reconciliation, queued per minute (phase-4 plan § Reconciliation job). */
 export const DUE_RECONCILE_BATCH = 100;
+/**
+ * Follow-up work a job's queue consumer hands to the queue at once (decision 0003): a refresh
+ * that a Paddle event or a customer link queued, and a Paddle key check. Reconciliations keep
+ * their own schedule. At most {@link FOLLOW_UP_LIMIT} per job; the drain runs the rest.
+ */
+export const FOLLOW_UP_KINDS = [OutboxKind.RefreshSubscription, OutboxKind.CheckPaddleConnection];
+export const FOLLOW_UP_LIMIT = 50;
 
 class MethodNotAllowedError extends AppError {
   constructor() {
@@ -196,6 +209,29 @@ export function createJobsWorker(deps: JobsWorkerDeps) {
       }
     }
     logger.info("outbox drained", { claimed, sent });
+  }
+
+  /**
+   * Sends the follow-up work queued since a job started to the queue, best effort: the rows are
+   * in the outbox, so a failure only waits for the drain. Rows queued meanwhile by other jobs may
+   * be sent too; every job is idempotent. Logged by classification, never thrown.
+   */
+  async function handOff(env: Env, db: Db, since: number, logger: Logger): Promise<void> {
+    const queue = deps.followUps?.(env);
+    if (queue === undefined) return;
+    try {
+      const rows = await pendingOutboxSince(db, {
+        kinds: FOLLOW_UP_KINDS,
+        since,
+        now: deps.clock.now(),
+        limit: FOLLOW_UP_LIMIT,
+      });
+      for (const row of rows) {
+        await queue.send({ kind: row.kind, subjectId: row.subjectId, outboxId: row.id });
+      }
+    } catch (error) {
+      logger.warn("follow-up hand-off failed; the outbox drain will deliver", classify(error));
+    }
   }
 
   /** Runs one claimed row; returns whether it was sent. A failure is logged, never thrown. */
@@ -379,10 +415,12 @@ export function createJobsWorker(deps: JobsWorkerDeps) {
           { correlationId: ctx.correlationId, worker: "jobs", kind: job.kind },
           logOptions,
         );
+        const startedAt = deps.clock.now();
         try {
           const outcome = await runJob(ctx, job, jobs);
           await markOutboxSent(db, [job.outboxId], deps.clock.now());
           logOutcome(logger, outcome, { outboxId: job.outboxId });
+          await handOff(env, db, startedAt, logger);
           message.ack();
         } catch (error) {
           if (isRetryable(error)) {

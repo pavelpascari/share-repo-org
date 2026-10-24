@@ -863,6 +863,8 @@ export async function viewClaim(
 export type ConfirmClaimResult =
   | {
       readonly ok: true;
+      /** The token's workspace, where the link queued its refreshes. */
+      readonly workspaceId: string;
       readonly workspaceSlug: string;
       readonly outcome: "linked" | "relinked" | "already_linked";
     }
@@ -960,7 +962,7 @@ export async function confirmClaim(
       : decision === CustomerLinkDecision.Link
         ? "linked"
         : "relinked";
-  return { ok: true, workspaceSlug: workspace.slug, outcome };
+  return { ok: true, workspaceId: workspace.id, workspaceSlug: workspace.slug, outcome };
 }
 
 // Path 3: the owner's manual link -----------------------------------------------------------

@@ -1,6 +1,6 @@
 import type { CommerceDeps } from "@sharerepo/application";
-import { pendingOutboxMessage } from "@sharerepo/db";
-import { systemClock } from "@sharerepo/domain";
+import { pendingOutboxMessage, pendingOutboxSince } from "@sharerepo/db";
+import { OutboxKind, systemClock } from "@sharerepo/domain";
 import { createPaddleClient, type GitHubAppPort, PaddleApiError } from "@sharerepo/integrations";
 import { ConflictError, ServiceUnavailableError } from "@sharerepo/platform";
 import { createContext, type RouterContextProvider } from "react-router";
@@ -93,6 +93,39 @@ export function enqueueOutboxById(context: Context, outboxId: string): void {
       .catch((error: unknown) =>
         logger.warn("queue send failed; the outbox drain will deliver", {
           outboxId,
+          errorName: error instanceof Error ? error.name : "unknown",
+        }),
+      ),
+  );
+}
+
+/** At most this many refreshes one request hands to the queue; the drain runs any others. */
+const REFRESH_HAND_OFF_LIMIT = 50;
+
+/**
+ * Hands the refreshes a customer link queued in the workspace since `since` (a confirmed claim,
+ * a manual link) to the queue, best effort and off the response path, so access follows the
+ * link without waiting for the outbox drain, which remains the safety net.
+ */
+export function enqueueRefreshesSince(context: Context, workspaceId: string, since: number): void {
+  const { env, ctx, logger } = context.get(cloudflareContext);
+  const { db, clock } = servicesFor(context);
+  ctx.waitUntil(
+    pendingOutboxSince(db, {
+      kinds: [OutboxKind.RefreshSubscription],
+      since,
+      now: clock.now(),
+      limit: REFRESH_HAND_OFF_LIMIT,
+      subjectPrefix: `${workspaceId}:`,
+    })
+      .then(async (rows) => {
+        for (const row of rows) {
+          const message = { kind: row.kind, subjectId: row.subjectId, outboxId: row.id };
+          await env.EVENTS.send(message satisfies JobMessage);
+        }
+      })
+      .catch((error: unknown) =>
+        logger.warn("queue send failed; the outbox drain will deliver", {
           errorName: error instanceof Error ? error.name : "unknown",
         }),
       ),

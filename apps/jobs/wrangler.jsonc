@@ -21,7 +21,10 @@
   // development, where Paddle is then unavailable. The `EMAIL` send_email binding for claim
   // emails is added once the sending domain is onboarded (docs/deployment.md § Claim emails).
   "secrets": { "required": ["GITHUB_APP_PRIVATE_KEY", "CREDENTIAL_KEYS", "CLAIM_SIGNING_KEY"] },
+  // Consumes the events queue, and produces to it too: follow-up work a job queued (such as the
+  // refresh a Paddle event asks for) goes to the queue rather than waiting for the outbox drain.
   "queues": {
+    "producers": [{ "binding": "EVENTS", "queue": "sharerepo-events-dev" }],
     "consumers": [{ "queue": "sharerepo-events-dev", "max_batch_size": 10, "max_retries": 5 }]
   },
   // Shared database; see docs/decisions/0002. Replace the ID after `wrangler d1 create sharerepo-dev`.
@@ -47,6 +50,7 @@
         "required": ["GITHUB_APP_PRIVATE_KEY", "CREDENTIAL_KEYS", "CLAIM_SIGNING_KEY"]
       },
       "queues": {
+        "producers": [{ "binding": "EVENTS", "queue": "sharerepo-events-prod" }],
         "consumers": [{ "queue": "sharerepo-events-prod", "max_batch_size": 10, "max_retries": 5 }]
       },
       // Replace the ID after `wrangler d1 create sharerepo-prod`.
@@ -77,6 +81,7 @@
         "required": ["GITHUB_APP_PRIVATE_KEY", "CREDENTIAL_KEYS", "CLAIM_SIGNING_KEY"]
       },
       "queues": {
+        "producers": [{ "binding": "EVENTS", "queue": "sharerepo-events-dev" }],
         "consumers": [{ "queue": "sharerepo-events-dev", "max_batch_size": 10, "max_retries": 5 }]
       },
       // Same local database as the top level, where E2E applies migrations.

@@ -2,7 +2,7 @@ import { type CustomerSummary, linkCustomerManually, listCustomers } from "@shar
 import { Form, useNavigation } from "react-router";
 import { z } from "zod";
 import { servicesFor } from "../auth/server.ts";
-import { githubAppFor } from "../commerce.server.ts";
+import { enqueueRefreshesSince, githubAppFor } from "../commerce.server.ts";
 import { MANUAL_LINK_ERRORS } from "../commerce-messages.ts";
 import { TextField } from "../components/text-field.tsx";
 import { cloudflareContext } from "../context.ts";
@@ -39,7 +39,12 @@ type ActionData =
 /** Owner only: links a customer to a GitHub account by hand, with a reason (decision 0012). */
 export async function action({ request, params, context }: Route.ActionArgs) {
   assertSameOrigin(request, context.get(cloudflareContext).env.auth.baseURL);
-  const { user } = await loadWorkspace(request, context, params.slug, "workspace.manage");
+  const { user, workspace } = await loadWorkspace(
+    request,
+    context,
+    params.slug,
+    "workspace.manage",
+  );
   const form = await request.formData();
   const parsed = linkForm.safeParse({
     customerId: form.get("customerId") ?? "",
@@ -51,12 +56,16 @@ export async function action({ request, params, context }: Route.ActionArgs) {
   if (!parsed.success) return fail("Enter a GitHub login and a reason.");
   const github = githubAppFor(context);
   if (github === null) return fail(MANUAL_LINK_ERRORS.connection_missing);
+  const services = servicesFor(context);
+  const since = services.clock.now();
   const attempted = await attempt(() =>
-    linkCustomerManually(servicesFor(context), user, params.slug, parsed.data, { github }),
+    linkCustomerManually(services, user, params.slug, parsed.data, { github }),
   );
   if (!attempted.ok) return fail(attempted.error);
   const result = attempted.value;
   if (!result.ok) return fail(MANUAL_LINK_ERRORS[result.error]);
+  // The link queued a refresh of each of the customer's subscriptions.
+  if (result.outcome !== "already_linked") enqueueRefreshesSince(context, workspace.id, since);
   const login = parsed.data.githubLogin.trim();
   return {
     ok: true,

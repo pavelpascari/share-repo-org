@@ -27,6 +27,7 @@ import {
   type FakePaddleDelivery,
 } from "@sharerepo/integrations/testing";
 import { parseCommerceSecrets } from "@sharerepo/platform";
+import type { JobsWorkerDeps } from "../../src/handlers.ts";
 import { type Shop, shop } from "./commerce.ts";
 import { clock, db, envWithGitHub, serviceContext } from "./github.ts";
 import { jobsWorker } from "./worker.ts";
@@ -135,10 +136,11 @@ export async function paddleShop(): Promise<PaddleShop> {
 }
 
 /** The jobs Worker with the shop's Paddle accounts and mailbox. */
-export const paddleWorker = (s: PaddleShop) =>
+export const paddleWorker = (s: PaddleShop, overrides: Partial<JobsWorkerDeps> = {}) =>
   jobsWorker(s.github, {
     paddle: ({ apiKey: key }) => s.accounts.resolve(key),
     mail: () => s.mail,
+    ...overrides,
   });
 
 /** The test env with a mail transport: any object with `send` passes as the `EMAIL` binding. */
