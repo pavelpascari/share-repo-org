@@ -13,7 +13,7 @@ permissions:
   contents: read
 
 env:
-  CURRENT_PHASE: "4"
+  CURRENT_PHASE: "5"
 
 jobs:
   checks:
@@ -101,6 +101,9 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm exec playwright install --with-deps chromium
+      # serve.ts starts the fake GitHub and fake Paddle and generates every secret the e2e
+      # Workers need (GitHub App key, webhook secret, CREDENTIAL_KEYS, CLAIM_SIGNING_KEY), so
+      # this job uses no repository secrets.
       - run: pnpm test:e2e
       - uses: actions/upload-artifact@v7
         if: failure()

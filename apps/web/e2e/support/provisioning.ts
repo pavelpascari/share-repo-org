@@ -43,7 +43,8 @@ export async function checkNow(page: Page, repository: string) {
 
 /**
  * Presses "Check now" on the repository until the subscriber's row shows every text: one check
- * normally suffices; pressing again covers a run that found the repository busy.
+ * normally suffices; pressing again covers a run that found the repository busy. A subscriber
+ * whose row is not there yet (their purchase is still being processed) is waited for.
  */
 export async function checkUntil(
   page: Page,
@@ -58,7 +59,8 @@ export async function checkUntil(
         await page.goto(`/w/${slug}/access`);
         const text = await accessRowText(page, login);
         const missing = texts.filter((expected) => !text.includes(expected));
-        if (missing.length > 0) await checkNow(page, repository);
+        // Until the subscriber has an entitlement, the page lists no repository to check.
+        if (missing.length > 0 && text !== "") await checkNow(page, repository);
         return missing;
       },
       { timeout: 30_000, intervals: [1_000, 2_000], message: `access row for ${login}` },

@@ -60,6 +60,14 @@ describe("fake Paddle defaults", () => {
     expect(fake.calls).toEqual(["getApiRoot", "createTransaction"]);
   });
 
+  it("starts every generated ID with the ID seed, so several fakes never collide", () => {
+    const fake = createFakePaddle({ idSeed: "e2e7" });
+    expect(fake.addPrice().id).toBe(`pri_e2e7${"0".repeat(21)}1`);
+    expect(fake.addCustomer({ email: "x@example.com" }).id).toMatch(/^ctm_e2e70{21}1$/);
+    expect(() => createFakePaddle({ idSeed: "Upper" })).toThrow("idSeed");
+    expect(() => createFakePaddle({ idSeed: "a".repeat(17) })).toThrow("idSeed");
+  });
+
   it("returns copies, so callers cannot change its state", async () => {
     const { fake, price } = world();
     const listed = await fake.listPrices();

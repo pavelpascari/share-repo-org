@@ -85,6 +85,11 @@ export interface FakePaddleOptions {
   readonly permissions?: readonly string[];
   /** The seller's default payment link; `null` for none. */
   readonly defaultPaymentLink?: string | null;
+  /**
+   * Up to 16 lower-case letters or digits at the start of every generated ID, so several fakes
+   * (one per seller, as in the E2E server) never generate the same ID.
+   */
+  readonly idSeed?: string;
 }
 
 export interface FakePriceInput {
@@ -313,11 +318,13 @@ export function createFakePaddle(options: FakePaddleOptions = {}): FakePaddle {
   const transactions = new Map<string, FakeTransaction>();
   const settings = new Map<string, Setting>();
   const counters = new Map<string, number>();
+  const idSeed = options.idSeed ?? "";
+  if (!/^[a-z\d]{0,16}$/.test(idSeed)) throw new Error("fake: idSeed must be [a-z0-9]{0,16}");
 
   function nextId(prefix: string): string {
     const next = (counters.get(prefix) ?? 0) + 1;
     counters.set(prefix, next);
-    return `${prefix}_${String(next).padStart(26, "0")}`;
+    return `${prefix}_${idSeed}${String(next).padStart(26 - idSeed.length, "0")}`;
   }
 
   function begin(operation: FakePaddleOperation): void {
