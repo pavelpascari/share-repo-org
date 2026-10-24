@@ -17,6 +17,7 @@ builds the same state in `FakePaddle`, so these values and the fake must agree.
 | `prices-page-2.json` | the last page: an archived one-time price whose product has no description |
 | `subscription.json` | `GET /subscriptions/{id}`: active, with a scheduled cancellation and a claim reference in `custom_data` |
 | `subscriptions-page-1.json` | `GET /subscriptions?per_page=200`, newest first (`id[DESC]`) |
+| (same file, filtered) | `GET /subscriptions?customer_id=…&per_page=200`: the contract stub applies Paddle's `customer_id` filter to `subscriptions-page-1.json` |
 | `customers.json` | `GET /customers?email=jo%40example.com&per_page=200` |
 | `customer.json` | `GET /customers/{id}` |
 | `transaction-created.json` | `POST /transactions` → 201, `checkout.url` on the default payment link |

@@ -2,18 +2,18 @@ import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 import {
   CHECKOUT_CLAIM_LIFETIME_MS,
-  CHECKOUT_CLOCK_SKEW_MS,
   CHECKOUT_REJECTION_REASONS,
   CLAIM_TOKEN_LIFETIME_MS,
   CUSTOMER_LINK_DECISIONS,
   CustomerLinkDecision,
   checkoutClaimUsable,
   claimTokenUsable,
-  customerPredatesCheckout,
+  customerKnownBeforeClaim,
   decideCustomerLink,
   EMAIL_REJECTION_REASONS,
   LINK_PATHS,
   type LinkPath,
+  purchasesOnlyThroughClaim,
 } from "../src/index.ts";
 
 const NOW = 1_700_000_000_000;
@@ -25,8 +25,6 @@ describe("claim constants (decision 0012)", () => {
       7 * 24 * HOUR,
       24 * HOUR,
     ]));
-  it("clock skew allowed when comparing provider and ShareRepo times", () =>
-    expect(CHECKOUT_CLOCK_SKEW_MS).toBe(60_000));
   it("customer link decisions", () =>
     expect(CUSTOMER_LINK_DECISIONS).toEqual(["link", "relink", "noop", "conflict"]));
   it("customer link decisions by name", () =>
@@ -39,7 +37,7 @@ describe("claim constants (decision 0012)", () => {
       "other_workspace",
       "expired",
       "consumed_by_other_customer",
-      "customer_predates_checkout",
+      "customer_has_other_purchases",
     ]));
   it("email rejection reasons", () =>
     expect(EMAIL_REJECTION_REASONS).toEqual(["unknown_claim", "expired", "already_used"]));
@@ -89,34 +87,44 @@ describe("decideCustomerLink", () => {
   });
 });
 
-describe("customerPredatesCheckout", () => {
-  const SKEW = 60_000;
+describe("purchasesOnlyThroughClaim", () => {
+  const only = (claimReferences: (string | null)[], truncated = false) =>
+    purchasesOnlyThroughClaim("v1.a.mac", { claimReferences, truncated });
 
-  it("a customer recorded and created with or after the claim does not predate it", () => {
-    expect(customerPredatesCheckout(NOW, { recordedAt: NOW, createdAt: NOW })).toBe(false);
-    expect(customerPredatesCheckout(NOW, { recordedAt: NOW + 1, createdAt: null })).toBe(false);
+  it("qualifies a customer whose every subscription carries the reference", () => {
+    expect(only(["v1.a.mac"])).toBe(true);
+    expect(only(["v1.a.mac", "v1.a.mac"])).toBe(true);
   });
 
-  it("a customer ShareRepo recorded before the claim predates it, whatever the provider says", () => {
-    expect(customerPredatesCheckout(NOW, { recordedAt: NOW - 1, createdAt: null })).toBe(true);
-    expect(customerPredatesCheckout(NOW, { recordedAt: NOW - 1, createdAt: NOW })).toBe(true);
+  it("refuses a customer with any subscription without it or with another reference", () => {
+    expect(only(["v1.a.mac", null])).toBe(false);
+    expect(only([null, "v1.a.mac"])).toBe(false);
+    expect(only(["v1.a.mac", "v1.b.mac"])).toBe(false);
   });
 
-  it("allows the provider's clock to run up to the skew behind", () => {
-    expect(customerPredatesCheckout(NOW, { recordedAt: NOW, createdAt: NOW - SKEW })).toBe(false);
-    expect(customerPredatesCheckout(NOW, { recordedAt: NOW, createdAt: NOW - SKEW - 1 })).toBe(
-      true,
+  it("refuses when nothing is listed, or the list was cut short", () => {
+    expect(only([])).toBe(false);
+    expect(only(["v1.a.mac"], true)).toBe(false);
+  });
+
+  it("is the conjunction over every subscription", () => {
+    const carried = fc.option(fc.constantFrom("v1.a.mac", "v1.b.mac"), { nil: null });
+    fc.assert(
+      fc.property(fc.array(carried, { minLength: 1 }), (refs) => {
+        expect(only(refs)).toBe(refs.every((r) => r === "v1.a.mac"));
+      }),
     );
   });
+});
 
-  it("decides from ShareRepo's record alone until the provider is read", () => {
-    const instant = fc.integer({ min: 0, max: 2 * NOW });
-    fc.assert(
-      fc.property(instant, instant, (claimCreatedAt, recordedAt) => {
-        expect(customerPredatesCheckout(claimCreatedAt, { recordedAt, createdAt: null })).toBe(
-          recordedAt < claimCreatedAt,
-        );
-      }),
+describe("customerKnownBeforeClaim", () => {
+  it.each([
+    [NOW - 1, true],
+    [NOW, false],
+    [NOW + 1, false],
+  ])("a customer recorded at %d, for a claim created at NOW: %s", (recordedAt, known) => {
+    expect(customerKnownBeforeClaim({ claimCreatedAt: NOW, customerRecordedAt: recordedAt })).toBe(
+      known,
     );
   });
 });

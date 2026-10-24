@@ -133,6 +133,23 @@ function realPort(): Subject {
       return jsonResponse(200, url.searchParams.has("after") ? prices2 : prices1);
     },
     on("GET", `/subscriptions/${SUB_JO}`, () => jsonResponse(200, subscription)),
+    ({ method, url }) => {
+      // Paddle's `customer_id` filter over the documented list.
+      const customerId = url.searchParams.get("customer_id");
+      if (method !== "GET" || url.pathname !== "/subscriptions" || customerId === null) {
+        return undefined;
+      }
+      expect(url.searchParams.get("per_page")).toBe("200");
+      const data = subscriptions.data.filter((sub) => sub.customer_id === customerId);
+      return jsonResponse(200, {
+        ...subscriptions,
+        meta: {
+          ...subscriptions.meta,
+          pagination: { ...subscriptions.meta.pagination, has_more: false },
+        },
+        data,
+      });
+    },
     on("GET", "/subscriptions", () => jsonResponse(200, subscriptions)),
     ({ method, url }) => {
       if (method !== "GET" || url.pathname !== "/customers") return undefined;
@@ -277,6 +294,25 @@ describe.each([
     });
   });
 
+  it("lists one customer's subscriptions with the claim reference each carries", async () => {
+    const { port } = await make();
+    await expect(port.listCustomerSubscriptions(CUSTOMER_JO.id)).resolves.toEqual({
+      subscriptions: [{ id: SUB_JO, claimReference: CLAIM_REFERENCE }],
+      truncated: false,
+    });
+    await expect(port.listCustomerSubscriptions(CUSTOMER_SAM.id)).resolves.toEqual({
+      subscriptions: [{ id: SUB_SAM, claimReference: null }],
+      truncated: false,
+    });
+    await expect(port.listCustomerSubscriptions(UNKNOWN_CUSTOMER)).resolves.toEqual({
+      subscriptions: [],
+      truncated: false,
+    });
+    expect(await failure(port.listCustomerSubscriptions("ctm_nope"))).toMatchObject({
+      kind: "rejected",
+    });
+  });
+
   it("finds customers by exact email and reads one by ID", async () => {
     const { port } = await make();
     await expect(port.listCustomersByEmail(CUSTOMER_JO.email)).resolves.toEqual([CUSTOMER_JO]);
@@ -355,6 +391,7 @@ describe.each([
     "listPrices",
     "getSubscription",
     "listSubscriptions",
+    "listCustomerSubscriptions",
     "createNotificationSetting",
   ] as const)("reports a rate limit on %s with the delay before retrying", async (operation) => {
     const { port, rateLimitNext } = await make();
@@ -364,6 +401,7 @@ describe.each([
       listPrices: () => port.listPrices(),
       getSubscription: () => port.getSubscription(SUB_JO),
       listSubscriptions: () => port.listSubscriptions(),
+      listCustomerSubscriptions: () => port.listCustomerSubscriptions(CUSTOMER_JO.id),
       createNotificationSetting: () =>
         port.createNotificationSetting({ destination: DESTINATION, events: EVENTS }),
     }[operation];

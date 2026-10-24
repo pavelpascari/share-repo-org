@@ -248,6 +248,19 @@ describe("Paddle pagination", () => {
     ]);
   });
 
+  it("lists a customer's subscriptions by customer_id, truncating at the cap", async () => {
+    const { port, calls } = paged(PADDLE_PAGE_LIMIT + 5);
+    const customerId = `ctm_${"1".repeat(26)}`;
+    const list = await port.listCustomerSubscriptions(customerId);
+    expect(new URL(calls[0]?.url ?? "").searchParams.get("customer_id")).toBe(customerId);
+    expect(calls).toHaveLength(PADDLE_PAGE_LIMIT);
+    expect(list.truncated).toBe(true);
+    expect(list.subscriptions[0]).toEqual({
+      id: `sub_${"1".padStart(26, "0")}`,
+      claimReference: null,
+    });
+  });
+
   it("stops the sweep list at the 30-page cap and says it was truncated", async () => {
     const { port, calls } = paged(PADDLE_PAGE_LIMIT + 5);
     const list = await port.listSubscriptions();

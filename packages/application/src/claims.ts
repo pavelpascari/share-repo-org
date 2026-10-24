@@ -12,13 +12,14 @@ import {
   checkoutClaimUsable,
   claimRateLimitBuckets,
   claimTokenUsable,
-  customerPredatesCheckout,
+  customerKnownBeforeClaim,
   decideCustomerLink,
   type EMAIL_REJECTION_REASONS,
   LinkPath,
   OutboxKind,
   parseGitHubLogin,
   parseWorkspaceSlug,
+  purchasesOnlyThroughClaim,
   rateLimitDecision,
   rateLimitWindowStart,
 } from "@sharerepo/domain";
@@ -163,12 +164,13 @@ async function claimantSubjectId(
  * same batch, and audited `claim.completed`; anything else is audited `claim.rejected`. A customer
  * linked to another subject is never moved (threat T8): `claim.conflict`.
  *
- * Only a customer the checkout itself created is linked. A buyer can enter anyone's email at
- * checkout and Paddle then reuses that person's customer, so a customer ShareRepo recorded, or
- * the source created, before the checkout claim is refused (`customer_predates_checkout`). When
- * the source cannot say when it created the customer, nothing is linked or rejected and the error
- * propagates, so the refresh is retried; the reference stays on the subscription and an unlinked
- * customer is evaluated again by every refresh.
+ * The link follows the purchase, not the customer: a buyer can enter anyone's email at checkout,
+ * and Paddle then puts the subscription on that person's customer. So a customer is linked only
+ * when every subscription the source holds for it carries this same reference; otherwise
+ * `customer_has_other_purchases`. A customer ShareRepo recorded before the claim fails that rule
+ * and is refused without asking the source. When the source cannot be read, nothing is linked or
+ * rejected and the error propagates, so the refresh is retried; the reference stays on the
+ * subscription and an unlinked customer is evaluated again by every refresh.
  *
  * Nothing is linked, or recorded, while the workspace is suspended: the refresh still records
  * commercial facts there, but a link is a change made for a buyer. A refresh after reactivation
@@ -239,18 +241,22 @@ export async function linkCheckoutReference(
       }),
     );
   }
-  // Only a customer this checkout created: first what ShareRepo already knew, then the source.
-  const recorded = { recordedAt: customer.createdAt, createdAt: null };
-  if (customerPredatesCheckout(claim.createdAt, recorded)) {
-    return reject(ClaimRejectionReason.CustomerPredatesCheckout, claim.id);
+  // Only a customer whose every purchase came through this checkout: first what ShareRepo
+  // already knew, then every subscription the source holds for it.
+  const otherPurchases = () => reject(ClaimRejectionReason.CustomerHasOtherPurchases, claim.id);
+  if (
+    customerKnownBeforeClaim({
+      claimCreatedAt: claim.createdAt,
+      customerRecordedAt: customer.createdAt,
+    })
+  ) {
+    return otherPurchases();
   }
-  const createdAt = await source.customerCreatedAt({
+  const purchases = await source.customerPurchases({
     workspaceId,
     externalCustomerId: customer.externalCustomerId,
   });
-  if (customerPredatesCheckout(claim.createdAt, { ...recorded, createdAt })) {
-    return reject(ClaimRejectionReason.CustomerPredatesCheckout, claim.id);
-  }
+  if (!purchasesOnlyThroughClaim(reference, purchases)) return otherPurchases();
   const subjectId = await claimantSubjectId(ctx, workspaceId, claimant, SYSTEM);
   // Guarded on the customer still being unlinked and the claim still unconsumed; a concurrent
   // link wins, and the next refresh looks again while the customer stays unlinked.

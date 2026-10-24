@@ -3,7 +3,7 @@ import { ConfigurationError } from "@sharerepo/platform";
 import { createSecretCanaries, expectNoCanaryLeak } from "@sharerepo/testing";
 import { describe, expect, it } from "vitest";
 import { parseJobsEnv } from "../src/env.ts";
-import { GITHUB_APP } from "./support/github.ts";
+import { GITHUB_APP, PRODUCTION } from "./support/github.ts";
 
 function configurationError(input: object): ConfigurationError {
   try {
@@ -19,6 +19,7 @@ const envWithGitHubApp = (environment: string) => ({
   ...env,
   ...GITHUB_APP,
   ENVIRONMENT: environment,
+  ...(environment === "production" ? PRODUCTION : {}),
 });
 
 describe("parseJobsEnv", () => {
@@ -26,6 +27,8 @@ describe("parseJobsEnv", () => {
     const config = parseJobsEnv(env);
     expect(config.environment).toBe("development");
     expect(config.db).toBe(env.DB);
+    expect(config.publicBaseUrl).toBe("http://localhost:5173");
+    expect(config.mailFrom).toBe("ShareRepo <claims@sharerepo.org>");
   });
 
   it("has no GitHub App locally until one is configured", () => {
@@ -33,14 +36,42 @@ describe("parseJobsEnv", () => {
   });
 
   it("accepts production with a GitHub App", () => {
-    const config = parseJobsEnv({ ...env, ...GITHUB_APP, ENVIRONMENT: "production" });
+    const config = parseJobsEnv({ ...env, ...GITHUB_APP, ...PRODUCTION });
     expect(config.environment).toBe("production");
     expect(config.github).toMatchObject({ appId: "1000", apiBaseUrl: "https://api.github.com" });
   });
 
   it("fails closed in production without a GitHub App", () => {
-    const error = configurationError({ ...env, ENVIRONMENT: "production" });
+    const error = configurationError({ ...env, ...PRODUCTION });
     expect(error.issues.map((issue) => issue.path)).toContain("GITHUB_APP_ID");
+  });
+
+  it("requires an https public origin in production and drops a trailing slash", () => {
+    const http = configurationError({
+      ...envWithGitHubApp("production"),
+      PUBLIC_BASE_URL: "http://x.test",
+    });
+    expect(http.issues).toEqual([{ path: "PUBLIC_BASE_URL", code: "custom" }]);
+    const config = parseJobsEnv({
+      ...envWithGitHubApp("production"),
+      PUBLIC_BASE_URL: "https://sharerepo.test/",
+    });
+    expect(config.publicBaseUrl).toBe("https://sharerepo.test");
+  });
+
+  it.each([
+    ["missing", undefined, "invalid_type"],
+    ["not an address", "ShareRepo", "invalid_format"],
+    ["a header injection", "a@b.test\r\nBcc: x@y.test", "invalid_format"],
+  ])("rejects a MAIL_FROM that is %s", (_label, value, code) => {
+    const error = configurationError({ ...env, MAIL_FROM: value });
+    expect(error.issues).toEqual([{ path: "MAIL_FROM", code }]);
+  });
+
+  it("accepts a bare MAIL_FROM address", () => {
+    expect(parseJobsEnv({ ...env, MAIL_FROM: "claims@sharerepo.test" }).mailFrom).toBe(
+      "claims@sharerepo.test",
+    );
   });
 
   it("decodes the commerce secrets and uses Paddle's own API without mail", () => {
@@ -105,6 +136,8 @@ describe("parseJobsEnv", () => {
     expect(error.issues).toEqual([
       { path: "DB", code: "custom" },
       { path: "ENVIRONMENT", code: "invalid_value" },
+      { path: "PUBLIC_BASE_URL", code: "invalid_type" },
+      { path: "MAIL_FROM", code: "invalid_type" },
     ]);
   });
 

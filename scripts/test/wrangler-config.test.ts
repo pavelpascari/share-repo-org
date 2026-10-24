@@ -132,6 +132,14 @@ describe("apps/jobs/wrangler.jsonc", () => {
     }
     expect(config.env?.e2e?.d1_databases).toEqual(config.d1_databases);
   });
+
+  it("every environment sets the claim links' origin and sender; production uses https", () => {
+    for (const env of [config, ...Object.values(config.env ?? {})]) {
+      expect(env.vars?.PUBLIC_BASE_URL).toBeDefined();
+      expect(env.vars?.MAIL_FROM).toBeDefined();
+    }
+    expect(config.env?.production?.vars?.PUBLIC_BASE_URL).toMatch(/^https:\/\//);
+  });
 });
 
 describe(".github/workflows/ci.yml", () => {

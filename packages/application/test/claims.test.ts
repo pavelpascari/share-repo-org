@@ -25,6 +25,7 @@ import {
   listCustomers,
   myAccess,
   PaddleUnavailableError,
+  paddleEntitlementSource,
   refreshSubscription,
   requestClaim,
   type SourceSubscription,
@@ -396,13 +397,24 @@ describe("claim/checkout-cannot-adopt-existing-customer", () => {
     completed: await auditOf(s.workspaceId, "claim.completed"),
   });
 
-  it("paying with the email of a customer ShareRepo knows links nothing", async () => {
+  const otherPurchases = (claimId: string) => ({
+    path: "checkout",
+    claimId,
+    reason: "customer_has_other_purchases",
+  });
+
+  const newEmail = () => `new-${crypto.randomUUID()}@example.com`;
+
+  it("an open checkout completed with the email of a later buyer links nothing", async () => {
     const s = await paddleShop();
-    // The victim bought through a shared Paddle link and never claimed.
+    // The attacker starts checkout first and leaves it open.
+    const { attacker, started, transactionId } = await attackerCheckout(s);
+    clock.advance(DAY);
+    // The victim then buys through a shared Paddle link: their customer is created after the
+    // claim, and ShareRepo first records it after the claim.
     const { customer: victim, sub: victimSub } = await unclaimed(s);
     clock.advance(DAY);
-    const { attacker, started, transactionId } = await attackerCheckout(s);
-    // At checkout the attacker enters the victim's email: Paddle reuses the victim's customer.
+    // The attacker completes the checkout with the victim's email: Paddle reuses the customer.
     const sub = s.paddle.completeCheckout(transactionId, { email: victim.email });
     expect(sub.customerId).toBe(victim.id);
     await deliverSubscription(s, "subscription.created", sub.id);
@@ -411,13 +423,7 @@ describe("claim/checkout-cannot-adopt-existing-customer", () => {
     expect(await liveFor(s.workspaceId, attacker.profile.externalUserId)).toEqual([]);
     expect(live(await entitlementsOf(s.workspaceId, victimSub.id))).toEqual([]);
     expect(await claimEvents(s)).toEqual({
-      rejected: [
-        {
-          path: "checkout",
-          claimId: started.checkoutClaimId,
-          reason: "customer_predates_checkout",
-        },
-      ],
+      rejected: [otherPurchases(started.checkoutClaimId)],
       completed: [],
     });
     expect(
@@ -428,56 +434,120 @@ describe("claim/checkout-cannot-adopt-existing-customer", () => {
     expect(token).not.toBeNull();
   });
 
-  it("paying with the email of a Paddle customer ShareRepo has not seen links nothing", async () => {
+  it("links nothing when the other purchase has not reached ShareRepo yet", async () => {
     const s = await paddleShop();
-    // A customer of the seller with no subscription ShareRepo knows (say, a one-time purchase).
-    const victim = s.paddle.addCustomer({
-      id: `ctm_${"7".repeat(26)}`,
-      email: `victim-${crypto.randomUUID()}@example.com`,
-      createdAt: clock.now() - 61_000,
-    });
+    const { attacker, started, transactionId } = await attackerCheckout(s);
+    clock.advance(DAY);
+    // The victim's direct purchase exists in Paddle; its webhook has not arrived.
+    const victim = paddleCustomer(s);
+    directSubscription(s, victim.id);
+    const sub = s.paddle.completeCheckout(transactionId, { email: victim.email });
+    await deliverSubscription(s, "subscription.created", sub.id);
+    expect((await customerRow(s, victim.id))?.subjectId).toBeNull();
+    expect(await liveFor(s.workspaceId, attacker.profile.externalUserId)).toEqual([]);
+    expect((await claimEvents(s)).rejected).toEqual([otherPurchases(started.checkoutClaimId)]);
+    expect(s.paddle.calls).toContain("listCustomerSubscriptions");
+  });
+
+  it("a customer with an older subscription without the reference is refused", async () => {
+    const s = await paddleShop();
+    const { customer: victim } = await unclaimed(s);
+    clock.advance(DAY);
     const { attacker, started, transactionId } = await attackerCheckout(s);
     const sub = s.paddle.completeCheckout(transactionId, { email: victim.email });
     await deliverSubscription(s, "subscription.created", sub.id);
     expect((await customerRow(s, victim.id))?.subjectId).toBeNull();
     expect(await liveFor(s.workspaceId, attacker.profile.externalUserId)).toEqual([]);
-    expect((await claimEvents(s)).rejected).toEqual([
-      { path: "checkout", claimId: started.checkoutClaimId, reason: "customer_predates_checkout" },
-    ]);
-    expect(s.paddle.calls).toContain("getCustomer");
+    expect((await claimEvents(s)).rejected).toEqual([otherPurchases(started.checkoutClaimId)]);
   });
 
-  it("links a customer the checkout created, allowing a minute of clock skew", async () => {
+  it("links a customer whose only subscriptions carry the reference", async () => {
     const s = await paddleShop();
     const { attacker: buyer, transactionId } = await attackerCheckout(s);
-    const sub = s.paddle.completeCheckout(transactionId, {
-      email: `new-${crypto.randomUUID()}@example.com`,
-    });
+    const sub = s.paddle.completeCheckout(transactionId, { email: newEmail() });
     await deliverSubscription(s, "subscription.created", sub.id);
     expect(await liveFor(s.workspaceId, buyer.profile.externalUserId)).toHaveLength(
       s.resources.length,
     );
 
-    // Paddle's clock a minute behind ShareRepo's still counts as created by the checkout.
-    const skewed = await attackerCheckout(s);
-    const customer = s.paddle.addCustomer({
+    // A Paddle customer from long ago without any subscription qualifies too: what it was
+    // created for does not matter, only that every subscription came through this checkout.
+    const second = await attackerCheckout(s);
+    const old = s.paddle.addCustomer({
       id: `ctm_${"8".repeat(26)}`,
-      email: `skew-${crypto.randomUUID()}@example.com`,
-      createdAt: clock.now() - 60_000,
+      email: newEmail(),
+      createdAt: clock.now() - 365 * DAY,
     });
-    const next = s.paddle.completeCheckout(skewed.transactionId, { customerId: customer.id });
+    const next = s.paddle.completeCheckout(second.transactionId, { email: old.email });
+    expect(next.customerId).toBe(old.id);
     await deliverSubscription(s, "subscription.created", next.id);
-    expect((await customerRow(s, customer.id))?.subjectId).not.toBeNull();
+    expect(await liveFor(s.workspaceId, second.attacker.profile.externalUserId)).toHaveLength(
+      s.resources.length,
+    );
     expect((await claimEvents(s)).rejected).toEqual([]);
+  });
+
+  it("a second subscription carrying the same reference keeps the customer linked", async () => {
+    const s = await paddleShop();
+    const { attacker: buyer, started, transactionId } = await attackerCheckout(s);
+    const reference = s.paddle.transaction(transactionId).customData.sharerepo_claim;
+    const first = s.paddle.completeCheckout(transactionId, { email: newEmail() });
+    await deliverSubscription(s, "subscription.created", first.id);
+    const linked = await customerRow(s, first.customerId);
+    expect(linked?.subjectId).not.toBeNull();
+    // Later the same customer buys again with the same claim reference in its custom data.
+    clock.advance(DAY);
+    const again = s.paddle.createSubscription({
+      customerId: first.customerId,
+      priceIds: [s.price.id],
+      customData: { sharerepo_claim: reference },
+    });
+    await deliverSubscription(s, "subscription.created", again.id);
+    expect((await customerRow(s, first.customerId))?.subjectId).toBe(linked?.subjectId);
+    expect(live(await entitlementsOf(s.workspaceId, again.id))).toHaveLength(s.resources.length);
+    expect(await claimEvents(s)).toEqual({
+      rejected: [],
+      completed: [
+        expect.objectContaining({
+          details: expect.objectContaining({ claimId: started.checkoutClaimId }),
+        }),
+      ],
+    });
+    expect(await liveFor(s.workspaceId, buyer.profile.externalUserId)).not.toEqual([]);
+  });
+
+  it("refuses when Paddle's list of the customer's subscriptions is cut short", async () => {
+    const s = await paddleShop();
+    const { started, transactionId } = await attackerCheckout(s);
+    const sub = s.paddle.completeCheckout(transactionId, { email: newEmail() });
+    const deps = {
+      ...s.deps,
+      paddle: (credentials: Parameters<typeof s.deps.paddle>[0]) => {
+        const client = s.deps.paddle(credentials);
+        return {
+          ...client,
+          listCustomerSubscriptions: async (customerId: string) => ({
+            ...(await client.listCustomerSubscriptions(customerId)),
+            truncated: true,
+          }),
+        };
+      },
+    };
+    const ctx = serviceContext();
+    await refreshSubscription(
+      ctx,
+      { workspaceId: s.workspaceId, source: "paddle", externalSubscriptionId: sub.id },
+      paddleEntitlementSource(ctx, deps),
+    );
+    expect((await customerRow(s, sub.customerId))?.subjectId).toBeNull();
+    expect((await claimEvents(s)).rejected).toEqual([otherPurchases(started.checkoutClaimId)]);
   });
 
   it("while Paddle cannot be read, links and rejects nothing, and the retried refresh links", async () => {
     const s = await paddleShop();
     const { attacker: buyer, transactionId } = await attackerCheckout(s);
-    const sub = s.paddle.completeCheckout(transactionId, {
-      email: `new-${crypto.randomUUID()}@example.com`,
-    });
-    s.paddle.failNext("getCustomer", "transient");
+    const sub = s.paddle.completeCheckout(transactionId, { email: newEmail() });
+    s.paddle.failNext("listCustomerSubscriptions", "transient");
     await expect(deliverSubscription(s, "subscription.created", sub.id)).rejects.toMatchObject({
       kind: "transient",
     });
@@ -495,10 +565,8 @@ describe("claim/checkout-cannot-adopt-existing-customer", () => {
   it("a refused key marks the connection unauthorized and links nothing", async () => {
     const s = await paddleShop();
     const { transactionId } = await attackerCheckout(s);
-    const sub = s.paddle.completeCheckout(transactionId, {
-      email: `new-${crypto.randomUUID()}@example.com`,
-    });
-    s.paddle.failNext("getCustomer", "unauthorized");
+    const sub = s.paddle.completeCheckout(transactionId, { email: newEmail() });
+    s.paddle.failNext("listCustomerSubscriptions", "unauthorized");
     await expect(deliverSubscription(s, "subscription.created", sub.id)).rejects.toBeInstanceOf(
       PaddleUnavailableError,
     );

@@ -20,7 +20,7 @@ import {
   subscribe,
   subscriptionVersion,
 } from "./support/commerce.ts";
-import { clock, count, db, envWithGitHub, serviceContext } from "./support/github.ts";
+import { clock, count, db, envWithGitHub, PRODUCTION, serviceContext } from "./support/github.ts";
 import { deliver, jobsWorker, outboxRow, runCron, sentAt } from "./support/worker.ts";
 
 let logs: LogCapture;
@@ -179,7 +179,7 @@ describe("refresh_subscription and recompute_offer on the queue", () => {
   it("refuses a simulated refresh in production, permanently", async () => {
     const s = await shop(createFakeGitHubApp());
     const sub = await subscribe(s);
-    const production = { ...envWithGitHub, ENVIRONMENT: "production" } as Env;
+    const production = { ...envWithGitHub, ...PRODUCTION } as Env;
     const result = await deliver(jobsWorker(s.github), [refresh(s, sub.id, sub.outboxId)], {
       bindings: production,
     });
@@ -192,15 +192,17 @@ describe("refresh_subscription and recompute_offer on the queue", () => {
     expect(await entitlementsOf(s)).toEqual([]);
   });
 
-  it("refuses a Paddle refresh until Paddle is integrated", async () => {
+  it("retries a Paddle refresh while the workspace has no Paddle connection", async () => {
     const s = await shop(createFakeGitHubApp());
     const subjectId = `${s.workspaceId}:paddle:sub_01`;
     const outboxId = await queuedRow(subjectId, "refresh_subscription");
     const result = await deliver(jobsWorker(s.github), [
       { kind: "refresh_subscription", subjectId, outboxId },
     ]);
-    expect(result.explicitAcks).toHaveLength(1);
-    expect((await outboxRow(outboxId))?.last_error_code).toBe("source_unavailable");
+    expect(result.explicitAcks).toEqual([]);
+    expect(result.retryMessages).toHaveLength(1);
+    expect(await outboxRow(outboxId)).toMatchObject({ sent_at: null, failed_at: null });
+    expect(await subscriptionVersion(s, "sub_01")).toBeUndefined();
   });
 });
 

@@ -79,6 +79,7 @@ export {
 export {
   CLAIM_REFERENCE_KEY,
   CLAIM_REFERENCE_MAX_LENGTH,
+  claimReferenceOf,
   type NormalizedPaddleSubscription,
   normalizePaddleSubscription,
 } from "./paddle/normalize.ts";
@@ -92,6 +93,8 @@ export {
   type PaddleApiRoot,
   type PaddleBillingCycle,
   type PaddleCustomer,
+  type PaddleCustomerSubscription,
+  type PaddleCustomerSubscriptionList,
   type PaddleNotificationSetting,
   type PaddlePort,
   type PaddlePrice,
