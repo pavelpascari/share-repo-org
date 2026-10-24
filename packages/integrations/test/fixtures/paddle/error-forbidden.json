@@ -1,0 +1,11 @@
+{
+  "error": {
+    "type": "request_error",
+    "code": "forbidden",
+    "detail": "You aren't permitted to perform this request.",
+    "documentation_url": "https://developer.paddle.com/errors/shared/forbidden"
+  },
+  "meta": {
+    "request_id": "5b2e8c1a-3f4d-4e6a-9b7c-0d1e2f3a4b5c"
+  }
+}

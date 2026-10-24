@@ -1,0 +1,11 @@
+{
+  "error": {
+    "type": "request_error",
+    "code": "not_found",
+    "detail": "Entity sub_01jcourse00000000000000099 not found",
+    "documentation_url": "https://developer.paddle.com/errors/shared/not_found"
+  },
+  "meta": {
+    "request_id": "5b2e8c1a-3f4d-4e6a-9b7c-0d1e2f3a4b5c"
+  }
+}

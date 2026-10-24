@@ -1,0 +1,36 @@
+{
+  "data": {
+    "id": "ntfset_01jsharerepo00000000000001",
+    "description": "ShareRepo",
+    "type": "url",
+    "destination": "https://sharerepo.test/webhooks/paddle/pcon_1",
+    "active": true,
+    "api_version": 1,
+    "include_sensitive_fields": false,
+    "subscribed_events": [
+      {
+        "name": "subscription.created",
+        "description": "\u2026",
+        "group": "Subscription",
+        "available_versions": [1]
+      },
+      {
+        "name": "subscription.updated",
+        "description": "\u2026",
+        "group": "Subscription",
+        "available_versions": [1]
+      },
+      {
+        "name": "api_key.revoked",
+        "description": "\u2026",
+        "group": "Api_key",
+        "available_versions": [1]
+      }
+    ],
+    "endpoint_secret_key": "pdl_ntfset_01jsecretfixture0000000000_abcdefghijklmnopqrstuvwxyzABCDEF",
+    "traffic_source": "platform"
+  },
+  "meta": {
+    "request_id": "5b2e8c1a-3f4d-4e6a-9b7c-0d1e2f3a4b5c"
+  }
+}

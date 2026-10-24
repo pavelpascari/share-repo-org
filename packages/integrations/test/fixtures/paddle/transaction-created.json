@@ -1,0 +1,37 @@
+{
+  "data": {
+    "id": "txn_01jcheckout000000000000001",
+    "status": "ready",
+    "customer_id": null,
+    "address_id": null,
+    "business_id": null,
+    "custom_data": {
+      "sharerepo_claim": "v1.ckc_fixture.mac"
+    },
+    "currency_code": "USD",
+    "origin": "api",
+    "subscription_id": null,
+    "invoice_id": null,
+    "invoice_number": null,
+    "collection_mode": "automatic",
+    "discount_id": null,
+    "billing_details": null,
+    "billing_period": null,
+    "items": [
+      {
+        "price": {
+          "id": "pri_01jmonthly0000000000000001"
+        },
+        "quantity": 1
+      }
+    ],
+    "checkout": {
+      "url": "https://octo.example/pay?_ptxn=txn_01jcheckout000000000000001"
+    },
+    "created_at": "2026-10-06T00:00:00.000Z",
+    "updated_at": "2026-10-06T00:00:00.000Z"
+  },
+  "meta": {
+    "request_id": "5b2e8c1a-3f4d-4e6a-9b7c-0d1e2f3a4b5c"
+  }
+}

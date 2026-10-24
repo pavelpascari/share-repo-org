@@ -1,0 +1,11 @@
+{
+  "error": {
+    "type": "request_error",
+    "code": "transaction_default_checkout_url_not_set",
+    "detail": "Cannot create a transaction or open a checkout as no default payment link has been set for this account. Set in the Paddle dashboard, then try again.",
+    "documentation_url": "https://developer.paddle.com/errors/shared/transaction_default_checkout_url_not_set"
+  },
+  "meta": {
+    "request_id": "5b2e8c1a-3f4d-4e6a-9b7c-0d1e2f3a4b5c"
+  }
+}
