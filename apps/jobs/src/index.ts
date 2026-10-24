@@ -1,6 +1,6 @@
 import { simulatedEntitlementSource } from "@sharerepo/application";
 import { randomIds, systemClock } from "@sharerepo/domain";
-import { createGitHubApp } from "@sharerepo/integrations";
+import { createGitHubApp, createMailPort, createPaddleClient } from "@sharerepo/integrations";
 import { createJobsWorker } from "./handlers.ts";
 
 export default createJobsWorker({
@@ -15,4 +15,13 @@ export default createJobsWorker({
       fetch: globalThis.fetch.bind(globalThis),
       clock: systemClock,
     }),
+  paddle: ({ apiKey, apiBaseUrl }) =>
+    createPaddleClient({
+      apiKey,
+      apiBaseUrl,
+      fetch: globalThis.fetch.bind(globalThis),
+      clock: systemClock,
+    }),
+  mail: (transport, from) =>
+    createMailPort(transport, { from, fetch: globalThis.fetch.bind(globalThis) }),
 }) satisfies ExportedHandler<Env>;

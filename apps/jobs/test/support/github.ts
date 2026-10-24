@@ -19,6 +19,12 @@ export const GITHUB_APP = {
   GITHUB_APP_PRIVATE_KEY: "-----BEGIN PRIVATE KEY-----\\nAAAA\\n-----END PRIVATE KEY-----",
 };
 
+/** What makes the local env a production one: production also requires an https origin. */
+export const PRODUCTION = {
+  ENVIRONMENT: "production",
+  PUBLIC_BASE_URL: "https://REPLACE-WITH-PRODUCTION-HOST.invalid",
+} as const;
+
 /** The test Worker's env with a GitHub App configured. */
 export const envWithGitHub = { ...env, ...GITHUB_APP } as Env;
 
