@@ -43,6 +43,13 @@
       "when": 1792407583798,
       "tag": "0005_provisioning",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1792858499613,
+      "tag": "0006_paddle_and_claims",
+      "breakpoints": true
     }
   ]
 }

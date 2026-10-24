@@ -84,6 +84,24 @@ describe("isSensitiveKey", () => {
     },
   );
 
+  // Phase 5 secrets (decisions 0011 and 0012): the env names and the fields that carry them.
+  it.each([
+    "CREDENTIAL_KEYS",
+    "CLAIM_SIGNING_KEY",
+    "PADDLE_API_KEY",
+    "apiKeyEnvelope",
+    "webhookSecretEnvelope",
+    "email_envelope",
+    "credentialKeyring",
+    "dataKey",
+    "claimReference",
+    "sharerepo_claim_reference",
+    "email",
+    "emailHash",
+  ])("treats %s as sensitive", (key) => {
+    expect(isSensitiveKey(key)).toBe(true);
+  });
+
   it.each(["workspaceId", "correlationId", "repository", "keyboard"])(
     "does not treat %s as sensitive",
     (key) => {

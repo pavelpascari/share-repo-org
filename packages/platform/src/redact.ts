@@ -11,10 +11,23 @@ const SENSITIVE_WORDS = [
   "signature",
   "credential",
   "session",
+  // Phase 5: credential envelopes and the keyring that opens them, claim references, and the
+  // emails buyers claim with (decisions 0011 and 0012).
+  "envelope",
+  "keyring",
+  "claimreference",
+  "email",
 ] as const;
 
 /** Key names that end with one of these words are sensitive (`encryptionKey`, `jwt`). */
-const SENSITIVE_SUFFIXES = ["jwt", "pem", "encryptionkey", "masterkey", "signingkey"] as const;
+const SENSITIVE_SUFFIXES = [
+  "jwt",
+  "pem",
+  "encryptionkey",
+  "masterkey",
+  "signingkey",
+  "datakey",
+] as const;
 
 /** Key names that start with one of these words are sensitive (`accessKeyId`). */
 const SENSITIVE_PREFIXES = ["accesskey"] as const;

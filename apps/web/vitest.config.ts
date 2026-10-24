@@ -15,6 +15,13 @@ export default defineProject({
           // Test-only values for the secrets declared in wrangler.jsonc.
           BETTER_AUTH_SECRET: "test-secret-test-secret-test-secret-0123456789",
           GITHUB_CLIENT_SECRET: "test-github-client-secret",
+          // Fixed test-only commerce secrets (decisions 0011 and 0012); the same in web and jobs,
+          // which share one database.
+          CREDENTIAL_KEYS: JSON.stringify({
+            current: "test-1",
+            keys: { "test-1": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=" },
+          }),
+          CLAIM_SIGNING_KEY: "test-claim-signing-key-0123456789abcdef",
         },
       },
     })),

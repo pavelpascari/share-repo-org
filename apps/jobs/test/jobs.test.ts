@@ -1,4 +1,5 @@
 import { env } from "cloudflare:workers";
+import { simulatedEntitlementSource } from "@sharerepo/application";
 import { claimOutbox, enqueueOutbox, getExternalEvent } from "@sharerepo/db";
 import { GitHubApiError, type GitHubAppPort } from "@sharerepo/integrations";
 import { createFakeGitHubApp, type FakeGitHubApp } from "@sharerepo/integrations/testing";
@@ -18,7 +19,7 @@ import {
   OUTBOX_MAX_ATTEMPTS,
 } from "../src/handlers.ts";
 import worker from "../src/index.ts";
-import { retryDelaySeconds } from "../src/work.ts";
+import { retryDelaySeconds, runJob } from "../src/work.ts";
 import {
   clock,
   connectedCreator,
@@ -27,6 +28,7 @@ import {
   envWithGitHub,
   outboxIdFor,
   receivedWebhook,
+  serviceContext,
 } from "./support/github.ts";
 import { deliver, jobsWorker, runCron, sentAt } from "./support/worker.ts";
 
@@ -449,4 +451,21 @@ describe("scheduled()", () => {
     await runCron(jobsWorker(createFakeGitHubApp()), "5 5 * * *");
     expect(logged()).toMatchObject([{ level: "warn", msg: "unknown cron; nothing to do" }]);
   });
+});
+
+// The Paddle kinds exist in the outbox vocabulary from Phase 5 T1; their handlers land in T7.
+describe("runJob placeholders", () => {
+  it.each(["send_claim_email", "check_paddle_connection", "sweep_paddle_subscriptions"] as const)(
+    "refuses %s until its handler lands",
+    async (kind) => {
+      const deps = {
+        github: createFakeGitHubApp(),
+        environment: "development",
+        simulatedSource: simulatedEntitlementSource,
+      } as const;
+      await expect(runJob(serviceContext(), { kind, subjectId: "x" }, deps)).rejects.toThrow(
+        `${kind} is not handled yet`,
+      );
+    },
+  );
 });

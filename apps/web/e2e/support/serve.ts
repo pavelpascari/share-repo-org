@@ -54,6 +54,11 @@ const { privateKey } = generateKeyPairSync("rsa", {
 });
 const appKey = JSON.stringify(privateKey); // one line, with \n escapes
 const webhookSecret = randomBytes(32).toString("hex");
+// Commerce secrets (decisions 0011 and 0012), shared by both Workers: they read one database.
+const commerceSecrets = [
+  `CREDENTIAL_KEYS=${JSON.stringify({ current: "e2e", keys: { e2e: randomBytes(32).toString("base64") } })}`,
+  `CLAIM_SIGNING_KEY=${randomBytes(32).toString("hex")}`,
+];
 writeFileSync(
   `${webDir}/.dev.vars.e2e`,
   [
@@ -61,10 +66,14 @@ writeFileSync(
     `GITHUB_CLIENT_SECRET=${FAKE_CLIENT_SECRET}`,
     `GITHUB_APP_PRIVATE_KEY=${appKey}`,
     `GITHUB_WEBHOOK_SECRET=${webhookSecret}`,
+    ...commerceSecrets,
     "",
   ].join("\n"),
 );
-writeFileSync(`${jobsDir}/.dev.vars.e2e`, `GITHUB_APP_PRIVATE_KEY=${appKey}\n`);
+writeFileSync(
+  `${jobsDir}/.dev.vars.e2e`,
+  [`GITHUB_APP_PRIVATE_KEY=${appKey}`, ...commerceSecrets, ""].join("\n"),
+);
 
 fakeGitHub = startFakeGitHub({ webhookSecret });
 start(webDir, ["react-router", "dev", "--port", String(WEB_PORT), "--strictPort"], {

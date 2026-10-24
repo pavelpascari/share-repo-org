@@ -5,11 +5,17 @@ import {
   ACCESS_POLICY_VERSION,
   AUDIT_ACTOR_TYPES,
   AUDIT_SCOPES,
+  CLAIM_REJECTION_REASONS,
+  ClaimRejectionReason,
   COMMERCIAL_SOURCES,
   CONNECTABLE_ACCOUNT_TYPES,
   CONNECTION_STATUSES,
+  CREDENTIAL_KINDS,
+  CredentialKind,
   ENTITLEMENT_SOURCE_TYPES,
   ENTITLEMENT_STATES,
+  EVENT_PROVIDERS,
+  EventProvider,
   EXTERNAL_EVENT_STATES,
   GRACE_PERIOD_DAYS_DEFAULT,
   GRACE_PERIOD_DAYS_MAX,
@@ -20,6 +26,8 @@ import {
   INVITATION_BUDGET,
   INVITATION_LIFETIME_MS,
   INVITATION_WINDOW_MS,
+  LINK_PATHS,
+  LinkPath,
   MAX_MUTATIONS_PER_RUN,
   MUTATION_OPERATIONS,
   MUTATION_STATUSES,
@@ -33,6 +41,14 @@ import {
   OFFER_STATUSES,
   OUTBOX_KINDS,
   OutboxKind,
+  PADDLE_BILLING_INTERVALS,
+  PADDLE_CONNECTION_STATUSES,
+  PADDLE_ENVIRONMENTS,
+  PADDLE_PRICE_STATUSES,
+  PaddleBillingInterval,
+  PaddleConnectionStatus,
+  PaddleEnvironment,
+  PaddlePriceStatus,
   PROVIDER_FAILURE_KINDS,
   RECONCILE_IDLE_MS,
   RECONCILE_POLL_MS,
@@ -70,8 +86,31 @@ describe("persisted vocabularies", () => {
       "refresh_subscription",
       "recompute_offer",
       "reconcile_resource",
+      "send_claim_email",
+      "check_paddle_connection",
+      "sweep_paddle_subscriptions",
     ]));
   it("outbox kinds by name", () => expect(Object.values(OutboxKind)).toEqual(OUTBOX_KINDS));
+  it("event providers", () => expect(EVENT_PROVIDERS).toEqual(["github", "paddle"]));
+  it("event providers by name", () =>
+    expect(Object.values(EventProvider)).toEqual(EVENT_PROVIDERS));
+  it("paddle connection statuses", () =>
+    expect(PADDLE_CONNECTION_STATUSES).toEqual(["active", "unauthorized", "disconnected"]));
+  it("paddle connection statuses by name", () =>
+    expect(Object.values(PaddleConnectionStatus)).toEqual(PADDLE_CONNECTION_STATUSES));
+  it("paddle environments", () => expect(PADDLE_ENVIRONMENTS).toEqual(["sandbox", "live"]));
+  it("paddle environments by name", () =>
+    expect(Object.values(PaddleEnvironment)).toEqual(PADDLE_ENVIRONMENTS));
+  it("paddle price statuses", () => expect(PADDLE_PRICE_STATUSES).toEqual(["active", "archived"]));
+  it("paddle price statuses by name", () =>
+    expect(Object.values(PaddlePriceStatus)).toEqual(PADDLE_PRICE_STATUSES));
+  it("paddle billing intervals", () =>
+    expect(PADDLE_BILLING_INTERVALS).toEqual(["day", "week", "month", "year"]));
+  it("paddle billing intervals by name", () =>
+    expect(Object.values(PaddleBillingInterval)).toEqual(PADDLE_BILLING_INTERVALS));
+  it("credential kinds", () => expect(CREDENTIAL_KINDS).toEqual(["api_key", "oauth"]));
+  it("credential kinds by name", () =>
+    expect(Object.values(CredentialKind)).toEqual(CREDENTIAL_KINDS));
   it("offer statuses", () => expect(OFFER_STATUSES).toEqual(["active", "archived"]));
   it("grace period bounds (decision 0009)", () =>
     expect([GRACE_PERIOD_DAYS_MIN, GRACE_PERIOD_DAYS_DEFAULT, GRACE_PERIOD_DAYS_MAX]).toEqual([
@@ -201,6 +240,20 @@ describe("stable decision codes", () => {
     ]));
   it("reconciliation request kinds", () =>
     expect(RECONCILIATION_REQUEST_KINDS).toEqual(["check", "retry"]));
+  it("claim link paths (decision 0012)", () =>
+    expect(LINK_PATHS).toEqual(["checkout", "email", "manual"]));
+  it("claim link paths by name", () => expect(Object.values(LinkPath)).toEqual(LINK_PATHS));
+  it("claim rejection reasons", () =>
+    expect(CLAIM_REJECTION_REASONS).toEqual([
+      "signature_invalid",
+      "unknown_claim",
+      "other_workspace",
+      "expired",
+      "consumed_by_other_customer",
+      "already_used",
+    ]));
+  it("claim rejection reasons by name", () =>
+    expect(Object.values(ClaimRejectionReason)).toEqual(CLAIM_REJECTION_REASONS));
   it("offer limits", () =>
     expect([OFFER_NAME_MAX_LENGTH, OFFER_ITEMS_MAX, OFFER_ACCESSES_MAX]).toEqual([100, 100, 100]));
 });

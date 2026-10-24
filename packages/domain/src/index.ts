@@ -21,6 +21,7 @@ export {
 } from "./audit.ts";
 export type { WorkspaceMembership, WorkspacePermission, WorkspaceScope } from "./authorization.ts";
 export { authorizeMembership, roleAllows, WORKSPACE_PERMISSIONS } from "./authorization.ts";
+export { CLAIM_REJECTION_REASONS, ClaimRejectionReason, LINK_PATHS, LinkPath } from "./claim.ts";
 export type { ConnectableAccountType, ConnectionStatus } from "./connection.ts";
 export {
   CONNECTABLE_ACCOUNT_TYPES,
@@ -51,7 +52,13 @@ export type {
 } from "./entitlement-plan.ts";
 export { planEntitlements } from "./entitlement-plan.ts";
 export type { ExternalEventState } from "./external-event.ts";
-export { EXTERNAL_EVENT_STATES, OUTBOX_KINDS, OutboxKind } from "./external-event.ts";
+export {
+  EVENT_PROVIDERS,
+  EventProvider,
+  EXTERNAL_EVENT_STATES,
+  OUTBOX_KINDS,
+  OutboxKind,
+} from "./external-event.ts";
 export type {
   GrantState,
   MutationOperation,
@@ -104,6 +111,18 @@ export {
   parseOfferInput,
   parseOfferSnapshot,
 } from "./offer.ts";
+export {
+  CREDENTIAL_KINDS,
+  CredentialKind,
+  PADDLE_BILLING_INTERVALS,
+  PADDLE_CONNECTION_STATUSES,
+  PADDLE_ENVIRONMENTS,
+  PADDLE_PRICE_STATUSES,
+  PaddleBillingInterval,
+  PaddleConnectionStatus,
+  PaddleEnvironment,
+  PaddlePriceStatus,
+} from "./paddle.ts";
 export type { AccessDecision, AccessDecisionReason, PolicySubscription } from "./policy.ts";
 export { ACCESS_DECISION_REASONS, decideAccess } from "./policy.ts";
 export type {

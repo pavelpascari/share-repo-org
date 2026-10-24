@@ -13,7 +13,10 @@
     // The GitHub App (docs/runbooks/github-app-setup.md). Empty disables GitHub work locally.
     "GITHUB_APP_ID": ""
   },
-  "secrets": { "required": ["GITHUB_APP_PRIVATE_KEY"] },
+  // Paddle credential envelopes and purchase claims (decisions 0011 and 0012). Optional in local
+  // development, where Paddle is then unavailable. The `EMAIL` send_email binding for claim
+  // emails is added once the sending domain is onboarded (Phase 5 plan, T7).
+  "secrets": { "required": ["GITHUB_APP_PRIVATE_KEY", "CREDENTIAL_KEYS", "CLAIM_SIGNING_KEY"] },
   "queues": {
     "consumers": [{ "queue": "sharerepo-events-dev", "max_batch_size": 10, "max_retries": 5 }]
   },
@@ -31,7 +34,9 @@
       "name": "sharerepo-jobs-production",
       "triggers": { "crons": ["0 * * * *", "* * * * *", "17 3 * * *"] },
       "vars": { "ENVIRONMENT": "production", "GITHUB_APP_ID": "REPLACE_WITH_PRODUCTION_APP_ID" },
-      "secrets": { "required": ["GITHUB_APP_PRIVATE_KEY"] },
+      "secrets": {
+        "required": ["GITHUB_APP_PRIVATE_KEY", "CREDENTIAL_KEYS", "CLAIM_SIGNING_KEY"]
+      },
       "queues": {
         "consumers": [{ "queue": "sharerepo-events-prod", "max_batch_size": 10, "max_retries": 5 }]
       },
@@ -45,17 +50,21 @@
         }
       ]
     },
-    // Local Playwright runs only; never deployed. The GitHub API override is accepted only
-    // when ENVIRONMENT is "e2e" (decision 0006).
+    // Local Playwright runs only; never deployed. The GitHub and Paddle API overrides and the
+    // mail capture are accepted only when ENVIRONMENT is "e2e" (decision 0006).
     "e2e": {
       "name": "sharerepo-jobs-e2e",
       "triggers": { "crons": ["0 * * * *", "* * * * *", "17 3 * * *"] },
       "vars": {
         "ENVIRONMENT": "e2e",
         "GITHUB_APP_ID": "1000",
-        "GITHUB_API_BASE_URL": "http://localhost:5190/api"
+        "GITHUB_API_BASE_URL": "http://localhost:5190/api",
+        "PADDLE_API_BASE_URL": "http://localhost:5191/api",
+        "MAIL_CAPTURE_URL": "http://localhost:5191/mail"
       },
-      "secrets": { "required": ["GITHUB_APP_PRIVATE_KEY"] },
+      "secrets": {
+        "required": ["GITHUB_APP_PRIVATE_KEY", "CREDENTIAL_KEYS", "CLAIM_SIGNING_KEY"]
+      },
       "queues": {
         "consumers": [{ "queue": "sharerepo-events-dev", "max_batch_size": 10, "max_retries": 5 }]
       },

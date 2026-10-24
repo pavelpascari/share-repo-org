@@ -110,6 +110,12 @@ export async function runJob(
       // releases, or, if it crashed, the sweep queues one once its lease expires.
       return outcome === "out_of_scope" ? JobOutcome.OutOfScope : JobOutcome.Done;
     }
+    case OutboxKind.SendClaimEmail:
+    case OutboxKind.CheckPaddleConnection:
+    case OutboxKind.SweepPaddleSubscriptions:
+      // Placeholders until the Paddle handlers land (Phase 5 plan, T7). Nothing enqueues these
+      // kinds before then.
+      throw new Error(`${job.kind} is not handled yet (not implemented in Phase 5 T1)`);
   }
 }
 

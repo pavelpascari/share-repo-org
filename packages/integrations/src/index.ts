@@ -1,4 +1,4 @@
-// Provider adapters (architecture § Integrations). v1: GitHub.
+// Provider adapters (architecture § Integrations). v1: GitHub, Paddle, and mail for claims.
 export {
   createGitHubApp,
   type GitHubAppClient,
@@ -42,3 +42,5 @@ export {
   verifyWebhookSignature,
   type WebhookEnvelope,
 } from "./github/webhooks.ts";
+export { type MailTransportConfig, parseMailConfig, type SendEmailBinding } from "./mail/config.ts";
+export { PADDLE_API_BASE_URLS, type PaddleConfig, parsePaddleConfig } from "./paddle/config.ts";

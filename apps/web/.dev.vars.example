@@ -4,3 +4,7 @@ BETTER_AUTH_SECRET=replace-with-at-least-32-random-characters
 # Your own GitHub OAuth App with callback http://localhost:5173/api/auth/callback/github
 GITHUB_CLIENT_ID=replace-me
 GITHUB_CLIENT_SECRET=replace-me
+# Optional: Paddle and purchase claims (Phase 5). Without both, Paddle is unavailable locally.
+# Set the same values in apps/jobs/.dev.vars. Generate the key with: openssl rand -base64 32
+# CREDENTIAL_KEYS={"current":"k1","keys":{"k1":"replace-with-base64-of-32-random-bytes"}}
+# CLAIM_SIGNING_KEY=replace-with-at-least-32-random-characters

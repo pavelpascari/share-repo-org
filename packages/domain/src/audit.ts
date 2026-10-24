@@ -1,10 +1,12 @@
 import { z } from "zod";
+import { CLAIM_REJECTION_REASONS, LINK_PATHS } from "./claim.ts";
 import { CONNECTION_STATUSES } from "./connection.ts";
 import { ACCESS_LEVELS } from "./entitlement.ts";
 import { GRANT_STATES, MUTATION_OPERATIONS, RETRY_CLASSES } from "./grant.ts";
 import { IDENTITY_PROVIDERS } from "./identity.ts";
 import type { IdGenerator } from "./ids.ts";
 import { COMMERCIAL_SOURCES, GRACE_PERIOD_DAYS_MAX, GRACE_PERIOD_DAYS_MIN } from "./offer.ts";
+import { PADDLE_CONNECTION_STATUSES, PADDLE_ENVIRONMENTS } from "./paddle.ts";
 import { ACCESS_DECISION_REASONS } from "./policy.ts";
 import { GRANT_ERROR_CODES, MUTATION_STOP_REASONS } from "./provisioning.ts";
 import { RESOURCE_SELECTIONS } from "./resource.ts";
@@ -58,6 +60,8 @@ const subscriptionState = z.enum(SUBSCRIPTION_STATES);
 const decisionReason = z.enum(ACCESS_DECISION_REASONS);
 const accessLevel = z.enum(ACCESS_LEVELS);
 const grantState = z.enum(GRANT_STATES);
+const paddleStatus = z.enum(PADDLE_CONNECTION_STATUSES);
+const linkPath = z.enum(LINK_PATHS);
 
 /** The grant fields a `grant.observed` event reports, before and after. */
 const observedGrant = z.strictObject({
@@ -350,6 +354,83 @@ export const AUDIT_ACTIONS = {
       grantId: text.optional(),
       kind: z.enum(RECONCILIATION_REQUEST_KINDS),
     }),
+  },
+  // Paddle connections and claims (Phase 5, decisions 0011 and 0012). Details carry IDs only:
+  // never an email, token, claim reference or key.
+  "paddle.connected": {
+    scope: "workspace",
+    targetType: "paddle_connection",
+    details: z.strictObject({ environment: z.enum(PADDLE_ENVIRONMENTS), sellerId: text }),
+  },
+  "paddle.reconnected": {
+    scope: "workspace",
+    targetType: "paddle_connection",
+    details: z.strictObject({ sellerId: text, previousStatus: paddleStatus }),
+  },
+  "paddle.disconnected": {
+    scope: "workspace",
+    targetType: "paddle_connection",
+    // False when the destination could not be deleted and the creator must delete it in Paddle.
+    details: z.strictObject({ destinationDeleted: z.boolean() }),
+  },
+  "paddle.status_changed": {
+    scope: "workspace",
+    targetType: "paddle_connection",
+    details: z
+      .strictObject({ previousStatus: paddleStatus, status: paddleStatus })
+      .refine((d) => d.previousStatus !== d.status, { path: ["status"] }),
+  },
+  "paddle.catalog_synced": {
+    scope: "workspace",
+    targetType: "paddle_connection",
+    details: z.strictObject({ added: count, updated: count, archived: count }),
+  },
+  "checkout.started": {
+    scope: "workspace",
+    targetType: "checkout_claim",
+    details: z.strictObject({ offerId: text, priceId: text }),
+  },
+  // The same shape whether or not a purchase matches (threat T4).
+  "claim.requested": {
+    scope: "workspace",
+    targetType: "claim_request",
+    details: z.strictObject({}),
+  },
+  "claim.token_issued": {
+    scope: "workspace",
+    targetType: "claim_token",
+    details: z.strictObject({ customerId: text }),
+  },
+  "claim.completed": {
+    scope: "workspace",
+    targetType: "customer",
+    details: z.strictObject({ path: linkPath, subjectId: text }),
+  },
+  "claim.rejected": {
+    scope: "workspace",
+    targetType: "customer",
+    details: z.strictObject({ path: linkPath, reason: z.enum(CLAIM_REJECTION_REASONS) }),
+  },
+  // Path 1 never moves an existing link: the claimant's user is recorded, the link stays.
+  "claim.conflict": {
+    scope: "workspace",
+    targetType: "customer",
+    details: z.strictObject({ path: linkPath, subjectId: text, userId: text }),
+  },
+  "customer.relinked": {
+    scope: "workspace",
+    targetType: "customer",
+    details: z
+      .strictObject({ path: linkPath, previousSubjectId: text, subjectId: text })
+      .refine((d) => d.previousSubjectId !== d.subjectId, { path: ["subjectId"] }),
+  },
+  // The owner's reason is the event's `reason`.
+  "customer.linked_manually": {
+    scope: "workspace",
+    targetType: "customer",
+    details: z
+      .strictObject({ previousSubjectId: text.nullable(), subjectId: text })
+      .refine((d) => d.previousSubjectId !== d.subjectId, { path: ["subjectId"] }),
   },
 } as const satisfies Record<string, AuditActionDefinition>;
 
