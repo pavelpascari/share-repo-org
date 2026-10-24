@@ -14,6 +14,7 @@ export {
   addBillingCycle,
   createFakePaddle,
   FAKE_PADDLE_PERMISSIONS,
+  type FakeCheckoutBuyer,
   type FakeEventInput,
   type FakePaddle,
   type FakePaddleDelivery,

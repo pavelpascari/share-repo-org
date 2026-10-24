@@ -2,12 +2,14 @@ import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 import {
   CHECKOUT_CLAIM_LIFETIME_MS,
+  CHECKOUT_CLOCK_SKEW_MS,
   CHECKOUT_REJECTION_REASONS,
   CLAIM_TOKEN_LIFETIME_MS,
   CUSTOMER_LINK_DECISIONS,
   CustomerLinkDecision,
   checkoutClaimUsable,
   claimTokenUsable,
+  customerPredatesCheckout,
   decideCustomerLink,
   EMAIL_REJECTION_REASONS,
   LINK_PATHS,
@@ -23,6 +25,8 @@ describe("claim constants (decision 0012)", () => {
       7 * 24 * HOUR,
       24 * HOUR,
     ]));
+  it("clock skew allowed when comparing provider and ShareRepo times", () =>
+    expect(CHECKOUT_CLOCK_SKEW_MS).toBe(60_000));
   it("customer link decisions", () =>
     expect(CUSTOMER_LINK_DECISIONS).toEqual(["link", "relink", "noop", "conflict"]));
   it("customer link decisions by name", () =>
@@ -35,6 +39,7 @@ describe("claim constants (decision 0012)", () => {
       "other_workspace",
       "expired",
       "consumed_by_other_customer",
+      "customer_predates_checkout",
     ]));
   it("email rejection reasons", () =>
     expect(EMAIL_REJECTION_REASONS).toEqual(["unknown_claim", "expired", "already_used"]));
@@ -79,6 +84,38 @@ describe("decideCustomerLink", () => {
         const decision = decideCustomerLink(i);
         expect(decision === "link").toBe(i.currentSubjectId === null);
         expect(decision === "noop").toBe(i.currentSubjectId === i.proposedSubjectId);
+      }),
+    );
+  });
+});
+
+describe("customerPredatesCheckout", () => {
+  const SKEW = 60_000;
+
+  it("a customer recorded and created with or after the claim does not predate it", () => {
+    expect(customerPredatesCheckout(NOW, { recordedAt: NOW, createdAt: NOW })).toBe(false);
+    expect(customerPredatesCheckout(NOW, { recordedAt: NOW + 1, createdAt: null })).toBe(false);
+  });
+
+  it("a customer ShareRepo recorded before the claim predates it, whatever the provider says", () => {
+    expect(customerPredatesCheckout(NOW, { recordedAt: NOW - 1, createdAt: null })).toBe(true);
+    expect(customerPredatesCheckout(NOW, { recordedAt: NOW - 1, createdAt: NOW })).toBe(true);
+  });
+
+  it("allows the provider's clock to run up to the skew behind", () => {
+    expect(customerPredatesCheckout(NOW, { recordedAt: NOW, createdAt: NOW - SKEW })).toBe(false);
+    expect(customerPredatesCheckout(NOW, { recordedAt: NOW, createdAt: NOW - SKEW - 1 })).toBe(
+      true,
+    );
+  });
+
+  it("decides from ShareRepo's record alone until the provider is read", () => {
+    const instant = fc.integer({ min: 0, max: 2 * NOW });
+    fc.assert(
+      fc.property(instant, instant, (claimCreatedAt, recordedAt) => {
+        expect(customerPredatesCheckout(claimCreatedAt, { recordedAt, createdAt: null })).toBe(
+          recordedAt < claimCreatedAt,
+        );
       }),
     );
   });

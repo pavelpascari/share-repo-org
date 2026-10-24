@@ -30,6 +30,11 @@ export const ClaimRejectionReason = {
   ConsumedByOtherCustomer: "consumed_by_other_customer",
   /** The single-use claim token was already used. */
   AlreadyUsed: "already_used",
+  /**
+   * The customer existed before the checkout started, so the checkout did not create it: a buyer
+   * who enters someone else's email at checkout must not adopt that person's customer.
+   */
+  CustomerPredatesCheckout: "customer_predates_checkout",
 } as const;
 export type ClaimRejectionReason = (typeof ClaimRejectionReason)[keyof typeof ClaimRejectionReason];
 /** Every claim rejection reason, as stored in audit details. */
@@ -40,6 +45,7 @@ export const CLAIM_REJECTION_REASONS = [
   ClaimRejectionReason.Expired,
   ClaimRejectionReason.ConsumedByOtherCustomer,
   ClaimRejectionReason.AlreadyUsed,
+  ClaimRejectionReason.CustomerPredatesCheckout,
 ] as const;
 
 /** The reasons a checkout reference (path 1) can be rejected for. */
@@ -49,6 +55,7 @@ export const CHECKOUT_REJECTION_REASONS = [
   ClaimRejectionReason.OtherWorkspace,
   ClaimRejectionReason.Expired,
   ClaimRejectionReason.ConsumedByOtherCustomer,
+  ClaimRejectionReason.CustomerPredatesCheckout,
 ] as const;
 /** The reasons an emailed claim token (path 2) can be rejected for. */
 export const EMAIL_REJECTION_REASONS = [
@@ -63,6 +70,11 @@ const HOUR_MS = 3_600_000;
 export const CHECKOUT_CLAIM_LIFETIME_MS = 7 * 24 * HOUR_MS;
 /** How long an emailed claim link stays usable (decision 0012, path 2). */
 export const CLAIM_TOKEN_LIFETIME_MS = 24 * HOUR_MS;
+/**
+ * How far the payment provider's clock may run behind ShareRepo's when path 1 compares the time
+ * the provider created a customer with the time the checkout claim was created (decision 0012).
+ */
+export const CHECKOUT_CLOCK_SKEW_MS = 60_000;
 
 // Linking -------------------------------------------------------------------------------------
 
@@ -144,6 +156,31 @@ export function checkoutClaimUsable(
   return at.now < claim.expiresAt
     ? { usable: true, renewal: false }
     : { usable: false, reason: ClaimRejectionReason.Expired };
+}
+
+/** What is known about when a customer came to exist, for {@link customerPredatesCheckout}. */
+export interface CustomerOrigin {
+  /** When ShareRepo first recorded the customer, by ShareRepo's clock. */
+  readonly recordedAt: Instant;
+  /** When the payment provider created the customer, by its clock; null when not read yet. */
+  readonly createdAt: Instant | null;
+}
+
+/**
+ * Whether a customer existed before a checkout claim was created, so the checkout cannot have
+ * created it (decision 0012, path 1). Paddle reuses an existing customer when the buyer enters
+ * that customer's email at checkout; linking it would hand every subscription of that customer to
+ * whoever started the checkout. A customer ShareRepo recorded before the claim predates it; so
+ * does one the provider created more than {@link CHECKOUT_CLOCK_SKEW_MS} before it.
+ */
+export function customerPredatesCheckout(
+  claimCreatedAt: Instant,
+  customer: CustomerOrigin,
+): boolean {
+  if (customer.recordedAt < claimCreatedAt) return true;
+  return (
+    customer.createdAt !== null && customer.createdAt < claimCreatedAt - CHECKOUT_CLOCK_SKEW_MS
+  );
 }
 
 /** The stored claim token fields its usability depends on. */

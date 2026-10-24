@@ -104,6 +104,11 @@ export interface PaddleCustomer {
   /** `ctm_…`. */
   readonly id: string;
   readonly email: string;
+  /**
+   * When Paddle created the customer. A checkout reuses an existing customer with the email the
+   * buyer enters, so this tells whether a checkout created the customer (decision 0012, path 1).
+   */
+  readonly createdAt: Instant;
 }
 
 export interface CreateTransactionInput {

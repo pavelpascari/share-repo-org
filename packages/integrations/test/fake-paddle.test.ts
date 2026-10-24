@@ -123,9 +123,41 @@ describe("fake Paddle catalog, customers and checkout", () => {
     await expect(fake.getCustomer(customer.id)).resolves.toEqual({
       id: customer.id,
       email: "new@example.com",
+      createdAt: Date.parse(T0),
     });
     await expect(fake.listCustomersByEmail("NEW@example.com")).resolves.toEqual([]);
     expect(() => fake.setCustomerEmail("ctm_nope", "x@example.com")).toThrow(/unknown customer/);
+  });
+
+  it("creates customers at the clock's time, or at the time given", async () => {
+    const { clock, fake, customer } = world();
+    expect(customer.createdAt).toBe(Date.parse(T0));
+    const earlier = fake.addCustomer({ email: "old@example.com", createdAt: Date.parse(T0) - 1 });
+    clock.advance(5_000);
+    await expect(fake.getCustomer(earlier.id)).resolves.toMatchObject({
+      createdAt: Date.parse(T0) - 1,
+    });
+  });
+
+  it("a checkout by email reuses the customer with that email, or creates one then", async () => {
+    const w = world();
+    const pay = async (email: string) => {
+      const { id } = await w.fake.createTransaction({
+        priceId: w.price.id,
+        customData: { sharerepo_claim: "v1.ref" },
+      });
+      return w.fake.completeCheckout(id, { email });
+    };
+    w.clock.advance(60_000);
+    expect((await pay("jo@example.com")).customerId).toBe(w.customer.id);
+    const created = await pay("new@example.com");
+    expect(created.customerId).not.toBe(w.customer.id);
+    await expect(w.fake.getCustomer(created.customerId)).resolves.toEqual({
+      id: created.customerId,
+      email: "new@example.com",
+      createdAt: Date.parse(T0) + 60_000,
+    });
+    expect((await pay("new@example.com")).customerId).toBe(created.customerId);
   });
 
   it("creates the subscription from the transaction, copying its custom data", async () => {

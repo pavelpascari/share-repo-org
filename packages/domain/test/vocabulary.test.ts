@@ -251,6 +251,7 @@ describe("stable decision codes", () => {
       "expired",
       "consumed_by_other_customer",
       "already_used",
+      "customer_predates_checkout",
     ]));
   it("claim rejection reasons by name", () =>
     expect(Object.values(ClaimRejectionReason)).toEqual(CLAIM_REJECTION_REASONS));

@@ -974,18 +974,32 @@ export async function processPaddleEvent(
  * active connection and normalizes it. A subscription Paddle does not know is `found: false`. No
  * active connection, or a refused key, fails as `PaddleUnavailableError`, so the refresh writes
  * nothing and the outbox retries. The customer link is never decided from Paddle's data: the
- * refresh verifies the claim reference instead (decision 0012).
+ * refresh verifies the claim reference instead, and reads when Paddle created the customer so
+ * only a customer the checkout created is linked (decision 0012).
  */
 export function paddleEntitlementSource(
   ctx: ServiceContext,
   deps: CommerceDeps,
 ): EntitlementSourcePort {
+  const connected = async (workspaceId: string) => {
+    const connection = await activePaddleConnection(ctx, workspaceId);
+    if (connection === null) throw new PaddleUnavailableError("no active Paddle connection");
+    return connection;
+  };
   return {
     source: "paddle",
-    claimSigningKey: deps.claimSigningKey,
+    checkoutClaims: {
+      signingKey: deps.claimSigningKey,
+      async customerCreatedAt({ workspaceId, externalCustomerId }) {
+        const connection = await connected(workspaceId);
+        const customer = await withPaddle(ctx, deps, connection, (client) =>
+          client.getCustomer(externalCustomerId),
+        );
+        return customer.createdAt;
+      },
+    },
     async refreshSubscription({ workspaceId, externalSubscriptionId }) {
-      const connection = await activePaddleConnection(ctx, workspaceId);
-      if (connection === null) throw new PaddleUnavailableError("no active Paddle connection");
+      const connection = await connected(workspaceId);
       let subscription: PaddleSubscription;
       try {
         subscription = await withPaddle(ctx, deps, connection, (client) =>

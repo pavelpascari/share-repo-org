@@ -24,11 +24,13 @@ export { authorizeMembership, roleAllows, WORKSPACE_PERMISSIONS } from "./author
 export type {
   CheckoutClaimUsability,
   ClaimTokenUsability,
+  CustomerOrigin,
   UsableCheckoutClaim,
   UsableClaimToken,
 } from "./claim.ts";
 export {
   CHECKOUT_CLAIM_LIFETIME_MS,
+  CHECKOUT_CLOCK_SKEW_MS,
   CHECKOUT_REJECTION_REASONS,
   CLAIM_REJECTION_REASONS,
   CLAIM_TOKEN_LIFETIME_MS,
@@ -37,6 +39,7 @@ export {
   CustomerLinkDecision,
   checkoutClaimUsable,
   claimTokenUsable,
+  customerPredatesCheckout,
   decideCustomerLink,
   EMAIL_REJECTION_REASONS,
   LINK_PATHS,

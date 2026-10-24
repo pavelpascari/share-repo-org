@@ -26,10 +26,17 @@ A **claim** links a Paddle customer (`ctm_…`) in a workspace to a ShareRepo us
 - **Linking.**
   - The Paddle adapter reports the subscription's `custom_data.sharerepo_claim`. The refresh verifies the MAC in constant time and loads the checkout claim within the subscription's workspace.
   - The reference must not have expired, and must not be consumed by another customer. A buyer can rewrite custom data in the browser (T11), so an unverified, unknown, expired, or other-workspace reference is ignored and audited as `claim.rejected`.
+  - **Only a customer the checkout created is linked.** At checkout the buyer can enter any email, and Paddle then reuses the existing customer with that email. Linking that customer would hand all of its subscriptions, including those of the email's owner, to whoever started the checkout (threat T13). So the refresh refuses a customer that predates the checkout claim, audited as `claim.rejected` with reason `customer_predates_checkout`:
+    - ShareRepo recorded the customer before the claim was created. This is checked first and needs no Paddle call.
+    - Otherwise the refresh reads the customer (`GET /customers/{id}`) through the workspace's active connection. It refuses a customer whose `created_at` is more than 60 seconds (`CHECKOUT_CLOCK_SKEW_MS`, for clock skew) before the claim was created.
+    - If Paddle cannot be read (no active connection, a refused key, which marks the connection unauthorized, or a transient failure), nothing is linked or rejected. The refresh fails and is retried. The reference stays on the subscription, and every refresh evaluates an unlinked customer again.
+    - A returning buyer who pays with the email of an unclaimed customer of theirs is refused too. They claim it through path 2.
   - A verified reference links the customer to the user's subject, creating the subject from the user's GitHub identity. The link is made only if the customer is unlinked or already linked to that subject.
   - The first link consumes the checkout claim for that customer. Renewals carry the same reference and stay valid.
   - A different customer presenting a consumed reference is not linked.
 - **A customer already linked to another subject** is never re-linked by path 1 (T8). The refresh records `claim.conflict`, and the buyer can use path 2 or ask the creator.
+
+- **A suspended workspace** links nothing through path 1. The refresh still records the subscription's facts there. Once the workspace is active again, a later refresh links if the claim is still usable.
 
 ### Path 2: purchase first, claim later (fallback)
 
@@ -50,6 +57,7 @@ A **claim** links a Paddle customer (`ctm_…`) in a workspace to a ShareRepo us
   - It emails the link to the address Paddle holds for that customer.
   - It erases the email envelope whether or not a match exists.
 - **The link.** `GET /claim/<token>` only renders a confirmation page (T3), with `Referrer-Policy: no-referrer`.
+  - While the token's workspace is suspended, the link behaves like an unknown one: the page names no workspace and nothing is recorded. A request whose workspace is suspended before the job runs sends no link.
   - The page shows the workspace, the offers covered, and the GitHub account (avatar and login) that will receive access (T7). It requires sign-in.
   - A same-origin POST consumes the token and links the customer to the signed-in user's subject.
 - **Re-linking.** If the customer was linked to another subject, the link moves.

@@ -30,6 +30,7 @@ export {
 } from "./claims.ts";
 export { asAuditActor, type ServiceContext, type UserActor } from "./context.ts";
 export {
+  type CheckoutClaimSupport,
   type ClaimRequestRef,
   type CustomerLink,
   decodeClaimRequestKey,

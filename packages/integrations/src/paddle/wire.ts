@@ -145,10 +145,14 @@ export function toSubscriptionSummary(
   return { id: sub.id, status: sub.status, updatedAt: sub.updated_at };
 }
 
-export const customerSchema = z.object({ id: id("ctm"), email: z.string().min(1) });
+export const customerSchema = z.object({
+  id: id("ctm"),
+  email: z.string().min(1),
+  created_at: timestamp,
+});
 
 export function toCustomer(customer: z.output<typeof customerSchema>): PaddleCustomer {
-  return { id: customer.id, email: customer.email };
+  return { id: customer.id, email: customer.email, createdAt: customer.created_at };
 }
 
 export const transactionSchema = z.object({

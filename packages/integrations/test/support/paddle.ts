@@ -10,8 +10,17 @@ export const PRICE_YEARLY = "pri_01jyearly00000000000000001";
 export const PRICE_STARTER = "pri_01jstarter0000000000000001";
 export const PRODUCT_COURSE = "pro_01jcourse00000000000000001";
 export const PRODUCT_STARTER = "pro_01jstarter0000000000000001";
-export const CUSTOMER_JO = { id: "ctm_01jjo000000000000000000001", email: "jo@example.com" };
-export const CUSTOMER_SAM = { id: "ctm_01jsam00000000000000000001", email: "sam@example.com" };
+/** Jo's customer, as `customer.json` has it: created a minute before the checkout at T0. */
+export const CUSTOMER_JO = {
+  id: "ctm_01jjo000000000000000000001",
+  email: "jo@example.com",
+  createdAt: Date.parse("2026-10-01T08:59:00Z"),
+};
+export const CUSTOMER_SAM = {
+  id: "ctm_01jsam00000000000000000001",
+  email: "sam@example.com",
+  createdAt: Date.parse("2026-09-12T10:00:00Z"),
+};
 export const SUB_JO = "sub_01jcourse00000000000000001";
 export const SUB_SAM = "sub_01jcourse00000000000000002";
 export const UNKNOWN_SUB = "sub_01jcourse00000000000000099";

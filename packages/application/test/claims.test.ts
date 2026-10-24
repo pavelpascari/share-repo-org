@@ -24,6 +24,7 @@ import {
   linkCustomerManually,
   listCustomers,
   myAccess,
+  PaddleUnavailableError,
   refreshSubscription,
   requestClaim,
   type SourceSubscription,
@@ -38,6 +39,7 @@ import {
   auditOf,
   beforeFirstBatch,
   CLAIM_KEY,
+  connectionOf,
   deliverSubscription,
   directSubscription,
   drainPaddle,
@@ -373,6 +375,223 @@ describe("claim/checkout-reference-tamper-rejected", () => {
       port,
     );
     expect(await auditOf(s.workspaceId, "claim.rejected")).toEqual([]);
+  });
+});
+
+describe("claim/checkout-cannot-adopt-existing-customer", () => {
+  /** The attacker starts a ShareRepo checkout with their own, valid claim reference. */
+  async function attackerCheckout(s: PaddleShop) {
+    const attacker = await signedUp();
+    const started = await startCheckout(
+      serviceContext(),
+      { offerId: s.offer.id, priceId: s.price.id, user: attacker },
+      s.deps,
+    );
+    if (!started.ok) throw new Error(started.reason);
+    return { attacker, started, transactionId: transactionOf(started.checkoutUrl) };
+  }
+
+  const claimEvents = async (s: PaddleShop) => ({
+    rejected: (await auditOf(s.workspaceId, "claim.rejected")).map((event) => event.details),
+    completed: await auditOf(s.workspaceId, "claim.completed"),
+  });
+
+  it("paying with the email of a customer ShareRepo knows links nothing", async () => {
+    const s = await paddleShop();
+    // The victim bought through a shared Paddle link and never claimed.
+    const { customer: victim, sub: victimSub } = await unclaimed(s);
+    clock.advance(DAY);
+    const { attacker, started, transactionId } = await attackerCheckout(s);
+    // At checkout the attacker enters the victim's email: Paddle reuses the victim's customer.
+    const sub = s.paddle.completeCheckout(transactionId, { email: victim.email });
+    expect(sub.customerId).toBe(victim.id);
+    await deliverSubscription(s, "subscription.created", sub.id);
+
+    expect((await customerRow(s, victim.id))?.subjectId).toBeNull();
+    expect(await liveFor(s.workspaceId, attacker.profile.externalUserId)).toEqual([]);
+    expect(live(await entitlementsOf(s.workspaceId, victimSub.id))).toEqual([]);
+    expect(await claimEvents(s)).toEqual({
+      rejected: [
+        {
+          path: "checkout",
+          claimId: started.checkoutClaimId,
+          reason: "customer_predates_checkout",
+        },
+      ],
+      completed: [],
+    });
+    expect(
+      await getCheckoutClaim(db, { workspaceId: s.workspaceId, id: started.checkoutClaimId }),
+    ).toMatchObject({ consumedByCustomerId: null });
+    // The victim can still claim their customer by email.
+    const { token } = await claimByEmail(s, await signedUp(), victim.email);
+    expect(token).not.toBeNull();
+  });
+
+  it("paying with the email of a Paddle customer ShareRepo has not seen links nothing", async () => {
+    const s = await paddleShop();
+    // A customer of the seller with no subscription ShareRepo knows (say, a one-time purchase).
+    const victim = s.paddle.addCustomer({
+      id: `ctm_${"7".repeat(26)}`,
+      email: `victim-${crypto.randomUUID()}@example.com`,
+      createdAt: clock.now() - 61_000,
+    });
+    const { attacker, started, transactionId } = await attackerCheckout(s);
+    const sub = s.paddle.completeCheckout(transactionId, { email: victim.email });
+    await deliverSubscription(s, "subscription.created", sub.id);
+    expect((await customerRow(s, victim.id))?.subjectId).toBeNull();
+    expect(await liveFor(s.workspaceId, attacker.profile.externalUserId)).toEqual([]);
+    expect((await claimEvents(s)).rejected).toEqual([
+      { path: "checkout", claimId: started.checkoutClaimId, reason: "customer_predates_checkout" },
+    ]);
+    expect(s.paddle.calls).toContain("getCustomer");
+  });
+
+  it("links a customer the checkout created, allowing a minute of clock skew", async () => {
+    const s = await paddleShop();
+    const { attacker: buyer, transactionId } = await attackerCheckout(s);
+    const sub = s.paddle.completeCheckout(transactionId, {
+      email: `new-${crypto.randomUUID()}@example.com`,
+    });
+    await deliverSubscription(s, "subscription.created", sub.id);
+    expect(await liveFor(s.workspaceId, buyer.profile.externalUserId)).toHaveLength(
+      s.resources.length,
+    );
+
+    // Paddle's clock a minute behind ShareRepo's still counts as created by the checkout.
+    const skewed = await attackerCheckout(s);
+    const customer = s.paddle.addCustomer({
+      id: `ctm_${"8".repeat(26)}`,
+      email: `skew-${crypto.randomUUID()}@example.com`,
+      createdAt: clock.now() - 60_000,
+    });
+    const next = s.paddle.completeCheckout(skewed.transactionId, { customerId: customer.id });
+    await deliverSubscription(s, "subscription.created", next.id);
+    expect((await customerRow(s, customer.id))?.subjectId).not.toBeNull();
+    expect((await claimEvents(s)).rejected).toEqual([]);
+  });
+
+  it("while Paddle cannot be read, links and rejects nothing, and the retried refresh links", async () => {
+    const s = await paddleShop();
+    const { attacker: buyer, transactionId } = await attackerCheckout(s);
+    const sub = s.paddle.completeCheckout(transactionId, {
+      email: `new-${crypto.randomUUID()}@example.com`,
+    });
+    s.paddle.failNext("getCustomer", "transient");
+    await expect(deliverSubscription(s, "subscription.created", sub.id)).rejects.toMatchObject({
+      kind: "transient",
+    });
+    // The subscription's facts are stored; the customer stays unlinked, nothing is recorded.
+    expect((await customerRow(s, sub.customerId))?.subjectId).toBeNull();
+    expect(await claimEvents(s)).toEqual({ rejected: [], completed: [] });
+    // The refresh is still pending; its retry links.
+    await drainPaddle(s);
+    expect((await customerRow(s, sub.customerId))?.subjectId).not.toBeNull();
+    expect(await liveFor(s.workspaceId, buyer.profile.externalUserId)).toHaveLength(
+      s.resources.length,
+    );
+  });
+
+  it("a refused key marks the connection unauthorized and links nothing", async () => {
+    const s = await paddleShop();
+    const { transactionId } = await attackerCheckout(s);
+    const sub = s.paddle.completeCheckout(transactionId, {
+      email: `new-${crypto.randomUUID()}@example.com`,
+    });
+    s.paddle.failNext("getCustomer", "unauthorized");
+    await expect(deliverSubscription(s, "subscription.created", sub.id)).rejects.toBeInstanceOf(
+      PaddleUnavailableError,
+    );
+    expect((await connectionOf(s)).status).toBe("unauthorized");
+    expect((await customerRow(s, sub.customerId))?.subjectId).toBeNull();
+    expect(await claimEvents(s)).toEqual({ rejected: [], completed: [] });
+  });
+});
+
+describe("claims in a suspended workspace", () => {
+  const suspend = (s: PaddleShop, status: "suspended" | "active" = "suspended") =>
+    env.DB.prepare("UPDATE workspaces SET status = ? WHERE id = ?")
+      .bind(status, s.workspaceId)
+      .run();
+
+  it("a checkout reference links nothing while suspended, and links after reactivation", async () => {
+    const s = await paddleShop();
+    const user = await signedUp();
+    const started = await startCheckout(
+      serviceContext(),
+      { offerId: s.offer.id, priceId: s.price.id, user },
+      s.deps,
+    );
+    if (!started.ok) throw new Error(started.reason);
+    await suspend(s);
+    const sub = s.paddle.completeCheckout(transactionOf(started.checkoutUrl), {
+      email: `new-${crypto.randomUUID()}@example.com`,
+    });
+    await deliverSubscription(s, "subscription.created", sub.id);
+    expect((await customerRow(s, sub.customerId))?.subjectId).toBeNull();
+    expect(await auditOf(s.workspaceId, "claim.completed")).toEqual([]);
+    expect(await auditOf(s.workspaceId, "claim.rejected")).toEqual([]);
+
+    await suspend(s, "active");
+    s.paddle.activate(sub.id);
+    await deliverSubscription(s, "subscription.updated", sub.id);
+    expect(await liveFor(s.workspaceId, user.profile.externalUserId)).toHaveLength(
+      s.resources.length,
+    );
+  });
+
+  it("an emailed claim link is unknown while suspended, and nothing is recorded", async () => {
+    const s = await paddleShop();
+    const { customer } = await unclaimed(s);
+    const user = await signedUp();
+    const { token } = await claimByEmail(s, user, customer.email);
+    const value = token as string;
+    await suspend(s);
+    const before = await snapshotTables(env.DB, {});
+    expect(await viewClaim(serviceContext(), { token: value, user })).toEqual({
+      ok: false,
+      reason: "unknown_claim",
+    });
+    expect(await confirmClaim(serviceContext(), { token: value, user })).toEqual({
+      ok: false,
+      reason: "unknown_claim",
+    });
+    expect(changedTables(before, await snapshotTables(env.DB, {}))).toEqual([]);
+    expect((await customerRow(s, customer.id))?.subjectId).toBeNull();
+    // Reactivated, the unexpired link works again.
+    await suspend(s, "active");
+    expect(await confirmClaim(serviceContext(), { token: value, user })).toMatchObject({
+      ok: true,
+      outcome: "linked",
+    });
+  });
+
+  it("a claim request of a workspace suspended since sends no link", async () => {
+    const s = await paddleShop();
+    const { customer } = await unclaimed(s);
+    const user = await signedUp();
+    const requested = await requestClaim(
+      serviceContext(),
+      { workspaceSlug: s.slug, email: customer.email, user, ip: IP },
+      s.deps,
+    );
+    expect(requested.status).toBe("requested");
+    const claimRequestId = (await auditOf(s.workspaceId, "claim.requested")).at(-1)
+      ?.target_id as string;
+    await suspend(s);
+    const mail = createFakeMail();
+    expect(
+      await sendClaimEmail(
+        serviceContext(),
+        { workspaceId: s.workspaceId, claimRequestId },
+        { ...s.deps, mail },
+      ),
+    ).toEqual({ outcome: "unavailable", sent: 0 });
+    expect(mail.sent).toEqual([]);
+    expect(await auditOf(s.workspaceId, "claim.token_issued")).toEqual([]);
+    expect(
+      await getClaimRequest(db, { workspaceId: s.workspaceId, id: claimRequestId }),
+    ).toMatchObject({ emailEnvelope: null });
   });
 });
 

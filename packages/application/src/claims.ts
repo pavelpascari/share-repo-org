@@ -12,6 +12,7 @@ import {
   checkoutClaimUsable,
   claimRateLimitBuckets,
   claimTokenUsable,
+  customerPredatesCheckout,
   decideCustomerLink,
   type EMAIL_REJECTION_REASONS,
   LinkPath,
@@ -52,7 +53,11 @@ import {
   type UserActor,
   type WorkspaceAuditAction,
 } from "./context.ts";
-import { type ClaimRequestRef, encodeClaimRequestKey } from "./entitlement-source.ts";
+import {
+  type CheckoutClaimSupport,
+  type ClaimRequestRef,
+  encodeClaimRequestKey,
+} from "./entitlement-source.ts";
 import {
   activePaddleConnection,
   type CatalogPrice,
@@ -158,6 +163,17 @@ async function claimantSubjectId(
  * same batch, and audited `claim.completed`; anything else is audited `claim.rejected`. A customer
  * linked to another subject is never moved (threat T8): `claim.conflict`.
  *
+ * Only a customer the checkout itself created is linked. A buyer can enter anyone's email at
+ * checkout and Paddle then reuses that person's customer, so a customer ShareRepo recorded, or
+ * the source created, before the checkout claim is refused (`customer_predates_checkout`). When
+ * the source cannot say when it created the customer, nothing is linked or rejected and the error
+ * propagates, so the refresh is retried; the reference stays on the subscription and an unlinked
+ * customer is evaluated again by every refresh.
+ *
+ * Nothing is linked, or recorded, while the workspace is suspended: the refresh still records
+ * commercial facts there, but a link is a change made for a buyer. A refresh after reactivation
+ * links, while the claim is usable.
+ *
  * A linked customer is looked at again only when the refresh applied newer facts, so renewals
  * stay silent and a conflict is recorded once per change rather than once per refresh.
  */
@@ -165,11 +181,14 @@ export async function linkCheckoutReference(
   context: ServiceContext,
   workspaceId: string,
   reported: ReportedClaim,
-  key: Uint8Array,
+  source: CheckoutClaimSupport,
 ): Promise<void> {
   const { customer, reference, newer } = reported;
   if (customer.subjectId !== null && !newer) return;
   const ctx = atOneInstant(context);
+  // Workspaces are never deleted, so it exists.
+  const workspace = (await repo.getWorkspace(ctx.db, workspaceId)) as repo.Workspace;
+  if (workspace.status !== "active") return;
   const now = ctx.clock.now();
   const record = (event: AuditEvent) => repo.appendAuditEvents(ctx.db, [event]);
   const reject = (reason: ClaimRejectionReason, claimId: string | null) =>
@@ -188,7 +207,7 @@ export async function linkCheckoutReference(
   const claim = await repo.getCheckoutClaim(ctx.db, { workspaceId, id: parsed.checkoutClaimId });
   if (claim === null) return reject(ClaimRejectionReason.UnknownClaim, null);
   const verified = await verifyClaimReference({
-    key,
+    key: source.signingKey,
     reference,
     workspaceId,
     userId: claim.userId,
@@ -219,6 +238,18 @@ export async function linkCheckoutReference(
         },
       }),
     );
+  }
+  // Only a customer this checkout created: first what ShareRepo already knew, then the source.
+  const recorded = { recordedAt: customer.createdAt, createdAt: null };
+  if (customerPredatesCheckout(claim.createdAt, recorded)) {
+    return reject(ClaimRejectionReason.CustomerPredatesCheckout, claim.id);
+  }
+  const createdAt = await source.customerCreatedAt({
+    workspaceId,
+    externalCustomerId: customer.externalCustomerId,
+  });
+  if (customerPredatesCheckout(claim.createdAt, { ...recorded, createdAt })) {
+    return reject(ClaimRejectionReason.CustomerPredatesCheckout, claim.id);
   }
   const subjectId = await claimantSubjectId(ctx, workspaceId, claimant, SYSTEM);
   // Guarded on the customer still being unlinked and the claim still unconsumed; a concurrent
@@ -570,8 +601,9 @@ const escapeHtml = (value: string) =>
  * with the requested email, keeps those ShareRepo already knows, issues a single-use 24-hour token
  * for each (only its hash is stored, `claim.token_issued`), and emails each link to the address
  * Paddle holds for that customer. The request finishes, erasing the email, in every case: also
- * when nothing matches, when mail or Paddle is unavailable, and when Paddle fails (the buyer can
- * ask again; keeping the address to retry is not worth it).
+ * when nothing matches, when mail or Paddle is unavailable, when the workspace was suspended
+ * since the request (its links would not work), and when Paddle fails (the buyer can ask again;
+ * keeping the address to retry is not worth it).
  */
 export async function sendClaimEmail(
   context: ServiceContext,
@@ -588,8 +620,11 @@ export async function sendClaimEmail(
     return { outcome: done.ok ? "unavailable" : "already_done", sent: 0 };
   };
   const { mail } = deps;
-  const connection = await activePaddleConnection(ctx, workspaceId);
-  if (mail === null || connection === null) return finishEmpty();
+  const [workspace, connection] = await Promise.all([
+    repo.getWorkspace(ctx.db, workspaceId) as Promise<repo.Workspace>,
+    activePaddleConnection(ctx, workspaceId),
+  ]);
+  if (mail === null || connection === null || workspace.status !== "active") return finishEmpty();
 
   const { plaintext: email } = await openSecret({
     keyring: deps.credentialKeys,
@@ -645,7 +680,6 @@ export async function sendClaimEmail(
     ),
   );
   if (!finished.ok) return { outcome: "already_done", sent: 0 };
-  const workspace = (await repo.getWorkspace(ctx.db, workspaceId)) as repo.Workspace;
   let sent = 0;
   for (const { to, token } of issued) {
     try {
@@ -659,7 +693,7 @@ export async function sendClaimEmail(
 }
 
 type ResolvedToken =
-  | { readonly ok: true; readonly token: repo.ClaimToken }
+  | { readonly ok: true; readonly token: repo.ClaimToken; readonly workspace: repo.Workspace }
   | {
       readonly ok: false;
       readonly reason: EmailRejectionReason;
@@ -667,13 +701,22 @@ type ResolvedToken =
       readonly token: repo.ClaimToken | null;
     };
 
+/**
+ * The claim token a link carries, with its workspace. A token of a suspended workspace is treated
+ * as unknown: the page shows nothing of the workspace and nothing is recorded in it.
+ */
 async function resolveToken(ctx: ServiceContext, value: string): Promise<ResolvedToken> {
   const unknown = { ok: false, reason: ClaimRejectionReason.UnknownClaim, token: null } as const;
   if (!isClaimToken(value)) return unknown;
   const token = await repo.findClaimTokenByHash(ctx.db, await hashClaimToken(value));
   if (token === null) return unknown;
+  // Workspaces are never deleted, so the token's exists.
+  const workspace = (await repo.getWorkspace(ctx.db, token.workspaceId)) as repo.Workspace;
+  if (workspace.status !== "active") return unknown;
   const usable = claimTokenUsable(token, ctx.clock.now());
-  return usable.usable ? { ok: true, token } : { ok: false, reason: usable.reason, token };
+  return usable.usable
+    ? { ok: true, token, workspace }
+    : { ok: false, reason: usable.reason, token };
 }
 
 export interface ClaimView {
@@ -692,7 +735,8 @@ export type ViewClaimResult =
 
 /**
  * The confirmation page behind an emailed link (`GET /claim/:token`). Reads only (threat T3): a
- * mail scanner that opens the link consumes nothing and records nothing.
+ * mail scanner that opens the link consumes nothing and records nothing. A token of a suspended
+ * workspace is `unknown_claim`.
  */
 export async function viewClaim(
   context: ServiceContext,
@@ -700,10 +744,10 @@ export async function viewClaim(
 ): Promise<ViewClaimResult> {
   const resolved = await resolveToken(context, input.token);
   if (!resolved.ok) return { ok: false, reason: resolved.reason };
-  const { workspaceId, customerId } = resolved.token;
+  const { token, workspace } = resolved;
+  const { workspaceId, customerId } = token;
   const { db } = context;
-  const [workspace, customers, identity] = await Promise.all([
-    repo.getWorkspace(db, workspaceId) as Promise<repo.Workspace>,
+  const [customers, identity] = await Promise.all([
     repo.listCustomersWithLinks(db, { workspaceId }),
     repo.findExternalIdentityForUser(db, { userId: input.user.userId, provider: "github" }),
   ]);
@@ -755,8 +799,8 @@ export type ConfirmClaimResult =
  * `claim.completed`. Proof of the payment mailbox outranks an earlier link: a customer linked to
  * another subject moves (`customer.relinked`), and the refreshes queued with the link end the
  * previous subject's entitlements. A used or expired token is refused and audited
- * `claim.rejected`; an unknown one is refused without a trace (it names no workspace). A
- * concurrent claim of the same token is a ConflictError.
+ * `claim.rejected`; an unknown one, or one of a suspended workspace, is refused as unknown
+ * without a trace. A concurrent claim of the same token is a ConflictError.
  */
 export async function confirmClaim(
   context: ServiceContext,
@@ -778,13 +822,11 @@ export async function confirmClaim(
     }
     return { ok: false, reason: resolved.reason };
   }
-  const { token } = resolved;
+  const { token, workspace } = resolved;
   const { workspaceId, customerId } = token;
   const now = ctx.clock.now();
-  const [customer, workspace] = (await Promise.all([
-    repo.getCustomer(ctx.db, { workspaceId, customerId }),
-    repo.getWorkspace(ctx.db, workspaceId),
-  ])) as [repo.Customer, repo.Workspace];
+  // A token's customer belongs to its workspace (composite foreign key).
+  const customer = (await repo.getCustomer(ctx.db, { workspaceId, customerId })) as repo.Customer;
   const claimant = await claimantIn(ctx, workspaceId, input.user.userId);
   const decision = decideCustomerLink({
     currentSubjectId: customer.subjectId,

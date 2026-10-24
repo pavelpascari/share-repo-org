@@ -64,8 +64,8 @@ export async function refreshSubscription(
     if (result !== "stale") {
       // A checkout reference links the customer after its facts are stored (decision 0012, path
       // 1); the link queues another refresh, which grants the access.
-      if (result.claim !== null && source.claimSigningKey !== undefined) {
-        await linkCheckoutReference(context, ref.workspaceId, result.claim, source.claimSigningKey);
+      if (result.claim !== null && source.checkoutClaims !== undefined) {
+        await linkCheckoutReference(context, ref.workspaceId, result.claim, source.checkoutClaims);
       }
       return result.summary;
     }

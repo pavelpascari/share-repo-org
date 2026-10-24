@@ -106,6 +106,9 @@ export interface FakeSubscriptionInput {
   readonly status?: "active" | "trialing";
 }
 
+/** Who pays at checkout: an existing customer, or whoever enters this email. */
+export type FakeCheckoutBuyer = { readonly customerId: string } | { readonly email: string };
+
 export interface FakeTransaction {
   readonly id: string;
   readonly priceId: string;
@@ -142,7 +145,12 @@ export interface FakePaddle extends PaddlePort {
 
   addPrice(input?: FakePriceInput): PaddlePrice;
   archivePrice(priceId: string): void;
-  addCustomer(input: { readonly id?: string; readonly email: string }): PaddleCustomer;
+  /** A customer Paddle created at `createdAt` (default: now). */
+  addCustomer(input: {
+    readonly id?: string;
+    readonly email: string;
+    readonly createdAt?: Instant;
+  }): PaddleCustomer;
   setCustomerEmail(customerId: string, email: string): void;
   setDefaultPaymentLink(url: string | null): void;
   /** A transaction created through the port. */
@@ -150,10 +158,14 @@ export interface FakePaddle extends PaddlePort {
 
   // Subscription lifecycle. Each returns the subscription as the port reads it.
 
-  /** The buyer pays: the subscription is created from the transaction, its custom data copied. */
+  /**
+   * The buyer pays: the subscription is created from the transaction, its custom data copied. The
+   * buyer is an existing customer (`customerId`), or enters an `email` at checkout: as Paddle
+   * does, an existing customer with exactly that email is reused, else one is created now.
+   */
   completeCheckout(
     transactionId: string,
-    input: { readonly customerId: string; readonly subscriptionId?: string },
+    input: FakeCheckoutBuyer & { readonly subscriptionId?: string },
   ): PaddleSubscription;
   /** A subscription created outside a ShareRepo checkout (for example a shared Paddle link). */
   createSubscription(input: FakeSubscriptionInput): PaddleSubscription;
@@ -599,15 +611,16 @@ export function createFakePaddle(options: FakePaddleOptions = {}): FakePaddle {
       prices.set(priceId, { ...price, status: "archived" });
     },
 
-    addCustomer({ id, email }) {
-      const customer = { id: id ?? nextId("ctm"), email };
+    addCustomer({ id, email, createdAt }) {
+      const customer = { id: id ?? nextId("ctm"), email, createdAt: createdAt ?? clock.now() };
       customers.set(customer.id, customer);
       return { ...customer };
     },
 
     setCustomerEmail(customerId, email) {
-      if (!customers.has(customerId)) throw new Error(`fake: unknown customer ${customerId}`);
-      customers.set(customerId, { id: customerId, email });
+      const customer = customers.get(customerId);
+      if (customer === undefined) throw new Error(`fake: unknown customer ${customerId}`);
+      customers.set(customerId, { ...customer, email });
     },
 
     setDefaultPaymentLink(url) {
@@ -620,11 +633,16 @@ export function createFakePaddle(options: FakePaddleOptions = {}): FakePaddle {
       return structuredClone(found);
     },
 
-    completeCheckout(transactionId, { customerId, subscriptionId }) {
+    completeCheckout(transactionId, { subscriptionId, ...buyer }) {
       const transaction = fake.transaction(transactionId);
       if (transaction.subscriptionId !== null) {
         throw new Error(`fake: transaction ${transactionId} is already completed`);
       }
+      const customerId =
+        "customerId" in buyer
+          ? buyer.customerId
+          : ([...customers.values()].find((customer) => customer.email === buyer.email)?.id ??
+            fake.addCustomer({ email: buyer.email }).id);
       const created = create({
         ...(subscriptionId === undefined ? {} : { id: subscriptionId }),
         customerId,
