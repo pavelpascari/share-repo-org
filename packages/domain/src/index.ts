@@ -21,7 +21,27 @@ export {
 } from "./audit.ts";
 export type { WorkspaceMembership, WorkspacePermission, WorkspaceScope } from "./authorization.ts";
 export { authorizeMembership, roleAllows, WORKSPACE_PERMISSIONS } from "./authorization.ts";
-export { CLAIM_REJECTION_REASONS, ClaimRejectionReason, LINK_PATHS, LinkPath } from "./claim.ts";
+export type {
+  CheckoutClaimUsability,
+  ClaimTokenUsability,
+  UsableCheckoutClaim,
+  UsableClaimToken,
+} from "./claim.ts";
+export {
+  CHECKOUT_CLAIM_LIFETIME_MS,
+  CHECKOUT_REJECTION_REASONS,
+  CLAIM_REJECTION_REASONS,
+  CLAIM_TOKEN_LIFETIME_MS,
+  ClaimRejectionReason,
+  CUSTOMER_LINK_DECISIONS,
+  CustomerLinkDecision,
+  checkoutClaimUsable,
+  claimTokenUsable,
+  decideCustomerLink,
+  EMAIL_REJECTION_REASONS,
+  LINK_PATHS,
+  LinkPath,
+} from "./claim.ts";
 export type { ConnectableAccountType, ConnectionStatus } from "./connection.ts";
 export {
   CONNECTABLE_ACCOUNT_TYPES,
@@ -112,8 +132,11 @@ export {
   parseOfferSnapshot,
 } from "./offer.ts";
 export {
+  CONNECTION_CALL_OUTCOMES,
+  ConnectionCallOutcome,
   CREDENTIAL_KINDS,
   CredentialKind,
+  nextConnectionStatus,
   PADDLE_BILLING_INTERVALS,
   PADDLE_CONNECTION_STATUSES,
   PADDLE_ENVIRONMENTS,
@@ -169,6 +192,13 @@ export {
   RETRY_BACKOFF_MS,
   retryBackoff,
 } from "./provisioning.ts";
+export type { RateLimitBucket, RateLimitCounter, RateLimitDecision } from "./rate-limit.ts";
+export {
+  CLAIM_RATE_LIMITS,
+  claimRateLimitBuckets,
+  rateLimitDecision,
+  rateLimitWindowStart,
+} from "./rate-limit.ts";
 export type {
   InvitationBudget,
   ReconciliationAction,
@@ -202,6 +232,7 @@ export type {
 export { planResourceSync } from "./resource-sync.ts";
 export type { SubscriptionSnapshot, SubscriptionState } from "./subscription.ts";
 export {
+  carryPastDueSince,
   isNewerSnapshot,
   parseSubscriptionSnapshot,
   SUBSCRIPTION_STATES,

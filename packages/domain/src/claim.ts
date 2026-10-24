@@ -1,3 +1,5 @@
+import type { Instant } from "./time.ts";
+
 /**
  * How a Paddle customer came to be linked to a subject (decision 0012): a checkout reference
  * (path 1), an emailed claim link (path 2), or an owner's manual link (path 3).
@@ -39,3 +41,133 @@ export const CLAIM_REJECTION_REASONS = [
   ClaimRejectionReason.ConsumedByOtherCustomer,
   ClaimRejectionReason.AlreadyUsed,
 ] as const;
+
+/** The reasons a checkout reference (path 1) can be rejected for. */
+export const CHECKOUT_REJECTION_REASONS = [
+  ClaimRejectionReason.SignatureInvalid,
+  ClaimRejectionReason.UnknownClaim,
+  ClaimRejectionReason.OtherWorkspace,
+  ClaimRejectionReason.Expired,
+  ClaimRejectionReason.ConsumedByOtherCustomer,
+] as const;
+/** The reasons an emailed claim token (path 2) can be rejected for. */
+export const EMAIL_REJECTION_REASONS = [
+  ClaimRejectionReason.UnknownClaim,
+  ClaimRejectionReason.Expired,
+  ClaimRejectionReason.AlreadyUsed,
+] as const;
+
+const HOUR_MS = 3_600_000;
+
+/** How long a checkout claim's reference may first link a customer (decision 0012, path 1). */
+export const CHECKOUT_CLAIM_LIFETIME_MS = 7 * 24 * HOUR_MS;
+/** How long an emailed claim link stays usable (decision 0012, path 2). */
+export const CLAIM_TOKEN_LIFETIME_MS = 24 * HOUR_MS;
+
+// Linking -------------------------------------------------------------------------------------
+
+/** What applying a claim does to a customer's link to a subject. */
+export const CustomerLinkDecision = {
+  /** The customer is unlinked: link it. */
+  Link: "link",
+  /** The customer is linked to another subject, and the path may move the link: move it. */
+  Relink: "relink",
+  /** The customer is already linked to the proposed subject. */
+  Noop: "noop",
+  /** The customer is linked to another subject, and the path may not move the link. */
+  Conflict: "conflict",
+} as const;
+export type CustomerLinkDecision = (typeof CustomerLinkDecision)[keyof typeof CustomerLinkDecision];
+/** Every customer link decision. */
+export const CUSTOMER_LINK_DECISIONS = [
+  CustomerLinkDecision.Link,
+  CustomerLinkDecision.Relink,
+  CustomerLinkDecision.Noop,
+  CustomerLinkDecision.Conflict,
+] as const;
+
+/**
+ * Decides how a claim changes a customer's link (decision 0012). A checkout reference (path 1)
+ * never moves an existing link (threat T8). Proof of the payment mailbox (path 2) and an owner's
+ * audited manual link (path 3) do.
+ */
+export function decideCustomerLink(input: {
+  readonly currentSubjectId: string | null;
+  readonly proposedSubjectId: string;
+  readonly path: LinkPath;
+}): CustomerLinkDecision {
+  if (input.currentSubjectId === null) return CustomerLinkDecision.Link;
+  if (input.currentSubjectId === input.proposedSubjectId) return CustomerLinkDecision.Noop;
+  return input.path === LinkPath.Checkout
+    ? CustomerLinkDecision.Conflict
+    : CustomerLinkDecision.Relink;
+}
+
+// Claim rules ---------------------------------------------------------------------------------
+
+/** The stored checkout claim fields its usability depends on. */
+export interface UsableCheckoutClaim {
+  readonly expiresAt: Instant;
+  /** The ShareRepo customer that first presented the claim's reference, if any. */
+  readonly consumedByCustomerId: string | null;
+}
+
+/** Whether a verified checkout reference may link a customer, and why not. */
+export type CheckoutClaimUsability =
+  | {
+      readonly usable: true;
+      /** The customer already consumed the claim: a renewal carrying the same reference. */
+      readonly renewal: boolean;
+    }
+  | {
+      readonly usable: false;
+      readonly reason:
+        | typeof ClaimRejectionReason.Expired
+        | typeof ClaimRejectionReason.ConsumedByOtherCustomer;
+    };
+
+/**
+ * Whether a checkout claim, found in the subscription's workspace through a verified reference,
+ * may link `customerId`. The first customer to present it before it expires consumes it. That
+ * customer's renewals carry the same reference and stay usable after the expiry; any other
+ * customer is refused.
+ */
+export function checkoutClaimUsable(
+  claim: UsableCheckoutClaim,
+  at: { readonly now: Instant; readonly customerId: string },
+): CheckoutClaimUsability {
+  if (claim.consumedByCustomerId !== null) {
+    return claim.consumedByCustomerId === at.customerId
+      ? { usable: true, renewal: true }
+      : { usable: false, reason: ClaimRejectionReason.ConsumedByOtherCustomer };
+  }
+  return at.now < claim.expiresAt
+    ? { usable: true, renewal: false }
+    : { usable: false, reason: ClaimRejectionReason.Expired };
+}
+
+/** The stored claim token fields its usability depends on. */
+export interface UsableClaimToken {
+  readonly expiresAt: Instant;
+  readonly consumedAt: Instant | null;
+}
+
+/** Whether an emailed claim token may still be confirmed, and why not. */
+export type ClaimTokenUsability =
+  | { readonly usable: true }
+  | {
+      readonly usable: false;
+      readonly reason:
+        | typeof ClaimRejectionReason.Expired
+        | typeof ClaimRejectionReason.AlreadyUsed;
+    };
+
+/** Whether a claim token is unused and unexpired at `now`. A used token reports that first. */
+export function claimTokenUsable(token: UsableClaimToken, now: Instant): ClaimTokenUsability {
+  if (token.consumedAt !== null) {
+    return { usable: false, reason: ClaimRejectionReason.AlreadyUsed };
+  }
+  return now < token.expiresAt
+    ? { usable: true }
+    : { usable: false, reason: ClaimRejectionReason.Expired };
+}

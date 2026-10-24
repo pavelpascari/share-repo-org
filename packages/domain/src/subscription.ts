@@ -86,3 +86,20 @@ export function isNewerSnapshot(
 ): boolean {
   return stored === null || incoming.sourceUpdatedAt > stored.sourceUpdatedAt;
 }
+
+/**
+ * The `pastDueSince` to store when a newer snapshot replaces the stored one. While a subscription
+ * stays past due, the earlier start is kept, so a source that restamps it on every update (Paddle
+ * reports its `updated_at`) never extends the grace period. Otherwise the incoming value stands.
+ * `pastDueSince` is set exactly when the state is `past_due` (the snapshot and stored invariant),
+ * so both being set means both are past due.
+ */
+export function carryPastDueSince(
+  stored: { readonly pastDueSince: Instant | null } | null,
+  incoming: { readonly pastDueSince: Instant | null },
+): Instant | null {
+  const kept = stored?.pastDueSince ?? null;
+  return kept === null || incoming.pastDueSince === null
+    ? incoming.pastDueSince
+    : Math.min(kept, incoming.pastDueSince);
+}

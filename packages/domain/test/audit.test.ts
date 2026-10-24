@@ -5,7 +5,10 @@ import {
   type AuditContext,
   type AuditDetails,
   auditEvent,
+  CHECKOUT_REJECTION_REASONS,
+  CLAIM_REJECTION_REASONS,
   type Clock,
+  EMAIL_REJECTION_REASONS,
   type IdGenerator,
 } from "../src/index.ts";
 
@@ -118,16 +121,20 @@ const VALID_DETAILS = {
   "provider.mutation_resolved": { ...MUTATION, state: "pending_invitation" },
   "reconciliation.requested": { resourceId: "r1", kind: "check" },
   "paddle.connected": { environment: "sandbox", sellerId: "slr_1" },
-  "paddle.reconnected": { sellerId: "slr_1", previousStatus: "unauthorized" },
-  "paddle.disconnected": { destinationDeleted: true },
+  "paddle.reconnected": {
+    sellerId: "slr_1",
+    previousStatus: "unauthorized",
+    destinationRecreated: false,
+  },
+  "paddle.disconnected": { previousStatus: "active", destinationDeleted: true },
   "paddle.status_changed": { previousStatus: "active", status: "unauthorized" },
   "paddle.catalog_synced": { added: 2, updated: 1, archived: 0 },
   "checkout.started": { offerId: "o1", priceId: "pri_1" },
   "claim.requested": {},
-  "claim.token_issued": { customerId: "c1" },
-  "claim.completed": { path: "checkout", subjectId: "s1" },
-  "claim.rejected": { path: "checkout", reason: "signature_invalid" },
-  "claim.conflict": { path: "checkout", subjectId: "s1", userId: "u2" },
+  "claim.token_issued": { claimRequestId: "cr1", customerId: "c1" },
+  "claim.completed": { path: "checkout", claimId: "cc1", userId: "u1", subjectId: "s1" },
+  "claim.rejected": { path: "checkout", claimId: "cc1", reason: "expired" },
+  "claim.conflict": { path: "checkout", claimId: "cc1", subjectId: "s1", userId: "u2" },
   "customer.relinked": { path: "email", previousSubjectId: "s1", subjectId: "s2" },
   "customer.linked_manually": { previousSubjectId: null, subjectId: "s1" },
 } as const satisfies { [A in AuditAction]: AuditDetails<A> };
@@ -318,20 +325,31 @@ describe("audit action catalog", () => {
     ["reconciliation.requested", "grantId", ""],
     ["paddle.connected", "environment", "production"],
     ["paddle.reconnected", "previousStatus", "suspended"],
+    ["paddle.reconnected", "previousStatus", "disconnected"],
+    ["paddle.reconnected", "destinationRecreated", "no"],
     ["paddle.disconnected", "destinationDeleted", "yes"],
+    ["paddle.disconnected", "previousStatus", "disconnected"],
     ["paddle.status_changed", "status", "deleted"],
     ["paddle.status_changed", "previousStatus", "deleted"],
     ["paddle.status_changed", "status", "active"],
+    ["paddle.status_changed", "status", "disconnected"],
     ["paddle.catalog_synced", "added", -1],
     ["paddle.catalog_synced", "updated", 1.5],
     ["paddle.catalog_synced", "archived", "0"],
     ["claim.completed", "path", "web"],
+    ["claim.completed", "path", "manual"],
     ["claim.rejected", "reason", "because"],
     ["claim.rejected", "path", "web"],
+    ["claim.rejected", "path", "manual"],
+    ["claim.rejected", "reason", "already_used"],
+    ["claim.rejected", "claimId", ""],
     ["claim.conflict", "path", "web"],
+    ["claim.conflict", "path", "email"],
     ["customer.relinked", "subjectId", "s1"],
     ["customer.relinked", "previousSubjectId", null],
     ["customer.relinked", "path", "web"],
+    ["customer.relinked", "path", "checkout"],
+    ["customer.relinked", "path", "manual"],
     ["customer.linked_manually", "subjectId", null],
     ["customer.linked_manually", "previousSubjectId", ""],
     ["customer.linked_manually", "previousSubjectId", "s1"],
@@ -497,6 +515,62 @@ describe("provisioning details", () => {
         context(),
       ),
     ).toThrow("invalid details for grant.observed: to");
+  });
+});
+
+describe("Paddle and claim details", () => {
+  it.each([
+    ["paddle.status_changed", { previousStatus: "unauthorized", status: "active" }],
+    ["paddle.disconnected", { previousStatus: "unauthorized", destinationDeleted: false }],
+    ["claim.completed", { path: "email", claimId: "t1", userId: "u1", subjectId: "s1" }],
+    ["claim.rejected", { path: "checkout", claimId: null, reason: "signature_invalid" }],
+    ["claim.rejected", { path: "email", claimId: null, reason: "unknown_claim" }],
+    ["customer.linked_manually", { previousSubjectId: "s1", subjectId: "s2" }],
+  ] as const)("%s accepts %j", (action, details) => {
+    expect(AUDIT_ACTIONS[action].details.parse(details)).toEqual(details);
+  });
+
+  it.each(CHECKOUT_REJECTION_REASONS)("a checkout reference may be rejected as %s", (reason) => {
+    const details = { path: "checkout", claimId: "cc1", reason };
+    expect(AUDIT_ACTIONS["claim.rejected"].details.safeParse(details).success).toBe(true);
+  });
+
+  it.each(EMAIL_REJECTION_REASONS)("a claim token may be rejected as %s", (reason) => {
+    const details = { path: "email", claimId: "t1", reason };
+    expect(AUDIT_ACTIONS["claim.rejected"].details.safeParse(details).success).toBe(true);
+  });
+
+  it.each(
+    CLAIM_REJECTION_REASONS.filter(
+      (r) => !(EMAIL_REJECTION_REASONS as readonly string[]).includes(r),
+    ),
+  )("a claim token is never rejected as %s", (reason) => {
+    const details = { path: "email", claimId: "t1", reason };
+    expect(AUDIT_ACTIONS["claim.rejected"].details.safeParse(details).success).toBe(false);
+  });
+
+  it("names the reason of a rejection that does not fit its path", () => {
+    expect(() =>
+      auditEvent(
+        "claim.rejected",
+        {
+          workspaceId: "w1",
+          actor: { type: "system", id: null },
+          targetId: "c1",
+          details: { path: "email", claimId: "t1", reason: "signature_invalid" },
+        },
+        context(),
+      ),
+    ).toThrow("invalid details for claim.rejected: reason");
+  });
+
+  // Threat T4: nothing in a claim request's audit event can depend on whether a purchase matched.
+  it("claim.requested carries nothing beyond its target", () => {
+    const schema = AUDIT_ACTIONS["claim.requested"].details;
+    expect(schema.safeParse({}).success).toBe(true);
+    for (const key of ["matched", "customerId", "customers", "emailHash", "email"]) {
+      expect(schema.safeParse({ [key]: "x" }).success).toBe(false);
+    }
   });
 });
 
@@ -713,6 +787,48 @@ describe("auditEvent", () => {
     expect(() =>
       auditEvent("user.created", { actor: user, targetId: "", details: {} }, context()),
     ).toThrow("target ID is required");
+  });
+
+  describe("an action that requires a reason", () => {
+    const input = {
+      workspaceId: "w1",
+      actor: user,
+      targetId: "c1",
+      details: VALID_DETAILS["customer.linked_manually"],
+    };
+
+    it("stores the reason", () => {
+      const event = auditEvent(
+        "customer.linked_manually",
+        { ...input, reason: "paid by bank transfer" },
+        context(),
+      );
+      expect(event.reason).toBe("paid by bank transfer");
+    });
+
+    it.each([
+      ["a missing", undefined],
+      ["an empty", ""],
+      ["a blank", "  "],
+    ])("refuses %s reason", (_, reason) => {
+      expect(() =>
+        auditEvent("customer.linked_manually", { ...input, reason } as never, context()),
+      ).toThrow("customer.linked_manually needs a reason");
+    });
+
+    it("is a type error without one", () => {
+      // @ts-expect-error reason is required for customer.linked_manually
+      expect(() => auditEvent("customer.linked_manually", input, context())).toThrow();
+    });
+
+    it("leaves the reason optional elsewhere", () => {
+      const event = auditEvent(
+        "claim.requested",
+        { workspaceId: "w1", actor: user, targetId: "cr1", details: {} },
+        context(),
+      );
+      expect(event.reason).toBeNull();
+    });
   });
 
   it("stores the parsed details, not the caller's object", () => {

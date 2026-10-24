@@ -63,3 +63,41 @@ export const PADDLE_BILLING_INTERVALS = [
   PaddleBillingInterval.Month,
   PaddleBillingInterval.Year,
 ] as const;
+
+/**
+ * What a call with the connection's key, or a probe of it (`GET /`), showed about the key
+ * (decision 0011 § Calls and limits): `unauthorized` is a 401 or 403, `transient` a 429, a 5xx or
+ * a timeout, and `rejected` any other refusal, which says nothing about the key. A probe that
+ * answers but proves the key unusable (another seller, a missing permission) is `unauthorized`.
+ */
+export const ConnectionCallOutcome = {
+  Ok: "ok",
+  Unauthorized: "unauthorized",
+  Transient: "transient",
+  Rejected: "rejected",
+} as const;
+export type ConnectionCallOutcome =
+  (typeof ConnectionCallOutcome)[keyof typeof ConnectionCallOutcome];
+/** Every connection call outcome. */
+export const CONNECTION_CALL_OUTCOMES = [
+  ConnectionCallOutcome.Ok,
+  ConnectionCallOutcome.Unauthorized,
+  ConnectionCallOutcome.Transient,
+  ConnectionCallOutcome.Rejected,
+] as const;
+
+/**
+ * The connection status after a call's outcome (decision 0011 § Health). A disconnected
+ * connection stays disconnected: only a new connection replaces it. An authorization failure
+ * marks the connection unauthorized and a success restores it; transient errors and other
+ * refusals change nothing, so the last known facts stand.
+ */
+export function nextConnectionStatus(
+  current: PaddleConnectionStatus,
+  outcome: ConnectionCallOutcome,
+): PaddleConnectionStatus {
+  if (current === PaddleConnectionStatus.Disconnected) return current;
+  if (outcome === ConnectionCallOutcome.Ok) return PaddleConnectionStatus.Active;
+  if (outcome === ConnectionCallOutcome.Unauthorized) return PaddleConnectionStatus.Unauthorized;
+  return current;
+}
