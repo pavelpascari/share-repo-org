@@ -295,7 +295,7 @@ Sources:
   - `next` is a full URL with `after=<last id>`. Paddle always returns `next`, so loop on `has_more`.
   - The default order is `id[DESC]`. `order_by=id[ASC]` reverses it.
   - The `Skip-Count: true` header skips the count and returns `estimated_total = -1`.
-  - The maximum `per_page` varies by endpoint (an example shows 200 for notification settings). The exact maximums are **UNCONFIRMED**.
+  - The maximum `per_page` varies by endpoint (an example shows 200 for notification settings). It is 200 for prices, customers and subscriptions (§ 8).
 - **Default scopes:** most lists return only `active` entities. Subscriptions, transactions, notifications and notification settings return all.
 - **Rate limits:**
   - **240 requests per minute per IP address.**
@@ -342,6 +342,32 @@ Sources:
 - https://developers.cloudflare.com/email-service/api/send-emails/workers-api/
 - https://developers.cloudflare.com/email-service/platform/changelog/
 - https://developers.cloudflare.com/email-service/reference/faq/
+
+## 8. Confirmed while building the client (Phase 5, T3)
+
+These were settled from Paddle's API reference while writing the client and its fixtures. The live sandbox check ([runbook](../runbooks/paddle-sandbox-setup.md) § 9) still has to confirm them against real responses.
+
+- **API root:** `GET /` returns `data.caller.account` as `{ id, name }` (`slr_…` and the account's name), `null` without credentials. `data.api.environment` is `production` or `sandbox`.
+- **Destination limit:** creating an 11th active notification setting fails with `400` and `error.code` `notification_maximum_active_settings_reached`.
+- **No default payment link:** `POST /transactions` fails with `400` and `error.code` `transaction_default_checkout_url_not_set`.
+- **Page size:** `per_page` goes up to 200 for prices, customers and subscriptions (default 50).
+- **Email filter:** `GET /customers?email=` takes a comma-separated list of addresses and matches each exactly. ShareRepo sends one address and refuses input containing a comma.
+
+Sources:
+- https://developer.paddle.com/api-reference/overview
+- https://developer.paddle.com/api-reference/notification-settings/create-notification-setting
+- https://developer.paddle.com/api-reference/transactions/create-transaction
+- https://developer.paddle.com/api-reference/customers/list-customers
+- https://developer.paddle.com/api-reference/subscriptions/list-subscriptions
+
+Still **UNCONFIRMED**, for the live sandbox check:
+
+- whether a retried delivery carries a fresh `ts` (ShareRepo accepts up to 72 hours old);
+- size or key limits on `custom_data` (a claim reference is at most 256 characters);
+- whether case differs in the email filter (ShareRepo hands Paddle the address as typed, trimmed);
+- which statuses `GET /subscriptions` returns without a `status` filter (the sweep sends none; the purchase rule names every status);
+- the exact `error.code` values for a revoked key and a missing permission (ShareRepo acts on the status alone);
+- whether `GET /` lists `transaction.read` for a key that has `transaction.write` (ShareRepo requires both names).
 
 ## Product implications
 

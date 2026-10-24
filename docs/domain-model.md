@@ -38,7 +38,17 @@ A creator-defined promise that maps one or more commercial items, initially Padd
 
 ### Customer
 
-A commercial identity within an entitlement source, such as a Paddle customer. A customer is not automatically a ShareRepo user. Linking must be explicit, verified, or based on a carefully documented claim flow.
+A commercial identity within an entitlement source, such as a Paddle customer (`ctm_…`). A customer is not automatically a ShareRepo user. It is linked to a subject only through a claim (below). ShareRepo never stores a customer's email.
+
+### Claim
+
+How a customer becomes linked to a subject ([decision 0012](decisions/0012-purchase-claims.md)). There are three paths:
+
+1. **Checkout claim.** A signed-in buyer starts checkout from `/buy/<offerId>`. ShareRepo stores a checkout claim (workspace, user, offer, price; 7 days) and sends a signed **claim reference** to Paddle in the transaction's custom data. The refresh that sees the reference on the subscription links the customer.
+2. **Emailed claim.** A buyer who paid through a link the creator shared asks at `/c/<slug>/claim`. A **claim request** keeps the email only as an envelope until a job handles it. The job emails a **claim token** (single use, 24 hours, only its hash stored) to each matching customer ShareRepo knows. Confirming the token links the customer, and moves an existing link.
+3. **Manual link.** A workspace owner links a customer to a GitHub login, with a required reason.
+
+Each path is audited. A link queues a refresh of the customer's subscriptions, so entitlements follow it.
 
 ### Subscription
 
@@ -331,7 +341,22 @@ linked GitHub ExternalIdentity
 GitHub Subject
 ```
 
-Do not grant repository access from an unverified email match alone. In Phase 3, only the simulated source links a customer to a subject, and only because the workspace owner names the GitHub account explicitly (decision 0009). Phase 5 replaces this with the claim flow. Define a claim process for purchases made before sign-in, protect against account takeover, and audit linking changes.
+Do not grant repository access from an unverified email match alone. The simulated source links a customer to a subject because the workspace owner names the GitHub account explicitly (decision 0009). Paddle customers are linked only through the three claim paths ([decision 0012](decisions/0012-purchase-claims.md), [threat model](security/purchase-claim-threat-model.md)).
+
+**The purchase rule (path 1).** A buyer can enter any email at Paddle's checkout, and Paddle then puts the subscription on the existing customer with that email. So a checkout claim links a customer only when every subscription Paddle holds for that customer, in any status, carries the same claim reference:
+
+- A customer ShareRepo recorded before the claim was created is refused at once.
+- Otherwise ShareRepo lists the customer's subscriptions for every status. The list must include the subscription that carried the reference and every subscription ShareRepo stores for the customer. An empty list, or one cut short at the page cap, is refused.
+- A refusal is audited as `claim.rejected` with `customer_has_other_purchases`. The buyer can still claim by email (path 2).
+- If Paddle cannot be read, nothing is linked or refused, and the refresh is retried.
+- Once linked, a customer stays linked: renewals need no new check. Path 1 never moves an existing link (`claim.conflict`); paths 2 and 3 do.
+
+| Decision (`decideCustomerLink`) | Meaning |
+|---|---|
+| `link` | The customer was unlinked |
+| `noop` | Already linked to this subject |
+| `relink` | Linked to another subject; paths 2 and 3 move it, and the previous subject's entitlements end |
+| `conflict` | Linked to another subject; path 1 leaves it |
 
 ## Abstraction boundary
 

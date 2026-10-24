@@ -164,43 +164,86 @@ These are discovery outputs for private launch, not details to hide behind the a
 
 ## Paddle
 
-### Connection path
+### Paddle in v1 (decisions 0011 and 0012)
 
-Prefer a supported Paddle OAuth/app connection for third-party sellers when generally available to the product. If the private launch must use API credentials, treat that as a temporary connection variant with the same domain boundary and encrypted credential handling.
+Paddle is the commercial source. It reports who paid for what; the entitlement engine decides access. The adapter lives in `packages/integrations/src/paddle` behind `PaddlePort`. Tests use `FakePaddle` from `@sharerepo/integrations/testing`, and E2E uses an HTTP fake built on it (`apps/web/e2e/support/fake-paddle.ts`).
 
-Where Paddle supports it, automate notification destination/webhook registration. Make reconnection, secret rotation, and disconnection explicit operations.
+### Connection
 
-### Initial responsibilities
+- **One connection per workspace,** made with an API key the creator creates for ShareRepo. OAuth comes later, as a second credential kind.
+- **Connect** runs in this order, and stops at the first failure:
+  1. The key must match Paddle's current format. Legacy 50-character keys are refused. Production takes only live keys; every other environment only sandbox keys.
+  2. `GET /` must name a seller (`slr_…`) in the same environment and list every required permission: `product.read`, `price.read`, `customer.read`, `subscription.read`, `transaction.read`, `transaction.write` and `notification_setting.write`. A missing permission is named on the page.
+  3. ShareRepo creates its notification destination, `<public origin>/webhooks/paddle/<connectionId>`, and keeps the signing secret.
+  4. The key and the secret are stored as envelopes bound to the row. If storing fails, the destination is deleted again.
+  5. The catalog is imported (`GET /prices?include=product`). A failed import leaves the connection active, and the page asks for "Refresh catalog".
+- **Reconnect** replaces the key. The new key must belong to the same seller. A destination deleted outside ShareRepo is created again.
+- **Disconnect** deletes the destination (best effort) and erases both envelopes. If Paddle could not be asked, the page shows the `ntfset_…` ID to delete by hand.
+- **Status.** A `401` or `403` on any call marks the connection `unauthorized`, audited, and the billing page shows "Needs a new API key". Processing keeps the last known facts; nothing is revoked because Paddle cannot be read. An `api_key.*` event queues a probe (`GET /`), because its payload does not say which key it concerns.
 
-The Paddle adapter should:
+### Port
 
-- connect and identify a seller account;
-- discover the products and prices needed for offer configuration;
-- register or guide webhook destination setup;
-- verify webhook signatures using the raw body;
-- ingest stable event IDs and occurrence timestamps;
-- normalize customers and subscriptions;
-- refresh current state when events are missing, duplicated, or out of order;
-- preserve effective cancellation and billing-period timestamps;
-- surface connection authorization failures and schema-version mismatches.
+| Operation | Request | Used for |
+|---|---|---|
+| `getApiRoot` | `GET /` | Seller, environment and permissions; the health probe |
+| `listPrices` | `GET /prices?include=product&status=active,archived&per_page=200` | The catalog |
+| `getSubscription` | `GET /subscriptions/{id}` | Every refresh |
+| `listSubscriptions` | `GET /subscriptions?per_page=200` | The daily sweep |
+| `listCustomerSubscriptions` | `GET /subscriptions?customer_id=&status=<every status>&per_page=200` | The purchase rule of path 1 |
+| `listCustomersByEmail` | `GET /customers?email=&per_page=200` | Claiming by email (path 2) |
+| `getCustomer` | `GET /customers/{id}` | Customer lookups |
+| `createTransaction` | `POST /transactions` with `custom_data.sharerepo_claim` | Starting a checkout (path 1) |
+| `createNotificationSetting`, `getNotificationSetting`, `deleteNotificationSetting` | `/notification-settings` | The webhook destination |
+
+Every request sends `Paddle-Version: 1` and has a 20-second timeout. Every response is parsed with Zod. Lists follow `meta.pagination.next` while `has_more`, up to 30 pages. The next-page URL must stay under the API base URL, because the request carries the seller's key. The sweep and the purchase rule accept a list cut short at the cap and say so; other lists fail as `malformed`.
+
+### Errors
+
+| Kind | Cause | Handling |
+|---|---|---|
+| `unauthorized` | `401` or `403`: the key is invalid, expired, revoked, or lacks a permission | The connection becomes `unauthorized`. The job fails as `PaddleUnavailableError` and is retried; stored facts stand |
+| `not_found` | `404` | A subscription Paddle does not know is `found: false`. Deleting a destination that is already gone succeeds |
+| `rate_limited` | `429` | Retried after `Retry-After` (seconds or a date; 60 s when absent) |
+| `transient` | `5xx`, a network failure, or the timeout | Retried with backoff |
+| `rejected` | Any other `4xx`, or input refused before sending | Final. Two codes are acted on: `notification_maximum_active_settings_reached` (the seller has 10 active destinations; connect fails with that reason) and `transaction_default_checkout_url_not_set` (no default payment link; the checkout page names the setup step) |
+| `malformed` | A `2xx` body of the wrong shape, or too many pages | Final |
+
+Errors carry the operation, the status and Paddle's `error.code`. They never carry the key, an email, custom data, or Paddle's `detail`, which may echo input.
+
+### Webhooks
+
+- **Route:** `POST /webhooks/paddle/:connectionId`, before React Router.
+- **Rules,** in order:
+  1. Without the commerce secrets: `503`.
+  2. An unknown or disconnected connection: `404`.
+  3. A body over 1 MB: `413`.
+  4. The signature is checked on the raw bytes: `Paddle-Signature: ts=…;h1=…`, HMAC-SHA256 of `ts:body` under the connection's secret. Any `h1` may match. `ts` may be at most 5 minutes ahead and 72 hours old. A failure gets `401` and nothing is stored.
+  5. A signed body that is not an event envelope: `400`.
+  6. The event ID, type, time and subscription are stored with a `process_external_event` outbox row in one batch, then `200`. A redelivery of the same `evt_` gets `200` and changes nothing.
+- **Deduplication** is scoped to the connection: one creator cannot suppress another's events by signing a colliding `evt_` ID.
+- **Payloads are never stored or logged.** Processing reads Paddle instead (below).
 
 ### Event handling
 
-Do not write logic such as “`transaction.payment_failed` means revoke now.” A webhook updates known commercial facts, then policy recalculates entitlements. Failed recurring payment may produce a past-due state and retries; cancellation may take effect later.
-
-Suggested flow:
+Do not write logic such as "`transaction.payment_failed` means revoke now". An event is a hint. It makes ShareRepo read the subscription again; policy then recomputes entitlements. A failed renewal produces a past-due state with a grace period, and a cancellation can take effect later.
 
 ```text
 signed Paddle webhook
   -> verify and deduplicate
-  -> persist ExternalEvent
-  -> enqueue subscription refresh
-  -> fetch/normalize current state when needed
-  -> persist Subscription
-  -> evaluate offer and access policy
-  -> replace/revise desired Entitlements transactionally
-  -> enqueue reconciliation
+  -> persist ExternalEvent + process_external_event (one batch)
+  -> subscription.* / transaction.* with a subscription: queue refresh_subscription (deduplicated)
+     api_key.*: queue check_paddle_connection
+     anything else: ignored
+  -> refresh: GET /subscriptions/{id}, normalize, verify the claim reference
+  -> persist Subscription, link the customer if the purchase rule allows
+  -> recompute Entitlements
+  -> queue reconciliation
 ```
+
+- **Normalizing.** `state` is Paddle's status. `cancelAt` is a scheduled cancellation's `effective_at`; a scheduled pause is ignored until it takes effect. `pastDueSince` keeps the earliest time while the subscription stays past due, so later updates never extend grace. A refresh applies only an `updated_at` newer than the stored one.
+- **Linking** follows decision 0012. A verified claim reference links the customer only when every subscription Paddle holds for it carries that reference (the purchase rule). A link queues a refresh of each of the customer's subscriptions.
+- **Repair.** The daily cron queues a sweep per active connection. It lists the seller's subscriptions and refreshes any that are unknown or newer than stored.
+- **Hand-off.** Processing an event, and making a link, queue a refresh in the outbox. The jobs Worker (after a job) and the web Worker (after a claim or a manual link) hand such refreshes to the queue at once, so a purchase is read within seconds. The outbox drain, every minute, is the safety net. Reconciliation keeps its own schedule (decision 0010), so the invitation follows at the next check.
 
 ## Idempotency and ordering
 

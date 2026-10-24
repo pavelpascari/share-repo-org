@@ -39,6 +39,8 @@ Build these in Phase 0–1 so later phases can be tested without retrofitting.
 | Queue port | Cloudflare Queues producer | In-process queue that tests drain explicitly, with redelivery and reordering | Repeated delivery and crash-between-steps scenarios |
 | Transactional outbox | D1 table drained by jobs | Same table, drained by the test | Event receipt, state change, and job intent commit in one `batch()` |
 | OAuth provider | GitHub OAuth | Local fake GitHub OAuth server | E2E signs in through OAuth with no test-only login backdoor. Wired through endpoint overrides accepted only when `ENVIRONMENT=e2e` ([0006](decisions/0006-authentication-with-better-auth.md)) |
+| Payment provider | Paddle Billing API and webhooks | `FakePaddle` in process; for E2E, an HTTP fake built on it (`apps/web/e2e/support/fake-paddle.ts`) with a payment page, lifecycle controls and signed webhooks | Purchases and subscription lifecycles with no Paddle account. The API override is accepted only when `ENVIRONMENT=e2e` |
+| Mail | Cloudflare `send_email` binding | `FakeMail`; E2E posts to the fake Paddle's mailbox (`MAIL_CAPTURE_URL`, e2e only) | Claim links are read from captured mail |
 | Secrets/key provider | Cloudflare secrets | Fixed test keys | Signature and envelope-encryption tests use known material |
 
 ## Fake providers

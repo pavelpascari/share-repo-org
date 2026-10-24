@@ -53,7 +53,44 @@ With a connected development App, simulated subscriptions change real access on 
 
 Use a test repository and test accounts only: invitations are real and count against GitHub's limits.
 
-Tests never need these values. Workers-pool tests use test-only secrets from `apps/web/vitest.config.ts`, and `pnpm test:e2e` signs in through a local fake GitHub (`apps/web/e2e/support/fake-github.ts`) with the wrangler `e2e` environment, which is the only one that accepts GitHub endpoint overrides.
+### Paddle and purchase claims (Phase 5)
+
+Paddle needs two ShareRepo secrets ([decision 0011](decisions/0011-paddle-connection-and-tenant-credentials.md), [decision 0012](decisions/0012-purchase-claims.md)). Without them the Billing page says Paddle is not configured, and everything else works. Put the same values in `apps/web/.dev.vars` and `apps/jobs/.dev.vars`, which share one database:
+
+```sh
+# The master keyring for stored Paddle credentials:
+node -e 'console.log("CREDENTIAL_KEYS=" + JSON.stringify({current: "k1", keys: {k1: require("node:crypto").randomBytes(32).toString("base64")}}))'
+# The key that signs claim references and hashes claim emails:
+echo "CLAIM_SIGNING_KEY=$(openssl rand -hex 32)"
+```
+
+There are two ways to try Paddle locally:
+
+- **Against the fake, with nothing to set up.** `node apps/web/e2e/support/serve.ts` starts the E2E stack: web and jobs on <http://localhost:5180> with a fresh database, the fake GitHub on port 5190 and the fake Paddle on port 5191. It generates its own secrets. Sign in through the fake GitHub's authorize page with any ID and login. Register a seller and a price (below), then connect with that key on Billing. The stack wipes its database on every start.
+- **Against Paddle's sandbox.** Follow [the sandbox runbook](runbooks/paddle-sandbox-setup.md). `pnpm dev` talks to `sandbox-api.paddle.com`; Paddle's webhooks need a tunnel.
+
+Claiming by email needs a mail transport. Locally only the E2E stack has one: the fake Paddle's mailbox.
+
+#### The fake Paddle's controls
+
+The fake (`apps/web/e2e/support/fake-paddle.ts`) serves the API ShareRepo calls under `/api`, a default payment link page at `/pay?_ptxn=<txn>`, and these controls. Controls take a form or JSON body and answer JSON.
+
+| Control | What it does |
+|---|---|
+| `POST /_control/sellers` (`key`, optional `name`, `permissions`) | Registers a seller behind an API key, for example `pdl_sdbx_apikey_` + 26 lower-case letters or digits + `_` + 22 letters or digits + `_` + 3. Returns `sellerId`. `permissions` (comma-separated) defaults to all ShareRepo needs |
+| `POST /_control/sellers/<sellerId>/prices` (`product_name`, `description`, `amount` in minor units, `currency`, `interval`, `frequency`) | Adds a price to the seller's catalog |
+| `POST /_control/sellers/<sellerId>/transactions` (`price_id`, optional `custom_data` JSON) | A checkout as if shared from Paddle directly, without a ShareRepo reference. Returns `checkout_url` |
+| `POST /_control/sellers/<sellerId>/revoke-key`, `…/restore-key` | Every call with the key fails with `403`, until restored |
+| `POST /_control/sellers/<sellerId>/events` (`event_type`, and `subscription_id` or `data` JSON) | Sends any signed event to the seller's destination |
+| `GET /_control/sellers/<sellerId>` | The seller's subscriptions (wire format), destinations and webhook deliveries with their status |
+| `POST /_control/subscriptions/<id>/<action>` | Changes a subscription and sends Paddle's event for it. Actions: `schedule-cancel` (`effective_at`, or `effective_in_seconds`; within 10 minutes the fake cancels by itself then), `remove-scheduled-change`, `cancel`, `past-due`, `renew`, `activate`, `pause`, `resume` |
+| `GET /_control/mail?to=<address>` | The claim emails ShareRepo sent, captured at `POST /mail` |
+
+"Pay" on the payment link page creates the customer by email, or reuses the one with that exact email as Paddle does. It creates the subscription with the transaction's custom data, then sends signed `transaction.completed`, `subscription.created` and `subscription.activated` webhooks.
+
+Paddle's events reach ShareRepo through the queue, and so does the refresh each one asks for. The dev server runs no crons, so a reconciliation starts only when an owner presses **Check now**, as in Phase 4.
+
+Tests never need these values. Workers-pool tests use test-only secrets from `apps/web/vitest.config.ts`, and `pnpm test:e2e` signs in through a local fake GitHub (`apps/web/e2e/support/fake-github.ts`) and sells through the fake Paddle, with the wrangler `e2e` environment, which is the only one that accepts provider endpoint overrides.
 
 pnpm blocks dependency build scripts by default; `pnpm-workspace.yaml` allows only `workerd` and `esbuild`, which the Workers runtime needs.
 
@@ -67,7 +104,7 @@ pnpm blocks dependency build scripts by default; `pnpm-workspace.yaml` allows on
 | `packages/db` | Drizzle schema, SQL migrations, workspace-scoped repositories |
 | `packages/platform` | Env parsing, structured logging with redaction, correlation IDs, error types |
 | `packages/application` | Application services: sign-in recording, workspaces, GitHub connections and resync, authorization, audit |
-| `packages/integrations` | GitHub App client (JWT, installation tokens, webhooks); a fake under `@sharerepo/integrations/testing` |
+| `packages/integrations` | GitHub App client (JWT, installation tokens, webhooks), Paddle client and webhook verification, the mail port; fakes under `@sharerepo/integrations/testing` |
 | `packages/testing` | Test helpers: fake clock, deterministic IDs, log capture, secret canaries, audit completeness |
 | `scripts` | Coverage ratchet and scenario-catalog checks |
 
@@ -81,7 +118,7 @@ pnpm blocks dependency build scripts by default; `pnpm-workspace.yaml` allows on
 | `pnpm test` | Every Vitest project (Node and Workers runtimes) |
 | `pnpm test:coverage` | Tests with merged coverage, then raises committed thresholds in `coverage-thresholds.json` |
 | `pnpm test:mutation` | Stryker on `packages/domain` (slow; run when domain changes) |
-| `pnpm test:e2e` | Playwright against both Workers, a fresh local D1 and a fake GitHub OAuth server |
+| `pnpm test:e2e` | Playwright against both Workers, a fresh local D1, the fake GitHub and the fake Paddle. The server is warmed up before the tests start |
 | `pnpm check:scenarios --phase <n>` | Fails if a scenario due by phase `n` in `docs/testing-strategy.md` has no test |
 | `pnpm db:generate` | Generate a SQL migration from schema changes in `packages/db/src/schema` |
 | `pnpm db:check` | Fails if the schema and committed migrations disagree |
@@ -107,6 +144,7 @@ Run a single project or file with Vitest directly, for example `pnpm exec vitest
 - **`workerd` fails to start after install:** build scripts were blocked; check `onlyBuiltDependencies` in `pnpm-workspace.yaml` and rerun `pnpm install`.
 - **A test sees data from another test:** D1 storage is isolated per test *file*, not per test. Give each test its own IDs (`freshWorkspaceIds()` from `@sharerepo/testing`).
 - **`wrangler types --check` fails in `pnpm typecheck`:** a `wrangler.jsonc` changed; run `pnpm --filter @sharerepo/web typegen` (or `jobs`) and commit the regenerated `worker-configuration.d.ts`.
+- **`pnpm test:e2e` fails before any test runs:** another process holds port 5180, 5190 or 5191 (often a stopped run's `serve.ts`). The suite always starts its own servers; stop the old ones.
 - **Local D1 state looks wrong:** delete `apps/web/.wrangler` and run `pnpm db:migrate:local` again.
 - **Every page returns 500 locally with "invalid environment configuration":** `apps/web/.dev.vars` is missing or incomplete; see [Signing in locally](#signing-in-locally).
 - **Writing a service:** take a `ServiceContext`, authorize with `openWorkspace` (which returns a `WorkspaceScope`), and pass audit events to the repository write so they share its batch. Wrap service tests in `expectAuditedChange` / `expectNoChangeOnFailure` from `@sharerepo/testing`.

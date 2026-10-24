@@ -1,6 +1,6 @@
 # Threat model — subscriber purchase claim
 
-**Status:** Accepted; implemented in Phase 5 as [decision 0012](../decisions/0012-purchase-claims.md). Proposed in Phase 1. Phase 1 implements only the identity constraints in [Constraints on Phase 1](#constraints-on-phase-1).
+**Status:** Implemented in Phase 5 as [decision 0012](../decisions/0012-purchase-claims.md). Every threat below has its test scenario, and the E2E journeys in `apps/web/e2e/paddle.spec.ts` cover paths 1 and 2 end to end, including T7's confirmation page. Proposed in Phase 1, which implemented the identity constraints in [Constraints on Phase 1](#constraints-on-phase-1). The [accepted risks](#accepted-risks) stand.
 
 The implementation plan requires this model "before implementing automatic linking". It decides how a Paddle purchase becomes repository access for the right person, and what must never be possible.
 

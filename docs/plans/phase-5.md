@@ -316,6 +316,32 @@ T1 schema + migration + vocabularies + env ──┬─ T2 domain: links, claims
 | Renewal or reactivation during a grace or cancellation period prevents stale revocation | `timing/renewal-during-scheduled-revocation` |
 | Credential rotation and connection loss are handled without secret leakage | Reconnect tests, `connection/revoked-key-keeps-last-facts`, `credential/envelope-bound-to-row`, redaction canaries |
 
+## Implementation notes
+
+Where the build differs from, or adds to, the design above.
+
+- **Migrations.** 0006 is as planned. Two more followed:
+  - 0007 adds `external_events.external_subscription_id`: the subscription a Paddle event concerns, so processing refreshes it without storing the payload.
+  - 0008 adds `checkout_claims.checkout_url`, so starting the same checkout again within an hour reuses it (below).
+- **The purchase rule (path 1).** A checkout reference links a customer only when every subscription Paddle holds for that customer carries the same reference (threat T13, decision 0012). The refresh lists the customer's subscriptions for every status and checks the list against what ShareRepo stores. A customer ShareRepo recorded before the claim is refused at once. This replaced an earlier rule based on creation times, which timing could bypass. `PaddlePort` gained `listCustomerSubscriptions` for it.
+- **A customer already linked consumes a reference it presents first**, audited `claim.completed` or `claim.conflict`, so a leaked reference cannot link another customer later.
+- **Rate limits.**
+  - Claim requests take their limits atomically, in every bucket or in none, so a refused request uses up nothing. The email's buckets are per workspace; the user and IP buckets are global.
+  - Checkouts are bounded too: the same user, offer and price within an hour reuses the unused checkout, and new ones count against 10 an hour per user and 30 an hour per IP. Beyond them, `/buy` says "Too many checkout attempts; try again later." without calling Paddle.
+- **Webhook statuses.** `503` without the commerce secrets, `404` for an unknown or disconnected connection, `413` over 1 MB, `401` for a bad signature (nothing stored), `400` for a signed body that is not an event, and `200` for a new or repeated event.
+- **Return after sign-in.** Public pages that need sign-in remember where to come back to in a short-lived (10-minute), HTTP-only cookie. The path is validated before and after URL normalisation, so it cannot redirect off-site.
+- **Queue hand-off** ([decision 0003](../decisions/0003-d1-batches-and-transactional-outbox.md), amendment).
+  - A claim request hands its `send_claim_email` row to the queue inside `waitUntil`, after the response, so the answer takes the same time whatever the email (threat T4).
+  - The jobs Worker now also produces to `EVENTS`. After a job, it sends the refreshes and key checks queued since the job started. Without this, each later step of a purchase (the event's refresh, then the link's refresh) waited for the minute drain, and local development, which runs no crons, never ran them. The web Worker does the same after a confirmed claim or a manual link.
+- **Retryable Paddle failures.** Jobs retry, with a delay, when Paddle is down or rate limited (honouring `Retry-After`), when Paddle cannot be read for the workspace (`PaddleUnavailableError`: no active connection, or a refused key, which marks the connection unauthorized), and when the commerce secrets are missing. Anything else is final, recorded on the outbox row with a classified code.
+- **Credential re-wrap** is audited as `paddle.credentials_rewrapped` (T5).
+- **E2E (T8).**
+  - The fake Paddle server runs one `FakePaddle` per seller, behind its API key. `FakePaddle` gained an ID seed so several sellers never share IDs.
+  - The cancellation journey schedules a cancellation an hour ahead, checks that access stays, then applies it with the fake's `cancel` control, as Paddle would at the effective time. The fake can also apply a cancellation by itself when it is due within 10 minutes (`effective_in_seconds`); the journey does not wait on a timer.
+  - The revoked-key journey checks "Needs a new API key", and that the catalog and the Reconnect form stay.
+  - E2E stability: `serve.ts` warms the dev server up before Playwright starts (the server bundle, then every browser module reachable from the routes), and prints a ready line that `playwright.config.ts` waits for. Workers are fixed at 4 locally and 2 in CI, with a 60-second default test timeout; journeys that wait on queued work set 120 seconds.
+- **Still unconfirmed against live Paddle:** see the [sandbox runbook](../runbooks/paddle-sandbox-setup.md) § 9, to run before merge.
+
 ## Risks and open points
 
 - **Unconfirmed Paddle behaviour**, which the sandbox check must settle:

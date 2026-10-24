@@ -40,22 +40,26 @@ The person running ShareRepo. During the private launch, the operator needs visi
 1. Sign in with GitHub.
 2. Create or join a workspace.
 3. Install the ShareRepo GitHub App on an organization or account and select repositories.
-4. Connect a Paddle seller account.
-5. Import or select Paddle products and prices.
+4. Connect a Paddle seller account with an API key created for ShareRepo. ShareRepo registers its own webhook destination.
+5. Import Paddle products and prices.
 6. Create an offer that maps one or more prices to read access on one or more repositories.
-7. Publish or share the checkout path.
+7. Share the offer's checkout link (`/buy/<offer>`), and the claim page for buyers who pay through links shared from Paddle.
 8. Observe subscriber entitlement and repository access status.
 
 GitHub login and GitHub App installation are separate steps. Logging in identifies a person; installing the app authorizes access to repositories for a workspace.
 
 ## Core subscriber journey
 
-1. Purchase or subscribe through Paddle.
-2. Sign in to ShareRepo and link the required GitHub identity.
-3. See which repository access is included and its current status.
-4. Receive an invitation or direct grant from GitHub.
-5. Retain access while entitlement policy says access should remain active.
-6. Receive clear status when identity linking, invitations, payment state, or provisioning needs action.
+1. Open the creator's checkout page, `/buy/<offer>`, and sign in with GitHub. The page shows the GitHub account that will get access.
+2. Choose a price and pay on Paddle's checkout, which opens on the creator's own website.
+3. Get an invitation to each repository on GitHub, and accept it.
+4. See the subscription, each repository and its status on **My access**.
+5. Keep access while the policy says so: through a failed renewal's grace period, and until a cancellation takes effect.
+6. Get clear status when an invitation, a payment or provisioning needs action.
+
+**Paid first, through a link the creator shared from Paddle?** Sign in, open the creator's claim page (`/c/<workspace>/claim`) and enter the email you paid with. ShareRepo emails a one-time link to that address. Open it while signed in and confirm "Claim purchase"; access follows. ShareRepo never links a purchase because an email address matches.
+
+If neither works, the creator can link the purchase to your GitHub account by hand, from their Customers page.
 
 ## Version 1 scope
 
