@@ -47,14 +47,20 @@ export function normalizePaddleSubscription(
   if (!parsed.ok) {
     throw new PaddleApiError("malformed", "Paddle subscription breaks the snapshot invariants");
   }
-  const reference = subscription.customData?.[CLAIM_REFERENCE_KEY];
-  return {
-    snapshot: parsed.value,
-    claimReference:
-      typeof reference === "string" &&
-      reference !== "" &&
-      reference.length <= CLAIM_REFERENCE_MAX_LENGTH
-        ? reference
-        : null,
-  };
+  return { snapshot: parsed.value, claimReference: claimReferenceOf(subscription.customData) };
+}
+
+/**
+ * The claim reference in a subscription's custom data: `sharerepo_claim` when it is a non-empty
+ * string of at most 256 characters, else null. Untrusted (threat model T11).
+ */
+export function claimReferenceOf(
+  customData: Readonly<Record<string, unknown>> | null,
+): string | null {
+  const reference = customData?.[CLAIM_REFERENCE_KEY];
+  return typeof reference === "string" &&
+    reference !== "" &&
+    reference.length <= CLAIM_REFERENCE_MAX_LENGTH
+    ? reference
+    : null;
 }

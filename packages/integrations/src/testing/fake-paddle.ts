@@ -21,9 +21,11 @@ import type {
 } from "../paddle/port.ts";
 import {
   customDataBody,
+  customerSubscriptionSchema,
   emailFilter,
   paddleId,
   subscriptionSchema,
+  toCustomerSubscription,
   toSubscription,
 } from "../paddle/wire.ts";
 import { signPaddleWebhook } from "./sign-paddle-webhook.ts";
@@ -60,6 +62,7 @@ const REQUIRED_PERMISSION: Record<FakePaddleOperation, string | null> = {
   listPrices: "price.read",
   getSubscription: "subscription.read",
   listSubscriptions: "subscription.read",
+  listCustomerSubscriptions: "subscription.read",
   listCustomersByEmail: "customer.read",
   getCustomer: "customer.read",
   createTransaction: "transaction.write",
@@ -518,6 +521,20 @@ export function createFakePaddle(options: FakePaddleOptions = {}): FakePaddle {
           status: sub.status,
           updatedAt: Date.parse(sub.updated_at),
         })),
+        truncated: false,
+      };
+    },
+
+    async listCustomerSubscriptions(customerId) {
+      paddleId("ctm", customerId);
+      begin("listCustomerSubscriptions");
+      const newestFirst = [...subscriptions.values()]
+        .filter((sub) => sub.customer_id === customerId)
+        .sort((a, b) => b.id.localeCompare(a.id));
+      return {
+        subscriptions: newestFirst.map((sub) =>
+          toCustomerSubscription(customerSubscriptionSchema.parse(structuredClone(sub))),
+        ),
         truncated: false,
       };
     },

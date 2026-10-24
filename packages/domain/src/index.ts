@@ -24,13 +24,12 @@ export { authorizeMembership, roleAllows, WORKSPACE_PERMISSIONS } from "./author
 export type {
   CheckoutClaimUsability,
   ClaimTokenUsability,
-  CustomerOrigin,
+  CustomerPurchases,
   UsableCheckoutClaim,
   UsableClaimToken,
 } from "./claim.ts";
 export {
   CHECKOUT_CLAIM_LIFETIME_MS,
-  CHECKOUT_CLOCK_SKEW_MS,
   CHECKOUT_REJECTION_REASONS,
   CLAIM_REJECTION_REASONS,
   CLAIM_TOKEN_LIFETIME_MS,
@@ -39,11 +38,12 @@ export {
   CustomerLinkDecision,
   checkoutClaimUsable,
   claimTokenUsable,
-  customerPredatesCheckout,
+  customerKnownBeforeClaim,
   decideCustomerLink,
   EMAIL_REJECTION_REASONS,
   LINK_PATHS,
   LinkPath,
+  purchasesOnlyThroughClaim,
 } from "./claim.ts";
 export type { ConnectableAccountType, ConnectionStatus } from "./connection.ts";
 export {

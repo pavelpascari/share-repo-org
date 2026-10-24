@@ -7,6 +7,7 @@ import {
   createdNotificationSettingSchema,
   customDataBody,
   customerSchema,
+  customerSubscriptionSchema,
   emailFilter,
   errorSchema,
   notificationSettingSchema,
@@ -18,6 +19,7 @@ import {
   subscriptionSummarySchema,
   toApiRoot,
   toCustomer,
+  toCustomerSubscription,
   toNotificationSetting,
   toPrice,
   toSubscription,
@@ -161,6 +163,20 @@ export function createPaddleClient(options: PaddleClientOptions): PaddlePort {
         true,
       );
       return { subscriptions: items.map(toSubscriptionSummary), truncated };
+    },
+
+    async listCustomerSubscriptions(customerId) {
+      const query = new URLSearchParams({
+        customer_id: paddleId("ctm", customerId),
+        per_page: String(PADDLE_PAGE_SIZE),
+      });
+      const { items, truncated } = await paginate(
+        "list customer subscriptions",
+        `/subscriptions?${query}`,
+        customerSubscriptionSchema,
+        true,
+      );
+      return { subscriptions: items.map(toCustomerSubscription), truncated };
     },
 
     async listCustomersByEmail(email) {

@@ -2,7 +2,7 @@ import * as repo from "@sharerepo/db";
 import {
   COMMERCIAL_SOURCES,
   type CommercialSource,
-  type Instant,
+  type CustomerPurchases,
   type ParseResult,
   parseSubscriptionSnapshot,
   type SubscriptionSnapshot,
@@ -39,20 +39,20 @@ export type SourceSubscription =
 
 /**
  * What path 1 of the claim flow needs from a source that reports checkout references (decision
- * 0012): the key that verifies them, and when the source created a customer, so only a customer
- * the checkout itself created is linked.
+ * 0012): the key that verifies them, and every subscription the source holds for a customer, so
+ * a customer is linked only when all of its purchases came through the checkout.
  */
 export interface CheckoutClaimSupport {
   /** `CLAIM_SIGNING_KEY`. */
   readonly signingKey: Uint8Array;
   /**
-   * When the source created the customer, by the source's clock. Fails (and is worth retrying)
-   * when the source cannot be read now.
+   * The claim reference each of the customer's subscriptions carries, any status. Fails (and is
+   * worth retrying) when the source cannot be read now.
    */
-  customerCreatedAt(ref: {
+  customerPurchases(ref: {
     readonly workspaceId: string;
     readonly externalCustomerId: string;
-  }): Promise<Instant>;
+  }): Promise<CustomerPurchases>;
 }
 
 /** Reads the current commercial facts of one subscription from where they originate. */

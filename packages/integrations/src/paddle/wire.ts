@@ -1,12 +1,14 @@
 import { PADDLE_BILLING_INTERVALS } from "@sharerepo/domain";
 import { z } from "zod";
 import { PaddleApiError } from "./errors.ts";
+import { claimReferenceOf } from "./normalize.ts";
 import {
   PADDLE_SCHEDULED_CHANGE_ACTIONS,
   PADDLE_SUBSCRIPTION_ITEM_STATUSES,
   PADDLE_SUBSCRIPTION_STATUSES,
   type PaddleApiRoot,
   type PaddleCustomer,
+  type PaddleCustomerSubscription,
   type PaddleNotificationSetting,
   type PaddlePrice,
   type PaddleSubscription,
@@ -143,6 +145,18 @@ export function toSubscriptionSummary(
   sub: z.output<typeof subscriptionSummarySchema>,
 ): PaddleSubscriptionSummary {
   return { id: sub.id, status: sub.status, updatedAt: sub.updated_at };
+}
+
+/** A subscription in a customer's list: its ID and the custom data the claim rule reads. */
+export const customerSubscriptionSchema = z.object({
+  id: id("sub"),
+  custom_data: z.record(z.string(), z.unknown()).nullable(),
+});
+
+export function toCustomerSubscription(
+  sub: z.output<typeof customerSubscriptionSchema>,
+): PaddleCustomerSubscription {
+  return { id: sub.id, claimReference: claimReferenceOf(sub.custom_data) };
 }
 
 export const customerSchema = z.object({

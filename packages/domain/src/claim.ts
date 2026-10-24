@@ -31,10 +31,11 @@ export const ClaimRejectionReason = {
   /** The single-use claim token was already used. */
   AlreadyUsed: "already_used",
   /**
-   * The customer existed before the checkout started, so the checkout did not create it: a buyer
-   * who enters someone else's email at checkout must not adopt that person's customer.
+   * The customer has a purchase other than this checkout's: a subscription without this claim's
+   * reference, or more subscriptions than the source would list. A buyer who enters someone
+   * else's email at checkout must not adopt that person's customer.
    */
-  CustomerPredatesCheckout: "customer_predates_checkout",
+  CustomerHasOtherPurchases: "customer_has_other_purchases",
 } as const;
 export type ClaimRejectionReason = (typeof ClaimRejectionReason)[keyof typeof ClaimRejectionReason];
 /** Every claim rejection reason, as stored in audit details. */
@@ -45,7 +46,7 @@ export const CLAIM_REJECTION_REASONS = [
   ClaimRejectionReason.Expired,
   ClaimRejectionReason.ConsumedByOtherCustomer,
   ClaimRejectionReason.AlreadyUsed,
-  ClaimRejectionReason.CustomerPredatesCheckout,
+  ClaimRejectionReason.CustomerHasOtherPurchases,
 ] as const;
 
 /** The reasons a checkout reference (path 1) can be rejected for. */
@@ -55,7 +56,7 @@ export const CHECKOUT_REJECTION_REASONS = [
   ClaimRejectionReason.OtherWorkspace,
   ClaimRejectionReason.Expired,
   ClaimRejectionReason.ConsumedByOtherCustomer,
-  ClaimRejectionReason.CustomerPredatesCheckout,
+  ClaimRejectionReason.CustomerHasOtherPurchases,
 ] as const;
 /** The reasons an emailed claim token (path 2) can be rejected for. */
 export const EMAIL_REJECTION_REASONS = [
@@ -70,11 +71,6 @@ const HOUR_MS = 3_600_000;
 export const CHECKOUT_CLAIM_LIFETIME_MS = 7 * 24 * HOUR_MS;
 /** How long an emailed claim link stays usable (decision 0012, path 2). */
 export const CLAIM_TOKEN_LIFETIME_MS = 24 * HOUR_MS;
-/**
- * How far the payment provider's clock may run behind ShareRepo's when path 1 compares the time
- * the provider created a customer with the time the checkout claim was created (decision 0012).
- */
-export const CHECKOUT_CLOCK_SKEW_MS = 60_000;
 
 // Linking -------------------------------------------------------------------------------------
 
@@ -158,30 +154,42 @@ export function checkoutClaimUsable(
     : { usable: false, reason: ClaimRejectionReason.Expired };
 }
 
-/** What is known about when a customer came to exist, for {@link customerPredatesCheckout}. */
-export interface CustomerOrigin {
-  /** When ShareRepo first recorded the customer, by ShareRepo's clock. */
-  readonly recordedAt: Instant;
-  /** When the payment provider created the customer, by its clock; null when not read yet. */
-  readonly createdAt: Instant | null;
+/** A customer's subscriptions as the payment provider lists them, for path 1. */
+export interface CustomerPurchases {
+  /** The claim reference each subscription carries, or null for one without. */
+  readonly claimReferences: readonly (string | null)[];
+  /** The provider stopped listing at its page cap with more to come. */
+  readonly truncated: boolean;
 }
 
 /**
- * Whether a customer existed before a checkout claim was created, so the checkout cannot have
- * created it (decision 0012, path 1). Paddle reuses an existing customer when the buyer enters
- * that customer's email at checkout; linking it would hand every subscription of that customer to
- * whoever started the checkout. A customer ShareRepo recorded before the claim predates it; so
- * does one the provider created more than {@link CHECKOUT_CLOCK_SKEW_MS} before it.
+ * Whether a checkout reference may link a customer (decision 0012, path 1). The link must follow
+ * the purchase, not the customer: at checkout a buyer can enter anyone's email, and Paddle then
+ * puts the new subscription on that person's existing customer. So the customer qualifies only
+ * when every subscription the provider holds for it carries this same reference. A customer with
+ * no listed subscription, or a list cut short, cannot show that and does not qualify.
  */
-export function customerPredatesCheckout(
-  claimCreatedAt: Instant,
-  customer: CustomerOrigin,
+export function purchasesOnlyThroughClaim(
+  reference: string,
+  purchases: CustomerPurchases,
 ): boolean {
-  if (customer.recordedAt < claimCreatedAt) return true;
   return (
-    customer.createdAt !== null && customer.createdAt < claimCreatedAt - CHECKOUT_CLOCK_SKEW_MS
+    !purchases.truncated &&
+    purchases.claimReferences.length > 0 &&
+    purchases.claimReferences.every((carried) => carried === reference)
   );
 }
+
+/**
+ * Whether ShareRepo recorded the customer before the checkout claim was created. ShareRepo
+ * records a customer with its first subscription, which then cannot carry the claim's reference,
+ * so such a customer fails {@link purchasesOnlyThroughClaim} too; this answers without asking the
+ * provider.
+ */
+export const customerKnownBeforeClaim = (input: {
+  readonly claimCreatedAt: Instant;
+  readonly customerRecordedAt: Instant;
+}): boolean => input.customerRecordedAt < input.claimCreatedAt;
 
 /** The stored claim token fields its usability depends on. */
 export interface UsableClaimToken {

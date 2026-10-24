@@ -99,6 +99,20 @@ export interface PaddleSubscriptionList {
   readonly truncated: boolean;
 }
 
+/** One of a customer's subscriptions, with the claim reference it carries. */
+export interface PaddleCustomerSubscription {
+  /** `sub_…`. */
+  readonly id: string;
+  /** `custom_data.sharerepo_claim`, extracted as `normalizePaddleSubscription` does. Untrusted. */
+  readonly claimReference: string | null;
+}
+
+export interface PaddleCustomerSubscriptionList {
+  readonly subscriptions: readonly PaddleCustomerSubscription[];
+  /** The list stopped at the page cap (30 pages of 200) with more to come. */
+  readonly truncated: boolean;
+}
+
 /** A customer's ID and the email Paddle holds. The email is for the caller only: never log it. */
 export interface PaddleCustomer {
   /** `ctm_…`. */
@@ -161,6 +175,11 @@ export interface PaddlePort {
   getSubscription(subscriptionId: string): Promise<PaddleSubscription>;
   /** Every subscription, any status, newest first, up to the page cap. */
   listSubscriptions(): Promise<PaddleSubscriptionList>;
+  /**
+   * Every subscription of one customer, any status, newest first, up to the page cap
+   * (`GET /subscriptions?customer_id=`). An unknown customer has none.
+   */
+  listCustomerSubscriptions(customerId: string): Promise<PaddleCustomerSubscriptionList>;
   /** Active customers whose email matches exactly (Paddle's `email` filter). */
   listCustomersByEmail(email: string): Promise<PaddleCustomer[]>;
   /** `not_found` for an unknown customer. */
