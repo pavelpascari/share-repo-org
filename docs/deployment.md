@@ -24,7 +24,7 @@ Phase 0 serves from `*.workers.dev`. Attaching `sharerepo.org` is a separate, ex
 3. In the GitHub repository, create environments `dev` and `production`. Add a required reviewer to `production`.
 4. Add secrets `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` (repository or per environment), and a `WEB_URL` variable on each environment (for example `https://sharerepo-web.<subdomain>.workers.dev`).
 5. Create a **GitHub OAuth App** per environment (on the personal account is fine) for sign-in ([decision 0006](decisions/0006-authentication-with-better-auth.md)). Callback URL: `<WEB_URL>/api/auth/callback/github`. It needs no scopes. This is separate from the GitHub App added in Phase 2.
-6. In `apps/web/wrangler.jsonc`, set `BETTER_AUTH_URL` (the web Worker's public URL) and `GITHUB_CLIENT_ID` for the top level (dev) and `env.production`. The production URL must be https.
+6. In `apps/web/wrangler.jsonc`, set `BETTER_AUTH_URL` (the web Worker's public URL) and `GITHUB_CLIENT_ID` for the top level (dev) and `env.production`. Set the same URL as `PUBLIC_BASE_URL` in `apps/jobs/wrangler.jsonc`: the jobs Worker puts it in claim links. The production URL must be https; both Workers fail closed otherwise.
 7. Set the web Worker's secrets for each environment. The web Worker fails closed without them, so the `/readyz` smoke test fails until they are set:
 
    ```sh
@@ -55,6 +55,23 @@ Phase 0 serves from `*.workers.dev`. Attaching `sharerepo.org` is a separate, ex
 10. Set the repository variable `DEPLOY_ENABLED` to `true`. Until then, CI runs every check but skips deployment.
 
 ShareRepo-owned secrets are added with `wrangler secret put <NAME> [--env production]`, never committed; `secrets.required` in `wrangler.jsonc` lists them. Local values go in `apps/*/.dev.vars`, which is gitignored. The wrangler `e2e` environment is for local Playwright runs only and is never deployed; a test fails if CI ever selects it.
+
+## Claim emails
+
+The jobs Worker sends purchase claim links ([decision 0012](decisions/0012-purchase-claims.md), path 2) through Cloudflare Email Service's `send_email` binding, named `EMAIL`. It is not declared yet: until a sending domain is onboarded the binding cannot deliver, and declaring it would make local development and tests report mail as configured. Without it, the claim page reports that claiming by email is unavailable; the other claim paths still work.
+
+Once `sharerepo.org` (or the sending subdomain) is onboarded to Email Sending in the Cloudflare dashboard:
+
+1. Set `MAIL_FROM` in `apps/jobs/wrangler.jsonc` (top level and `env.production`) to an address on that domain, for example `ShareRepo <claims@sharerepo.org>`.
+2. Add the binding to the top level and to `env.production` of `apps/jobs/wrangler.jsonc` (named environments do not inherit it), next to `queues`:
+
+   ```jsonc
+   "send_email": [{ "name": "EMAIL", "allowed_sender_addresses": ["claims@sharerepo.org"] }],
+   ```
+
+3. Run `pnpm --filter @sharerepo/jobs typegen`, and update the `parseJobsEnv` test that expects no mail transport locally.
+
+The wrangler `e2e` environment never takes the binding: it sends to the fake provider's mailbox through `MAIL_CAPTURE_URL`.
 
 ## Order of operations
 
