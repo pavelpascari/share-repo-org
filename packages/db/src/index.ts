@@ -111,6 +111,7 @@ export {
   outboxInsert,
   pendingOutbox,
   pendingOutboxId,
+  pendingOutboxMessage,
 } from "./outbox-repository.ts";
 export {
   type CreatePaddleConnectionResult,

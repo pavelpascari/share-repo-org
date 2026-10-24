@@ -290,6 +290,34 @@ describe("createFetchHandler", () => {
       expect(JSON.stringify(logs())).not.toMatch(/SECRET_|code=abc/);
     });
 
+    it("never logs a claim link's token, for pages, data requests and errors", async () => {
+      const canary = "CLAIM_TOKEN_CANARY_0123456789abcdefghijklmnopqrst";
+      const { fetch, logs } = harness(async (req) => {
+        if (new URL(req.url).pathname.endsWith(".data")) throw new Error(`boom ${canary}`);
+        return new Response("ok");
+      });
+      await fetch(request(`/claim/${canary}`));
+      await fetch(request(`/claim/${canary}.data`, { method: "POST" }));
+      const requests = logs().filter((line) => line.msg === "request");
+      expect(requests.map((line) => line.path)).toEqual(["/claim/:token", "/claim/:token"]);
+      expect(logs().some((line) => line.msg === "unhandled error")).toBe(true);
+      expect(JSON.stringify(logs())).not.toContain(canary);
+    });
+
+    it("sends no referrer from any response on a claim link, and leaves other pages alone", async () => {
+      const { fetch } = harness(async (req) =>
+        new URL(req.url).pathname === "/claim/broken"
+          ? Promise.reject(new Error("render failed"))
+          : Response.redirect("https://sharerepo.test/", 302),
+      );
+      const page = await fetch(request("/claim/abc"));
+      expect(page.headers.get("referrer-policy")).toBe("no-referrer");
+      expect((await fetch(request("/claim/broken"))).headers.get("referrer-policy")).toBe(
+        "no-referrer",
+      );
+      expect((await fetch(request("/buy/abc"))).headers.get("referrer-policy")).toBeNull();
+    });
+
     it("defaults to random IDs, the system clock and the console", async () => {
       using consoleLogs = captureLogs();
       const handler = createFetchHandler({ renderApp: async () => new Response("ok") });

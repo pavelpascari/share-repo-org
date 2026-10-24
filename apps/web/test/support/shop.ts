@@ -109,7 +109,12 @@ export async function memberOf(s: Shop): Promise<SignedIn> {
 
 /** A route call harness: a request context with a recording EVENTS queue and log sink. */
 export function harness(
-  options: { sendFails?: boolean; environment?: WebEnv["ENVIRONMENT"] } = {},
+  options: {
+    sendFails?: boolean;
+    environment?: WebEnv["ENVIRONMENT"];
+    /** Raw env entries to add or (with undefined) remove before validation. */
+    env?: Record<string, unknown>;
+  } = {},
 ) {
   const sent: unknown[] = [];
   const lines: string[] = [];
@@ -119,6 +124,7 @@ export function harness(
   const ctx = createExecutionContext();
   const rawEnv = {
     ...env,
+    ...options.env,
     EVENTS: {
       send: async (message: unknown) => {
         if (options.sendFails) throw new Error("queue unavailable: secret-ish detail");

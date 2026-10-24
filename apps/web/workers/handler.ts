@@ -16,9 +16,20 @@ import {
 import { RouterContextProvider } from "react-router";
 import { cloudflareContext } from "../app/context.ts";
 import { parseWebEnv, type WebEnv } from "./env.ts";
-import { handleGitHubWebhook } from "./webhooks.ts";
+import { handleGitHubWebhook, handlePaddleWebhook } from "./webhooks.ts";
 
 const GITHUB_WEBHOOK_PATH = "/webhooks/github";
+const PADDLE_WEBHOOK_PREFIX = "/webhooks/paddle/";
+/** Emailed claim links carry a one-time token in the path (decision 0012). */
+const CLAIM_PATH_PREFIX = "/claim/";
+
+/**
+ * The path as logged: a claim link's token is replaced, so `/claim/<token>` (and its `.data`
+ * variant) appears as `/claim/:token`.
+ */
+export function loggedPath(path: string): string {
+  return path.startsWith(CLAIM_PATH_PREFIX) ? `${CLAIM_PATH_PREFIX}:token` : path;
+}
 
 /** React Router's request handler, as returned by `createRequestHandler`. */
 export type RenderApp = (request: Request, context: RouterContextProvider) => Promise<Response>;
@@ -79,10 +90,13 @@ export function createFetchHandler(deps: FetchHandlerDeps): FetchHandler {
       response = toErrorResponse(error, correlationId);
     }
     response = withCorrelationId(response, correlationId);
+    // Every response on a claim link, errors and redirects included, keeps the token out of
+    // Referer headers (threat T2).
+    if (path.startsWith(CLAIM_PATH_PREFIX)) response.headers.set("referrer-policy", "no-referrer");
 
     logger.info("request", {
       method: request.method,
-      path,
+      path: loggedPath(path),
       status: response.status,
       durationMs: now() - startedAt,
     });
@@ -118,6 +132,21 @@ async function route(
       return response;
     }
     return handleGitHubWebhook(request, env, ctx, { ids, clock, correlationId, logger });
+  }
+
+  if (path.startsWith(PADDLE_WEBHOOK_PREFIX)) {
+    if (request.method !== "POST") {
+      const response = toErrorResponse(METHOD_NOT_ALLOWED, correlationId);
+      response.headers.set("allow", "POST");
+      return response;
+    }
+    const connectionId = path.slice(PADDLE_WEBHOOK_PREFIX.length);
+    return handlePaddleWebhook(request, connectionId, env, ctx, {
+      ids,
+      clock,
+      correlationId,
+      logger,
+    });
   }
 
   const context = new RouterContextProvider();

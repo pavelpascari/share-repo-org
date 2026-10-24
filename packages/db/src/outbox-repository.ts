@@ -117,6 +117,22 @@ export async function pendingOutboxId(
   return row?.id ?? null;
 }
 
+/**
+ * A pending row's queue message fields (kind and subject), or null when the row is unknown, sent
+ * or failed: lets a caller that only kept the ID hand the row to the queue.
+ */
+export async function pendingOutboxMessage(
+  db: Db,
+  id: string,
+): Promise<Pick<OutboxRow, "kind" | "subjectId"> | null> {
+  const [row] = await db
+    .select({ kind: outbox.kind, subjectId: outbox.subjectId })
+    .from(outbox)
+    .where(and(eq(outbox.id, id), isNull(outbox.sentAt), isNull(outbox.failedAt)))
+    .limit(1);
+  return row ?? null;
+}
+
 /** Adds work on its own, outside any other change. */
 export async function enqueueOutbox(db: Db, row: NewOutboxRow): Promise<void> {
   await outboxInsert(db, row);

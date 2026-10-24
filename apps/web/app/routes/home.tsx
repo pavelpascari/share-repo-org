@@ -1,7 +1,9 @@
 import { listMyWorkspaces, openWorkspace } from "@sharerepo/application";
 import { Form, Link, redirect } from "react-router";
+import { returnToCookie, safeReturnPath } from "../auth/return-to.server.ts";
 import { servicesFor } from "../auth/server.ts";
 import { getSignedInUser } from "../auth/session.server.ts";
+import { cloudflareContext } from "../context.ts";
 import { GITHUB_SETUP_ERRORS, GITHUB_SETUP_FALLBACK } from "../github-messages.ts";
 import { lastWorkspaceCookie } from "../workspaces.server.ts";
 import type { Route } from "./+types/home";
@@ -15,6 +17,17 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   if (user === null) {
     const signInFailed = new URL(request.url).searchParams.has("error");
     return { user: null, workspaces: [], signInFailed, githubError: null };
+  }
+  // Back to the page that sent the visitor through sign-in, once; the cookie is cleared.
+  const returnCookie = returnToCookie(context);
+  const returnTo = safeReturnPath(
+    await returnCookie.parse(request.headers.get("cookie")),
+    context.get(cloudflareContext).env.auth.baseURL,
+  );
+  if (returnTo !== null) {
+    throw redirect(returnTo, {
+      headers: { "set-cookie": await returnCookie.serialize("", { maxAge: 0 }) },
+    });
   }
   const services = servicesFor(context);
   const code = new URL(request.url).searchParams.get("github_error");

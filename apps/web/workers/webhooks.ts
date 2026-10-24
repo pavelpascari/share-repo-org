@@ -1,4 +1,8 @@
-import { ingestGitHubWebhook, type ServiceContext } from "@sharerepo/application";
+import {
+  ingestGitHubWebhook,
+  ingestPaddleWebhook,
+  type ServiceContext,
+} from "@sharerepo/application";
 import { createDb } from "@sharerepo/db";
 import type { Clock, IdGenerator, OutboxKind } from "@sharerepo/domain";
 import type { Logger } from "@sharerepo/platform";
@@ -55,19 +59,78 @@ export async function handleGitHubWebhook(
   }
   if (result.status === "duplicate") return text(200, "Already received.");
 
-  const message: JobMessage = {
+  sendBestEffort(env, ctx, deps.logger, {
     kind: "process_external_event",
     subjectId: result.eventId,
     outboxId: result.outboxId,
+  });
+  return text(202, "Accepted.");
+}
+
+/** Connection IDs are ours; anything else is not one, and is answered without a lookup. */
+const CONNECTION_ID = /^[A-Za-z0-9_-]{1,64}$/;
+
+/**
+ * `POST /webhooks/paddle/:connectionId`, before React Router (decision 0011). The connection in
+ * the URL selects the secret; the signature is verified on the raw body before anything is
+ * stored. Unknown or disconnected connection 404, bad signature 401, signed but unreadable 400,
+ * recorded or already recorded 200 (Paddle retries anything else). Then a best-effort queue send.
+ * Bodies and headers are never logged.
+ */
+export async function handlePaddleWebhook(
+  request: Request,
+  connectionId: string,
+  env: WebEnv,
+  ctx: ExecutionContext,
+  deps: WebhookDeps,
+): Promise<Response> {
+  if (env.commerce === null) return text(503, "Paddle is not configured.");
+  if (!CONNECTION_ID.test(connectionId)) return text(404, "Not found.");
+  const declared = Number(request.headers.get("content-length") ?? "0");
+  if (declared > MAX_WEBHOOK_BYTES) return text(413, "Payload too large.");
+  const rawBody = await readBounded(request, MAX_WEBHOOK_BYTES);
+  if (rawBody === null) return text(413, "Payload too large.");
+
+  const services: ServiceContext = {
+    db: createDb(env.DB),
+    ids: deps.ids,
+    clock: deps.clock,
+    correlationId: deps.correlationId,
   };
+  const result = await ingestPaddleWebhook(
+    services,
+    { connectionId, rawBody, signatureHeader: request.headers.get("paddle-signature") },
+    { credentialKeys: env.commerce.credentialKeys },
+  );
+  switch (result.status) {
+    case "not_found":
+      return text(404, "Not found.");
+    case "invalid_signature":
+      deps.logger.warn("webhook rejected", { provider: "paddle" });
+      return text(401, "Invalid signature.");
+    case "malformed":
+      deps.logger.warn("webhook malformed", { provider: "paddle" });
+      return text(400, "Malformed event.");
+    case "duplicate":
+      return text(200, "Already received.");
+    case "accepted":
+      sendBestEffort(env, ctx, deps.logger, {
+        kind: "process_external_event",
+        subjectId: result.eventId,
+        outboxId: result.outboxId,
+      });
+      return text(200, "Accepted.");
+  }
+}
+
+function sendBestEffort(env: WebEnv, ctx: ExecutionContext, logger: Logger, message: JobMessage) {
   ctx.waitUntil(
     env.EVENTS.send(message).catch(() =>
-      deps.logger.warn("queue send failed; the outbox drain will deliver", {
-        outboxId: result.outboxId,
+      logger.warn("queue send failed; the outbox drain will deliver", {
+        outboxId: message.outboxId,
       }),
     ),
   );
-  return text(202, "Accepted.");
 }
 
 /**
