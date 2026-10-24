@@ -83,6 +83,9 @@ Each scenario has a stable name used as the test title so coverage of the matrix
 | `claim/get-never-mutates` | Claim threat model T3 | Entry point | 5 |
 | `claim/request-does-not-reveal-purchases` | Claim threat model T4 | Service | 5 |
 | `claim/request-rate-limited` | Claim threat model T5 | Service | 5 |
+| `claim/checkout-reference-tamper-rejected` | Claim threat model T11 | Service | 5 |
+| `connection/revoked-key-keeps-last-facts` | Decision 0011: connection loss | Service | 5 |
+| `credential/envelope-bound-to-row` | AGENTS: encrypted, versioned tenant credentials | Platform, DB | 5 |
 | `timing/renewal-during-scheduled-revocation` | Matrix: renewal during scheduled revocation; AGENTS: reactivation | Service, entry point | 5–6 |
 | `timing/cancellation-revokes-at-effective-time` | AGENTS: cancellation timing | Domain, service | 3, 5 |
 | `timing/past-due-within-grace-keeps-access` | AGENTS: grace periods | Domain, service | 3, 5 |

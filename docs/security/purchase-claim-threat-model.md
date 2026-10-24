@@ -1,6 +1,6 @@
 # Threat model — subscriber purchase claim
 
-**Status:** Proposed in Phase 1. Implementation is Phase 5 (Paddle). Phase 1 implements only the identity constraints in [Constraints on Phase 1](#constraints-on-phase-1).
+**Status:** Accepted; implemented in Phase 5 as [decision 0012](../decisions/0012-purchase-claims.md). Proposed in Phase 1. Phase 1 implements only the identity constraints in [Constraints on Phase 1](#constraints-on-phase-1).
 
 The implementation plan requires this model "before implementing automatic linking". It decides how a Paddle purchase becomes repository access for the right person, and what must never be possible.
 
@@ -69,7 +69,7 @@ Phase 1 builds sign-in and identity, not claims. It must still keep paths 1–3 
 4. A username change updates the snapshot of the existing identity and never creates a new identity.
 5. Linking and unlinking identities produce audit events.
 
-## Open product questions
+## Resolved product questions
 
-- **Should checkout require signing in first?** Path 1 is simpler and safer. Path 2 is needed if creators share Paddle checkout links directly. The recommendation is to support both, with path 1 as the default checkout path from ShareRepo.
-- **Claim link lifetime:** 24 hours is the proposal. Longer lifetimes increase the replay window; shorter ones increase support load.
+- **Should checkout require signing in first?** Both paths are supported, with path 1 as the default checkout path from ShareRepo (decision 0012, 2026-10-24).
+- **Claim link lifetime:** 24 hours (decision 0012).

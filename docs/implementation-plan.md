@@ -231,7 +231,7 @@ Resolve these with evidence at the named phase rather than guessing now:
 - exact GitHub App permissions and viable repository ownership models — Phase 2;
 - access ownership policy for pre-existing or indirect grants — Phase 2–4 (resolved: ShareRepo manages only access it created, decision 0010);
 - fixed versus creator-configurable grace period — Phase 3 or private beta (resolved: per offer, decision 0009);
-- Paddle OAuth availability and approval path versus temporary credentials — Phase 5;
+- Paddle OAuth availability and approval path versus temporary credentials — Phase 5 (resolved: seller API keys now, OAuth after publisher-program approval, decision 0011);
 - Workflows versus database-scheduled jobs for each timer — Phase 6;
 - public pricing, quotas, and self-hosting — after private beta.
 
