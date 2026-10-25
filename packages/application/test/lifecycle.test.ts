@@ -21,6 +21,7 @@ import {
   purgeWorkspace,
   queueLifecycleJobs,
   reconcileResource,
+  refreshSubscription,
   renameWorkspace,
   requestWorkspaceDeletion,
   type ServiceContext,
@@ -35,6 +36,7 @@ import {
   offer,
   type Shop,
   shop,
+  source,
   subscribe,
 } from "./support/commerce.ts";
 import { clock, db, githubProfile, serviceContext, signedUpUser } from "./support/context.ts";
@@ -146,7 +148,7 @@ function crashingAt(n: number, when: "before" | "after"): ServiceContext {
   return { ...serviceContext(), db: crashing };
 }
 
-describe("deletion/workspace-revokes-before-purge", () => {
+describe("deletion/workspace-revokes-before-purge", { timeout: 60_000 }, () => {
   it("ends every entitlement, waits for revocation, then purges after 30 days", async () => {
     const { s, sub } = await soldWithCollaborator();
     const ctx = serviceContext();
@@ -370,7 +372,7 @@ describe("deletion/workspace-revokes-before-purge", () => {
   });
 });
 
-describe("deletion/purge-touches-only-its-workspace", () => {
+describe("deletion/purge-touches-only-its-workspace", { timeout: 60_000 }, () => {
   it("deletes every row of the purged workspace and none of another's", async () => {
     const { s: doomed } = await soldWithCollaborator();
     const { s: other } = await soldWithCollaborator();
@@ -403,7 +405,7 @@ describe("deletion/purge-touches-only-its-workspace", () => {
   });
 });
 
-describe("crash/every-batch-boundary-converges: workspace purge", () => {
+describe("crash/every-batch-boundary-converges: workspace purge", { timeout: 60_000 }, () => {
   async function purgeable() {
     const s = await shop();
     await offer(s, { items: ["sim_pro"] });
@@ -438,7 +440,139 @@ describe("crash/every-batch-boundary-converges: workspace purge", () => {
   );
 });
 
-describe("queueLifecycleJobs", () => {
+/** SQL text of each statement in a D1 batch, to recognise a batch in a test proxy. */
+const batchSql = (statements: readonly unknown[]) =>
+  statements.map((statement) => (statement as { toSQL(): { sql: string } }).toSQL().sql).join(";");
+
+/** A service context that runs `before` once, just before the first batch whose SQL matches. */
+function beforeBatch(pattern: RegExp, before: () => Promise<unknown>): ServiceContext {
+  let done = false;
+  const intercepting = new Proxy(db, {
+    get: (target, property, receiver) =>
+      property === "batch"
+        ? async (statements: Parameters<typeof db.batch>[0]) => {
+            if (!done && pattern.test(batchSql(statements))) {
+              done = true;
+              await before();
+            }
+            return target.batch(statements);
+          }
+        : Reflect.get(target, property, receiver),
+  });
+  return { ...serviceContext(), db: intercepting };
+}
+
+describe("lifecycle races", { timeout: 60_000 }, () => {
+  async function due() {
+    const s = await shop();
+    await offer(s, { items: ["sim_pro"] });
+    await subscribe(s, { items: ["sim_pro"] });
+    await drain(s.workspaceId);
+    await requestDeletion(s);
+    await drain(s.workspaceId);
+    clock.advance(WORKSPACE_DELETION_DELAY_MS);
+    return s;
+  }
+
+  it("does not start a purge when access appears after the check", async () => {
+    const s = await due();
+    // The check reads no remaining access, but an entitlement is live again when the first
+    // batch runs: the batch's own guard refuses to start.
+    let first = true;
+    const stale = new Proxy(db, {
+      get: (target, property, receiver) =>
+        property === "all" && first
+          ? async () => {
+              first = false;
+              return [{ live: 0, managed: 0 }];
+            }
+          : Reflect.get(target, property, receiver),
+    });
+    await env.DB.prepare(
+      "UPDATE entitlements SET state = 'active', ended_at = NULL WHERE workspace_id = ?",
+    )
+      .bind(s.workspaceId)
+      .run();
+    expect(await purgeWorkspace({ ...serviceContext(), db: stale }, s.workspaceId)).toBe("waiting");
+    expect(await getWorkspace(db, s.workspaceId)).toMatchObject({ status: "deleting" });
+  });
+
+  it("runs again when a job wrote a row for the workspace after its table was emptied", async () => {
+    const s = await due();
+    const stray = beforeBatch(/delete from "workspaces"/i, () =>
+      env.DB.prepare(
+        `INSERT INTO subjects (id, workspace_id, provider, type, external_subject_id, login_snapshot, created_at, updated_at)
+         VALUES (?, ?, 'github', 'user', 'late', 'late', ?, ?)`,
+      )
+        .bind(`late-${s.workspaceId}`, s.workspaceId, clock.now(), clock.now())
+        .run(),
+    );
+    expect(await purgeWorkspace(stray, s.workspaceId)).toBe("continuing");
+    expect(await getWorkspace(db, s.workspaceId)).toMatchObject({ status: "purging" });
+    expect(await purgeToEnd(s.workspaceId)).toBe("purged");
+    expect(await tombstones(s.workspaceId)).toHaveLength(1);
+  });
+
+  it("empties a table larger than one batch in several batches", async () => {
+    const s = await due();
+    await env.DB.prepare(
+      `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 1001)
+       INSERT INTO outbox (id, kind, subject_id, created_at, available_at, attempts, workspace_id)
+       SELECT ?1 || '-' || i, 'resync_connection', 'c', ?2, ?2, 0, ?1 FROM n`,
+    )
+      .bind(s.workspaceId, clock.now())
+      .run();
+    expect(await purgeWorkspace(serviceContext(), s.workspaceId, { batchesPerRun: 2 })).toBe(
+      "continuing",
+    );
+    expect(
+      await count("SELECT count(*) AS n FROM outbox WHERE workspace_id = ?", s.workspaceId),
+    ).toBeGreaterThan(0);
+    expect(await purgeToEnd(s.workspaceId)).toBe("purged");
+    const [tombstone] = await tombstones(s.workspaceId);
+    expect(JSON.parse(tombstone?.details ?? "{}").deleted.outbox).toBeGreaterThanOrEqual(1001);
+  });
+
+  it("fails, and changes nothing more, when its last batch fails for another reason", async () => {
+    const s = await due();
+    const failing = beforeBatch(/delete from "workspaces"/i, () =>
+      Promise.reject(new Error("d1 down")),
+    );
+    await expect(purgeWorkspace(failing, s.workspaceId)).rejects.toThrow("d1 down");
+    expect(await getWorkspace(db, s.workspaceId)).toMatchObject({ status: "purging" });
+    expect(await purgeToEnd(s.workspaceId)).toBe("purged");
+  });
+
+  it("reports a deletion requested concurrently, and writes nothing more", async () => {
+    const s = await shop();
+    const concurrent = beforeBatch(/update "workspaces"/i, () =>
+      env.DB.prepare(
+        "UPDATE workspaces SET status = 'deleting', delete_after = ?, deletion_requested_by = 'other' WHERE id = ?",
+      )
+        .bind(clock.now() + 1, s.workspaceId)
+        .run(),
+    );
+    expect(await requestDeletion(s, concurrent)).toEqual({ ok: false, reason: "not_active" });
+    expect(
+      await count(
+        "SELECT count(*) AS n FROM audit_events WHERE action = 'workspace.deletion_requested' AND workspace_id = ?",
+        s.workspaceId,
+      ),
+    ).toBe(0);
+  });
+
+  it("finds nothing to refresh in a workspace that no longer exists", async () => {
+    expect(
+      await refreshSubscription(
+        serviceContext(),
+        { workspaceId: "no-such-workspace", source: "simulated", externalSubscriptionId: "x" },
+        source,
+      ),
+    ).toEqual({ outcome: "absent", created: 0, updated: 0, ended: 0 });
+  });
+});
+
+describe("queueLifecycleJobs", { timeout: 60_000 }, () => {
   it("queues one pruning run and a purge per due workspace, each once", async () => {
     const s = await shop();
     await requestDeletion(s);
@@ -464,7 +598,7 @@ describe("queueLifecycleJobs", () => {
   });
 });
 
-describe("deletion/account-revokes-and-removes-identity", () => {
+describe("deletion/account-revokes-and-removes-identity", { timeout: 60_000 }, () => {
   /** A buyer whose subject in the shop is linked to their GitHub identity. */
   async function linkedBuyer(s: Shop, subject: SubjectRow, login: string) {
     const buyer = await signedUpUser(

@@ -173,7 +173,8 @@ export async function purgeWorkspace(
     }
   }
   try {
-    const finished = await repo.finishPurge(ctx.db, {
+    // False only when a concurrent run deleted the workspace first: purged either way.
+    await repo.finishPurge(ctx.db, {
       workspaceId,
       audit: (deleted) => [
         auditEvent(
@@ -183,7 +184,7 @@ export async function purgeWorkspace(
         ),
       ],
     });
-    return finished ? "purged" : "gone";
+    return "purged";
   } catch (error) {
     // Another job wrote a row for the workspace after its table was emptied: run again.
     if (!repo.isForeignKeyViolation(error)) throw error;
@@ -308,9 +309,9 @@ export async function cancelWorkspaceDeletion(
   });
   if (workspace.status !== "deleting") return { ok: false };
   const { workspaceId } = scope;
-  const paddle = await repo.getPaddleConnection(ctx.db, { workspaceId });
+  // The deletion disconnected Paddle, so only simulated subscriptions can be read now. Paddle ones
+  // are refreshed when Paddle is connected again (`connectPaddle`).
   const sources: CommercialSource[] = ["simulated"];
-  if (paddle?.status === "active") sources.push("paddle");
   return repo.cancelWorkspaceDeletion(ctx.db, { workspaceId, now: ctx.clock.now(), sources }, [
     auditEvent(
       "workspace.deletion_cancelled",

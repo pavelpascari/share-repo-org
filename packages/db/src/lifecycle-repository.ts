@@ -34,9 +34,8 @@ const TABLES: Readonly<Record<string, SQLiteTable>> = Object.fromEntries(
 
 /** `DELETE FROM <table> WHERE <condition>`, as a batchable statement. */
 function deleteFrom(db: Db, table: string, condition: SQL): Statement {
-  const found = TABLES[table];
-  if (found === undefined) throw new Error("unknown table");
-  return db.delete(found).where(condition);
+  // Callers name tables from this module's own constants.
+  return db.delete(TABLES[table] as SQLiteTable).where(condition);
 }
 
 // Retention ------------------------------------------------------------------------------------

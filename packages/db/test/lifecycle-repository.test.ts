@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   cancelWorkspaceDeletion,
   finishPurge,
+  getWorkspaceDeletionState,
   isForeignKeyViolation,
   PRUNABLE,
   PURGE_ORDER,
@@ -11,6 +12,7 @@ import {
   purgeBatch,
   purgeProgress,
   purgeTableHasRows,
+  readWorkspaceExport,
   scheduleWorkspaceDeletion,
   schema,
 } from "../src/index.ts";
@@ -432,6 +434,26 @@ describe("workspace deletion storage", () => {
     expect(
       await count("audit_events", "action = 'workspace.purged' AND details LIKE ?", "%workspaces%"),
     ).toBe(1);
+  });
+
+  it("writes every audit event of a scheduled deletion, and none when refused", async () => {
+    const id = await workspace();
+    const events = [workspaceEvent(id), workspaceEvent(id)] as const;
+    const schedule = (audit: typeof events) =>
+      scheduleWorkspaceDeletion(
+        db,
+        { workspaceId: id, requestedBy: "usr_1", now: T0, deleteAfter: T0 + 30 * DAY },
+        audit,
+      );
+    expect(await schedule(events)).toEqual({ ok: true });
+    expect(await schedule([workspaceEvent(id), workspaceEvent(id)])).toEqual({ ok: false });
+    expect(await count("audit_events", "workspace_id = ?", id)).toBe(2);
+    for (const event of events) expect(await count("audit_events", "id = ?", event.id)).toBe(1);
+  });
+
+  it("reads nothing for a workspace that does not exist", async () => {
+    expect(await getWorkspaceDeletionState(db, "no-such-workspace")).toBeNull();
+    expect((await readWorkspaceExport(db, "no-such-workspace")).workspace).toBeNull();
   });
 
   it("refuses to purge a table a workspace does not own", async () => {

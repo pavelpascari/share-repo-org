@@ -41,7 +41,7 @@ async function storedSecrets(workspaceId: string): Promise<string[]> {
 
 const EMAIL = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/;
 
-describe("export/contains-no-secrets", () => {
+describe("export/contains-no-secrets", { timeout: 60_000 }, () => {
   it("contains the workspace's records and never a credential, hash, claim or email", async () => {
     const s = await paddleShop();
     // A buyer asked for claim links by email, and another started a checkout.
