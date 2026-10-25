@@ -101,6 +101,7 @@ Each scenario has a stable name used as the test title so coverage of the matrix
 | `timing/expiry-confirmed-before-revoke` | Decision 0013 | Domain, service, E2E | 6 |
 | `timing/expiry-revokes-after-confirmation-window` | Decision 0013 | Domain, entry point | 6 |
 | `timing/sweep-lag-alerts` | Decision 0014 | Entry point | 6 |
+| `timing/sweep-lag-excuses-rate-limits` | Decision 0014 (amended): a GitHub rate limit excuses lag for at most an hour | DB, service, entry point | 6 |
 | `failure/exhausted-job-is-recorded-and-alerted` | Decision 0014 | Entry point | 6 |
 | `failure/dead-letter-marks-row-failed` | Decision 0014; [operations threat model](security/operations-threat-model.md) O14 | Entry point | 6 |
 | `failure/owner-sees-only-own-failures` | Decision 0014; isolation | Service, E2E | 6 |

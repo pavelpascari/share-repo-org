@@ -156,7 +156,7 @@ On personal repositories, provisioning works through the collaborator and invita
 
 A failed observation leaves the grants alone. The repository records the classified code (`last_reconcile_error`, shown on the access page) and its consecutive failures, and backs off by them with the same 1, 5, 15 and 60 minutes (a rate limit waits at least `retryAfter`). A suspended or missing installation, or a missing repository, queues a resync. At the third failure in a row the repository is listed as failing on the Access page and `/ops`, and the `reconcile_failing` alert line is logged once.
 
-**Rate limits are per installation.** A `rate_limited` observation or mutation sets `connections.rate_limited_until` to GitHub's reset (or the repository's retry time when GitHub gave none). It only ever moves later. Until then the minute sweep queues none of that installation's due repositories; the others are unaffected. The sweep also queues at most 10 repositories per installation per minute. An owner's "Check now" is not deferred.
+**Rate limits are per installation.** A `rate_limited` observation or mutation sets `connections.rate_limited_until` to GitHub's reset (or the repository's retry time when GitHub gave none). It only ever moves later. Until then the minute sweep queues none of that installation's due repositories; the others are unaffected. The sweep also queues at most 10 repositories per installation per minute. An owner's "Check now" is not deferred. For the `sweep_lagging` alert and `/ops`, a held-back repository counts as due from the reset, but by at most an hour (decision 0014, amended), so an installation GitHub keeps limiting does raise the alert.
 
 ### GitHub risks to test
 

@@ -94,7 +94,7 @@ Run these in **dev** after the first deploy that includes Phase 6, then in produ
 
 Until Monitors leaves beta and has proved itself, open `/ops` in production once a day:
 
-- **Sweep health:** a last heartbeat within the last 2 minutes, and no due row older than 15 minutes.
+- **Sweep health:** a last heartbeat within the last 2 minutes, and no due row older than 15 minutes. Repository checks are measured as `sweep_lagging` measures them: one held back by a GitHub rate limit counts from the reset, by at most an hour ([failure triage](failure-triage.md) § Reading sweep health).
 - **Failed jobs:** none open longer than a day without a note.
 - **Connections that stopped working** and **Workspace deletions that wait:** each one has an owner who was told.
 

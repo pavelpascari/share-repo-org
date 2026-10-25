@@ -97,3 +97,16 @@ The research found that Workers Issues automations do not offer email as a desti
 - **A third Monitor emails on errors:** `error`-level log lines, and failed invocations where Workers Logs exposes them, from both Workers. It has the same shape and hourly repeat as the alert-line Monitor ([alerting setup](../runbooks/alerting-setup.md) § 1).
 - **Workers Issues stays on** for grouping and history. If its automations offer email later, it may email too.
 - All three Monitors send to the one operator address. The daily `/ops` review remains the fallback, and it includes a look at Issues.
+
+## Amendment — sweep lag counts rate-limited repositories after a capped excuse (2026-10-25)
+
+The sweep holds back a GitHub installation's due reconciles while it is rate-limited (`connections.rate_limited_until`, phase-6 plan § Partitioning). The lag alert left those repositories out altogether, and `/ops` counted them from their schedule. Both were wrong:
+
+- just after a reset, the held-back repositories counted from their old `next_reconcile_at`, so `sweep_lagging` could fire before the sweep (10 per installation per tick) had worked through them;
+- `rate_limited_until` only ever moves later and is never cleared, so an installation GitHub kept rate-limiting was left out for ever and never raised `sweep_lagging`.
+
+**Decision.** One lateness measure, for the alert and the `/ops` panel alike. A repository's reconcile is due, for lag, at `max(next_reconcile_at, min(rate_limited_until, next_reconcile_at + RATE_LIMIT_EXCUSE_MS))` (`excusedReconcileDueAt`, `packages/domain/src/sweep.ts`), and lags once that is more than 15 minutes ago.
+
+- **`RATE_LIMIT_EXCUSE_MS` is 1 hour:** GitHub's primary rate limit is an hourly budget per installation, so a reset is at most an hour away. A rate limit up to that is waited out without an alert; an installation still rate-limited after it is stuck, and its repositories count as lag.
+- A reset in the past (or none) changes nothing, so a stale `rate_limited_until` needs no clearing.
+- `/ops` also shows how many due repositories wait on a rate limit, as a separate figure: waiting is not lag.

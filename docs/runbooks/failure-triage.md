@@ -26,7 +26,7 @@ An operator is a signed-in user whose GitHub account ID is listed in `OPERATOR_G
 
 | Section | Shows | Controls |
 |---|---|---|
-| **Sweep health** | Last heartbeat, oldest due subscription check, oldest due repository check, oldest due job, each with how many minutes ago | None |
+| **Sweep health** | Last heartbeat, oldest due subscription check, oldest due repository check, how many repositories wait on a GitHub rate limit, oldest due job, each instant with how many minutes ago | None |
 | **Failed jobs** | Every workspace's open failures and the system-wide ones, oldest first, up to 200 | **View access**, **Retry**, **Dismiss** with a reason |
 | **Repositories that keep failing to check** | Selected repositories with 3 or more failures in a row, with workspace | None |
 | **Connections that stopped working** | GitHub installations suspended or uninstalled, and Paddle connections whose key was refused. An uninstalled one is listed for 30 days, then only while it still has managed access | Link to the workspace |
@@ -38,7 +38,8 @@ An operator is a signed-in user whose GitHub account ID is listed in `OPERATOR_G
 
 - **Last heartbeat** is written by every minute tick of the jobs Worker. "Unknown" means it was never written. More than 2–3 minutes old means the minute cron is not running, the jobs Worker fails before the heartbeat, or the GitHub App is not configured there (the minute tick then skips everything). Check the jobs Worker's Workers Logs for `invalid environment configuration` or `GitHub App not configured; skipped`.
 - **Oldest due subscription check, repository check, job.** "Nothing due" is normal. A few minutes is normal: each tick queues at most 100 evaluations and 100 reconciles (at most 10 per GitHub installation), and the drain runs for about 20 seconds. More than 15 minutes raises `sweep_lagging` (below).
-- The page and the alert count slightly differently. The page shows every due row. The alert leaves out repositories of a rate-limited installation (they wait on purpose until `rate_limited_until`) and jobs that ran out of attempts (they are failures). So the page can show a repository check more than 15 minutes late without an alert: check **Repositories that keep failing to check** for `rate_limited`.
+- **Repository checks and GitHub rate limits.** While GitHub rate-limits an installation, the sweep holds its due repository checks until the reset (`rate_limited_until`). The page and the alert both count such a check as due from the reset, not from its schedule, but excuse at most an hour (`RATE_LIMIT_EXCUSE_MS`, decision 0014): an installation rate-limited for longer counts as late, and raises `sweep_lagging`. **Waiting on a GitHub rate limit** counts the repositories held back now; it is not lag. Many waiting with a repository check more than 15 minutes late means an installation GitHub keeps limiting: check **Repositories that keep failing to check** for `rate_limited`, and what queues work against that installation.
+- The page and the alert still differ on jobs: the page shows every pending job, the alert leaves out jobs that ran out of attempts (they are failures, listed under **Failed jobs**).
 
 ## Job kinds
 
@@ -130,7 +131,7 @@ Code logs one structured line for each condition that needs a person, at `warn` 
 | `job_failed` | A job failed for good: a non-retryable error, the drain's 10th attempt, or the dead-letter queue | `outboxId`, `kind`, `errorCode`, `attempts`, and `workspaceId` when the row has one | Find it under **Failed jobs** on `/ops` and follow § Error codes. `attempts` is 0 on the queue path, which does not count attempts on the row. |
 | `reconcile_failing` | A repository's check failed for the third time in a row (raised once, by the run that recorded it) | `workspaceId`, `resourceId`, `failures`, `errorCode` | Find it under **Repositories that keep failing to check** and follow the table above. |
 | `connection_lost` | A resync moved a GitHub connection to `suspended` or `deleted`, or a Paddle connection became `unauthorized` | `workspaceId`, `connectionId`, `provider`, `status` | Check **Connections that stopped working**. The owner must act: unsuspend, reconnect, or reconnect Paddle with a new key. If the workspace is being deleted and the App was uninstalled, its purge will wait (incident response). |
-| `sweep_lagging` | The oldest due evaluation, reconcile or job is more than 15 minutes late (at most once per 15 minutes) | `oldestEvaluationDueAt`, `oldestReconcileDueAt`, `oldestOutboxDueAt`, `lagMs` | Check **Sweep health**. Look for errors in the jobs Worker's logs (`due evaluation sweep failed`, `due reconcile sweep failed`, `outbox job failed`), a provider outage, or a backlog after downtime, which drains oldest first. |
+| `sweep_lagging` | The oldest due evaluation, reconcile or job is more than 15 minutes late (at most once per 15 minutes). A reconcile held back by a GitHub rate limit counts from the reset, by at most an hour | `oldestEvaluationDueAt`, `oldestReconcileDueAt`, `oldestOutboxDueAt`, `lagMs` | Check **Sweep health**. Look for errors in the jobs Worker's logs (`due evaluation sweep failed`, `due reconcile sweep failed`, `outbox job failed`), a provider outage, or a backlog after downtime, which drains oldest first. |
 
 A missing heartbeat raises no alert line: the heartbeat Monitor catches it ([alerting setup](alerting-setup.md)).
 

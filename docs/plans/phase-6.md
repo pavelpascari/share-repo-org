@@ -153,6 +153,7 @@ New:
 | `timing/expiry-confirmed-before-revoke` | Decision 0013 | Domain, service |
 | `timing/expiry-revokes-after-confirmation-window` | Decision 0013 | Domain, entry point |
 | `timing/sweep-lag-alerts` | Decision 0014 | Entry point |
+| `timing/sweep-lag-excuses-rate-limits` | Decision 0014 (amended) | DB, service, entry point |
 | `failure/exhausted-job-is-recorded-and-alerted` | Decision 0014 | Entry point |
 | `failure/dead-letter-marks-row-failed` | Decision 0014 | Entry point |
 | `failure/owner-sees-only-own-failures` | Decision 0014; isolation | Service, E2E |
@@ -313,7 +314,7 @@ Where the build differs from, or adds to, the design above.
 - **Access page.** Expiry pending reads "Ending: confirming with Paddle" when the live entitlement's subscription is Paddle's, and "Ending: confirming the subscription" otherwise. The simulator is not named, like other access texts. `readAccessState` joins each entitlement's subscription for its `source`, and `AccessEntitlement.source` carries it.
 - **Sweep health:**
   - After the drain, each minute tick logs `sweep.heartbeat` with `evaluationsQueued`, `reconcilesQueued`, `outboxClaimed`, `outboxSent` (null for a step that failed), `oldestEvaluationDueAt`, `oldestReconcileDueAt`, `oldestOutboxDueAt` and `lagMs`. It is logged even when the drain throws.
-  - The oldest due instants come from `readSweepBacklog` (`packages/db/src/sweep-repository.ts`). It excludes rate-limited connections' repositories, which wait on purpose, and outbox rows out of attempts, which are failures (T3), not lag. T3's `/ops` sweep-health panel can reuse it.
+  - The oldest due instants come from `readSweepBacklog` (`packages/db/src/sweep-repository.ts`). It excludes rate-limited connections' repositories, which wait on purpose, and outbox rows out of attempts, which are failures (T3), not lag. T3's `/ops` sweep-health panel can reuse it. (Superseded after T7: a rate limit now excuses at most an hour; see "Post-T7: sweep lag and rate limits".)
   - `sweep_lagging` is raised by `checkSweepHealth` (application) through `claimSweepLagAlert`: one conditional upsert of `system_state` key `sweep.lag_alerted`, so replays and concurrent ticks raise it once per 15 minutes. The policy constants are `SWEEP_LAG_ALERT_MS` and `SWEEP_LAG_ALERT_INTERVAL_MS`, with `sweepLag()`, in `packages/domain/src/sweep.ts`.
   - **Alert helper.** T1 defined only the names, so T2 added `alert(logger, name, ids)` to `packages/platform`. It logs one warn line `{"msg":"alert: <name>","alert":"<name>",…}`, and `ids` may hold only strings, numbers, booleans and nulls. The platform does not depend on the domain, so callers pass an `AlertName`. T3 reuses it.
 - **Partitioning:**
@@ -499,10 +500,16 @@ Where the build differs from, or adds to, the design above.
 - **Conflicts and corrections found:**
   - Decision 0014 says the Issues automation emails the operator, but the research found email is not an Issues destination. `alerting-setup.md` flags it and offers a Monitor on error lines as the fallback; if chosen, it needs a 0014 amendment.
   - The T2 notes above said an alert line is `{"msg":"alert",…}`. The code logs `"msg":"alert: <name>"` with an `alert` field (`packages/platform/src/alert.ts`). The T2 note and the runbooks now follow the code.
-  - `/ops` sweep health counts every due row, rate-limited repositories included; the `sweep_lagging` alert leaves those out. `failure-triage.md` explains the difference.
+  - `/ops` sweep health counted every due row, rate-limited repositories included; the `sweep_lagging` alert left those out. **Resolved** after T7 (below): both use one measure.
   - `product.md` says operators repair "without manipulating database rows"; the waiting-purge last resort and the runbooks' hand-queued jobs are D1 statements.
   - `failure-messages.ts` still explains `not_implemented`, which no job produces any more. Harmless.
   - `secret-rotation.md` said T7 would rehearse rotation in dev. There is no deployed environment yet; it is a first-deploy check.
+
+### Post-T7: sweep lag and rate limits
+
+- The lag alert left out repositories of a rate-limited installation, and `/ops` counted them from their schedule. So `sweep_lagging` could fire the moment a reset passed, before the sweep (10 per installation per tick) had worked through the held-back repositories; and an installation GitHub kept rate-limiting (`rate_limited_until` only moves later, never cleared) never raised it at all.
+- Now one measure serves both (decision 0014, amended): a repository is due, for lag, at `max(next_reconcile_at, min(rate_limited_until, next_reconcile_at + RATE_LIMIT_EXCUSE_MS))`, with `RATE_LIMIT_EXCUSE_MS` one hour (GitHub's primary rate-limit window). `oldestExcusedReconcileDue` (`packages/db/src/reconcile-repository.ts`) computes it in SQL over the rows already due by schedule, looking the connection up by workspace and ID; `readSweepBacklog` and `readSweepHealth` both use it. `/ops` adds "Waiting on a GitHub rate limit", a count of due repositories the sweep holds back.
+- Scenario `timing/sweep-lag-excuses-rate-limits` (DB, service, entry point): no alert within the excuse or just after a reset, an alert for a rate limit longer than the hour, a stale reset ignored, and workspace scoping.
 
 ## Risks and open points
 
