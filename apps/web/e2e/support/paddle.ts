@@ -179,16 +179,29 @@ export async function sellerSubscriptions(
 export const revokeKey = (request: APIRequestContext, seller: FakeSeller) =>
   control(request, `/sellers/${seller.sellerId}/revoke-key`);
 
+/**
+ * The mail the fake captured for this address. A transient request error (the fake's socket
+ * reset, a response cut short) reads as no mail yet, so the caller's poll simply tries again.
+ */
+async function mailTo(request: APIRequestContext, email: string): Promise<{ text: string }[]> {
+  try {
+    const response = await request.get(
+      `${FAKE_PADDLE_URL}/_control/mail?to=${encodeURIComponent(email)}`,
+    );
+    if (!response.ok()) return [];
+    return (await response.json()) as { text: string }[];
+  } catch {
+    return [];
+  }
+}
+
 /** The claim link ShareRepo emailed to this address, once the mail arrives. */
 export async function claimLinkFor(request: APIRequestContext, email: string): Promise<string> {
   let link = "";
   await expect
     .poll(
       async () => {
-        const response = await request.get(
-          `${FAKE_PADDLE_URL}/_control/mail?to=${encodeURIComponent(email)}`,
-        );
-        const mails = (await response.json()) as { text: string }[];
+        const mails = await mailTo(request, email);
         link = mails[0]?.text.match(new RegExp(`${WEB_URL}/claim/[A-Za-z0-9_-]+`))?.[0] ?? "";
         return link;
       },
