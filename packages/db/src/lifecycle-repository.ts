@@ -176,6 +176,26 @@ function refreshAllInsert(
         AND o.subject_id = ${key} AND o.sent_at IS NULL AND o.failed_at IS NULL)`);
 }
 
+/**
+ * Audit inserts to place immediately after a guarded UPDATE of one row: the first event is written
+ * only if that UPDATE changed the row (`changes()` is its count), and the rest only if the first
+ * was written. `written` guards the batch's later statements the same way. Unlike re-checking
+ * the row's new state, it cannot match an identical change made earlier.
+ */
+function afterUpdate(db: Db, audit: AuditEvents): { inserts: Statement[]; written: SQL } {
+  const [first, ...rest] = audit;
+  const written = sql`EXISTS (SELECT 1 FROM audit_events WHERE id = ${first.id})`;
+  return {
+    inserts: [
+      ...conditionalAuditInserts(db, [first], sql`changes() = 1`),
+      ...(rest.length === 0
+        ? []
+        : conditionalAuditInserts(db, rest as unknown as AuditEvents, written)),
+    ],
+    written,
+  };
+}
+
 /** Queues a refresh of each of the workspace's subscriptions from `sources` not already queued. */
 export async function queueWorkspaceRefreshes(
   db: Db,
@@ -197,9 +217,7 @@ export async function scheduleWorkspaceDeletion(
   audit: AuditEvents,
 ): Promise<{ ok: boolean }> {
   const { workspaceId, now } = input;
-  const scheduled = sql`EXISTS (SELECT 1 FROM workspaces WHERE id = ${workspaceId}
-    AND status = 'deleting' AND delete_after = ${input.deleteAfter}
-    AND deletion_requested_by = ${input.requestedBy} AND updated_at = ${now})`;
+  const { inserts, written } = afterUpdate(db, audit);
   const [changed] = await runBatch(db, [
     db
       .update(workspaces)
@@ -210,13 +228,8 @@ export async function scheduleWorkspaceDeletion(
         updatedAt: now,
       })
       .where(sql`id = ${workspaceId} AND status = 'active'`),
-    refreshAllInsert(db, {
-      workspaceId,
-      sources: ["paddle", "simulated"],
-      now,
-      when: scheduled,
-    }),
-    ...conditionalAuditInserts(db, audit, scheduled),
+    ...inserts,
+    refreshAllInsert(db, { workspaceId, sources: ["paddle", "simulated"], now, when: written }),
   ]);
   return { ok: changed === 1 };
 }
@@ -242,16 +255,15 @@ export async function cancelWorkspaceDeletion(
   audit: AuditEvents,
 ): Promise<{ ok: boolean }> {
   const { workspaceId, now } = input;
-  const restored = sql`EXISTS (SELECT 1 FROM workspaces WHERE id = ${workspaceId}
-    AND status = 'active' AND delete_after IS NULL AND updated_at = ${now})`;
+  const { inserts, written } = afterUpdate(db, audit);
   const [changed] = await runBatch(db, [
     db
       .update(workspaces)
       .set({ status: "active", deleteAfter: null, deletionRequestedBy: null, updatedAt: now })
       .where(sql`id = ${workspaceId} AND status = 'deleting'`),
-    refreshAllInsert(db, { workspaceId, sources: input.sources, now, when: restored }),
-    db.delete(systemState).where(sql`key = ${purgeBlockedKey(workspaceId)} AND ${restored}`),
-    ...conditionalAuditInserts(db, audit, restored),
+    ...inserts,
+    refreshAllInsert(db, { workspaceId, sources: input.sources, now, when: written }),
+    db.delete(systemState).where(sql`key = ${purgeBlockedKey(workspaceId)} AND ${written}`),
   ]);
   return { ok: changed === 1 };
 }
