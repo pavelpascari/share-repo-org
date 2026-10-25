@@ -638,7 +638,7 @@ export function createFakePaddle(options: FakePaddleOptions = {}): FakePaddle {
       // Paddle's default order is `id[DESC]`.
       return [...settings.values()]
         .map(({ setting }) => structuredClone(setting))
-        .sort((a, b) => (a.id < b.id ? 1 : -1));
+        .sort((a, b) => b.id.localeCompare(a.id));
     },
 
     async deleteNotificationSetting(settingId) {

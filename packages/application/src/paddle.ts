@@ -514,23 +514,26 @@ async function createDestination(
 ): Promise<CreatedNotificationSetting | null> {
   const { workspaceId, connectionId, actor, marker } = input;
   const destination = webhookUrl(deps, connectionId, marker);
-  const create = () =>
-    client.createNotificationSetting({
-      description: destinationDescription({ workspaceId, createdAt: ctx.clock.now() }),
-      destination,
-      events: PADDLE_WEBHOOK_EVENTS,
-    });
-  try {
+  /** One create; null when the seller has 10 active destinations. */
+  const attempt = async () => {
     try {
-      return await create();
+      return await client.createNotificationSetting({
+        description: destinationDescription({ workspaceId, createdAt: ctx.clock.now() }),
+        destination,
+        events: PADDLE_WEBHOOK_EVENTS,
+      });
     } catch (error) {
-      if (!isDestinationLimitError(error)) throw error;
-      const swept = await sweepDestinationsQuietly(ctx, deps, client, { workspaceId, actor });
-      if (swept.length === 0) return null;
-      return await create();
+      if (isDestinationLimitError(error)) return null;
+      throw error;
     }
+  };
+  try {
+    const first = await attempt();
+    if (first !== null) return first;
+    // Make room from the workspace's own orphans, then try once more.
+    const swept = await sweepDestinationsQuietly(ctx, deps, client, { workspaceId, actor });
+    return swept.length === 0 ? null : await attempt();
   } catch (error) {
-    if (isDestinationLimitError(error)) return null;
     if (error instanceof PaddleApiError && error.kind === "transient") {
       await deleteLostDestination(ctx, client, { workspaceId, actor, destination });
     }

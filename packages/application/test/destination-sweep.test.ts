@@ -309,6 +309,16 @@ describe("paddle/orphaned-destinations-swept", () => {
     });
   });
 
+  it("completes a rotation even when the sweep after it cannot list, leaving the orphan for later", async () => {
+    const s = await paddleShop();
+    const orphan = await tagged(s, { age: 2 * HOUR, marker: "later" });
+    s.paddle.failNext("listNotificationSettings", "transient");
+    expect(await rotate(s)).toMatchObject({ ok: true });
+    expect(ids(s)).toContain(orphan);
+    expect(await dailySweep(s)).toMatchObject({ destinationsDeleted: 1 });
+    expect(ids(s)).not.toContain(orphan);
+  });
+
   it("sweeps after a reconnect and after a completed rotation", async () => {
     const s = await paddleShop();
     const orphan = await tagged(s, { age: 2 * HOUR, marker: "r1" });
