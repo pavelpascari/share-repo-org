@@ -381,6 +381,7 @@ describe("operators", () => {
       "oldestDueEvaluationAt",
       "oldestDueOutboxAt",
       "oldestDueReconcileAt",
+      "rateLimitedReconciles",
     ]);
   });
 

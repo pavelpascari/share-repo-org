@@ -55,6 +55,7 @@ import {
   PaddleEnvironment,
   PaddlePriceStatus,
   PROVIDER_FAILURE_KINDS,
+  RATE_LIMIT_EXCUSE_MS,
   RECONCILE_IDLE_MS,
   RECONCILE_POLL_MS,
   RECONCILIATION_ACTIONS,
@@ -329,4 +330,5 @@ describe("timing constants", () => {
     expect(Object.values(EntitlementValidity)).toEqual(ENTITLEMENT_VALIDITIES));
   it("sweep lag alert", () =>
     expect([SWEEP_LAG_ALERT_MS, SWEEP_LAG_ALERT_INTERVAL_MS]).toEqual([15 * MINUTE, 15 * MINUTE]));
+  it("rate-limit excuse", () => expect(RATE_LIMIT_EXCUSE_MS).toBe(60 * MINUTE));
 });

@@ -297,10 +297,10 @@ describe("partitioned reconciliation", () => {
   );
 
   it(
-    "defers an installation GitHub rate-limited until its reset",
+    "timing/sweep-lag-excuses-rate-limits: defers an installation GitHub rate-limited until its reset, without a lag alert after it",
     async () => {
       const fake = createFakeGitHubApp({ clock });
-      const limited = await largeShop(fake, 2);
+      const limited = await largeShop(fake, 14);
       const other = await shop(fake);
       clock.advance(MINUTE);
       // The limited installation's repositories run first, and the first observation is refused.
@@ -330,10 +330,17 @@ describe("partitioned reconciliation", () => {
       // A rate-limited installation's repositories are not lag.
       expect(heartbeats().at(-1)).toMatchObject({ oldestReconcileDueAt: null });
 
+      // At the reset the sweep takes ten. The other five, due half an hour ago, are late from
+      // the reset, not from their schedule: no sweep_lagging while the sweep works through them.
       clock.set(at + 30 * MINUTE);
       const reset = clock.now();
       await tick(limited);
-      expect(await queuedSince(limited, reset)).toBe(3);
+      expect(await queuedSince(limited, reset)).toBe(10);
+      expect(heartbeats().at(-1)).toMatchObject({ oldestReconcileDueAt: reset, lagMs: 0 });
+      clock.advance(MINUTE);
+      await tick(limited);
+      expect(await queuedSince(limited, reset)).toBe(15);
+      expect(alerts()).toEqual([]);
     },
     ENTRY_POINT_TIMEOUT,
   );

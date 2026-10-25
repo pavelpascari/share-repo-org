@@ -109,11 +109,19 @@ export async function action({ request, context }: Route.ActionArgs) {
   }
 }
 
-/** How late a due row is, or that nothing is due. */
+/**
+ * How late a due row is, or that nothing is due. A repository check is due as the
+ * `sweep_lagging` alert counts it: a GitHub rate limit excuses up to an hour (decision 0014).
+ */
 function lateness(at: number | null, now: number): string {
   if (at === null) return "Nothing due";
   const minutes = Math.max(0, Math.floor((now - at) / 60_000));
   return `${formatInstant(at)} (${minutes} min ago)`;
+}
+
+/** A count of repositories, in words. */
+function repositoryCount(n: number): string {
+  return n === 1 ? "1 repository" : `${n} repositories`;
 }
 
 export default function Ops({ loaderData, actionData }: Route.ComponentProps) {
@@ -150,6 +158,8 @@ export default function Ops({ loaderData, actionData }: Route.ComponentProps) {
           <dd>{lateness(sweep.oldestDueEvaluationAt, now)}</dd>
           <dt className="font-medium">Oldest due repository check</dt>
           <dd>{lateness(sweep.oldestDueReconcileAt, now)}</dd>
+          <dt className="font-medium">Waiting on a GitHub rate limit</dt>
+          <dd>{repositoryCount(sweep.rateLimitedReconciles)}</dd>
           <dt className="font-medium">Oldest due job</dt>
           <dd>{lateness(sweep.oldestDueOutboxAt, now)}</dd>
         </dl>

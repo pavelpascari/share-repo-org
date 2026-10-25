@@ -81,6 +81,48 @@ describe("checkSweepHealth", () => {
   });
 });
 
+describe("checkSweepHealth and GitHub rate limits", () => {
+  /** Makes the shop's repositories due at `dueAt`, its installation rate-limited until `until`. */
+  async function rateLimited(dueAt: number, until: number) {
+    const s = await shop();
+    await settle();
+    await env.DB.batch([
+      env.DB.prepare("UPDATE resources SET next_reconcile_at = ? WHERE workspace_id = ?").bind(
+        dueAt,
+        s.workspaceId,
+      ),
+      env.DB.prepare(
+        "UPDATE connections SET rate_limited_until = ? WHERE workspace_id = ? AND id = ?",
+      ).bind(until, s.workspaceId, s.connection.id),
+    ]);
+    return s;
+  }
+
+  it("timing/sweep-lag-excuses-rate-limits: does not alert just after a short rate limit resets", async () => {
+    const dueAt = clock.now() - 40 * MINUTE;
+    await rateLimited(dueAt, clock.now() - MINUTE);
+    // Due 40 minutes ago, but excused until the reset a minute ago: not lagging yet.
+    await expect(health()).resolves.toMatchObject({
+      reconcileDueAt: clock.now() - MINUTE,
+      lagMs: MINUTE,
+      lagging: false,
+      alert: false,
+    });
+  });
+
+  it("timing/sweep-lag-excuses-rate-limits: alerts when a connection stays rate-limited past the excuse", async () => {
+    const dueAt = clock.now() - 76 * MINUTE;
+    await rateLimited(dueAt, clock.now() + 5 * 60 * MINUTE);
+    // An hour is excused; the sixteen minutes since are lag.
+    await expect(health()).resolves.toMatchObject({
+      reconcileDueAt: dueAt + 60 * MINUTE,
+      lagMs: 16 * MINUTE,
+      lagging: true,
+      alert: true,
+    });
+  });
+});
+
 describe("queueDailyResyncs", () => {
   it("queues each active connection's resync once, at its own offset into the day", async () => {
     const s = await shop();

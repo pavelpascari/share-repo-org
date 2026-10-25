@@ -1,9 +1,9 @@
 import type { Instant } from "@sharerepo/domain";
-import { and, isNotNull, isNull, lt, lte, min, sql } from "drizzle-orm";
+import { and, isNotNull, isNull, lt, lte, min } from "drizzle-orm";
 import type { Db } from "./client.ts";
 import { SWEEP_HEARTBEAT_KEY } from "./failure-repository.ts";
-import { rateLimitedConnection } from "./reconcile-repository.ts";
-import { outbox, resources, subscriptions, systemState } from "./schema/index.ts";
+import { oldestExcusedReconcileDue } from "./reconcile-repository.ts";
+import { outbox, subscriptions, systemState } from "./schema/index.ts";
 
 // The per-minute sweep's health (phase-6 plan § Sweep health; decision 0014): what is still due
 // after a tick, and when the lag alert was last raised. Reads across every workspace, like the
@@ -14,8 +14,9 @@ export interface SweepBacklog {
   /** The oldest `subscriptions.next_evaluation_at` at or before now. */
   readonly evaluationDueAt: Instant | null;
   /**
-   * The oldest `resources.next_reconcile_at` at or before now, of connections GitHub is not
-   * rate-limiting (those wait for the reset on purpose).
+   * The oldest reconcile late at now: a repository's `next_reconcile_at`, pushed back to its
+   * connection's GitHub rate-limit reset by at most `RATE_LIMIT_EXCUSE_MS` (decision 0014,
+   * amended). A short rate limit is waited out on purpose; one longer than the excuse is lag.
    */
   readonly reconcileDueAt: Instant | null;
   /**
@@ -38,16 +39,7 @@ export async function readSweepBacklog(
       .where(
         and(isNotNull(subscriptions.nextEvaluationAt), lte(subscriptions.nextEvaluationAt, now)),
       ),
-    db
-      .select({ at: min(resources.nextReconcileAt) })
-      .from(resources)
-      .where(
-        and(
-          isNotNull(resources.nextReconcileAt),
-          lte(resources.nextReconcileAt, now),
-          sql`NOT ${rateLimitedConnection(now)}`,
-        ),
-      ),
+    oldestExcusedReconcileDue(db, now),
     db
       .select({ at: min(outbox.availableAt) })
       .from(outbox)

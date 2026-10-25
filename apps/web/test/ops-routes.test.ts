@@ -1,3 +1,4 @@
+import { env } from "cloudflare:workers";
 import { recordJobFailure } from "@sharerepo/application";
 import { enqueueOutbox, listAuditEventsByCorrelationId, recordPurgeBlocked } from "@sharerepo/db";
 import { systemClock } from "@sharerepo/domain";
@@ -89,6 +90,33 @@ describe("/ops", () => {
     expect(loaded.jobs.map((j) => j.id)).toEqual(expect.arrayContaining([job, system]));
     expect(loaded.sweep).toHaveProperty("lastHeartbeatAt");
     expect(typeof loaded.now).toBe("number");
+  });
+
+  it("shows sweep lag as the alert measures it, and repositories waiting on a rate limit apart", async () => {
+    const s = await shop();
+    const operator = await signedIn();
+    const connectionId = await connectionOf(s);
+    const HOUR = 3_600_000;
+    const dueAt = systemClock.now() - 3 * HOUR;
+    // Only this shop's repositories are due; GitHub has rate-limited its installation for hours.
+    await env.DB.batch([
+      env.DB.prepare("UPDATE resources SET next_reconcile_at = NULL"),
+      env.DB.prepare("UPDATE resources SET next_reconcile_at = ? WHERE workspace_id = ?").bind(
+        dueAt,
+        s.workspaceId,
+      ),
+      env.DB.prepare(
+        "UPDATE connections SET rate_limited_until = ? WHERE workspace_id = ? AND id = ?",
+      ).bind(dueAt + 8 * HOUR, s.workspaceId, connectionId),
+    ]);
+    const { context } = asOperator(operator);
+    const loaded = await ops.loader(args(get("/ops", operator), context));
+    // An hour of the rate limit is excused; the rest is lag, as sweep_lagging counts it.
+    expect(loaded.sweep).toMatchObject({
+      oldestDueReconcileAt: dueAt + HOUR,
+      rateLimitedReconciles: s.resources.length,
+    });
+    expect(s.resources.length).toBeGreaterThan(0);
   });
 
   it("retries and dismisses, audited with the operator as actor, and refuses bad forms", async () => {

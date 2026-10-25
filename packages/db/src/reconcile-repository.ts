@@ -6,11 +6,13 @@ import {
   type MutationStatus,
   type ObservationErrorCode,
   OutboxKind,
+  RATE_LIMIT_EXCUSE_MS,
   type RetryClass,
 } from "@sharerepo/domain";
 import {
   and,
   asc,
+  count,
   eq,
   gt,
   inArray,
@@ -82,6 +84,51 @@ const ofResource = (workspaceId: string, resourceId: string) =>
  */
 export function rateLimitedConnection(now: Instant): SQL {
   return sql`EXISTS (SELECT 1 FROM ${connections} WHERE ${connections.workspaceId} = ${resources.workspaceId} AND ${connections.id} = ${resources.connectionId} AND ${connections.rateLimitedUntil} > ${now})`;
+}
+
+/**
+ * When the resource row in scope's reconcile is due for lag purposes, in SQL: domain
+ * `excusedReconcileDueAt` of its `next_reconcile_at` and its connection's `rate_limited_until`
+ * (looked up within the row's workspace). A rate limit excuses at most `RATE_LIMIT_EXCUSE_MS`;
+ * a past or missing reset leaves the schedule as it is.
+ */
+const excusedReconcileDueAtOfRow = sql`MAX(${resources.nextReconcileAt}, MIN(COALESCE((SELECT ${connections.rateLimitedUntil} FROM ${connections} WHERE ${connections.workspaceId} = ${resources.workspaceId} AND ${connections.id} = ${resources.connectionId}), 0), ${resources.nextReconcileAt} + ${RATE_LIMIT_EXCUSE_MS}))`;
+
+/**
+ * The query for the oldest reconcile late at `now` (decision 0014, amended): the earliest
+ * {@link excusedReconcileDueAtOfRow} at or before `now`, across every workspace. The sweep lag
+ * alert and the operator page both read it, so they agree. Scans only rows already due by
+ * schedule (`resources_next_reconcile_idx`), since the excused instant is never earlier.
+ */
+export function oldestExcusedReconcileDue(db: Db, now: Instant) {
+  return db
+    .select({ at: sql<Instant | null>`MIN(${excusedReconcileDueAtOfRow})` })
+    .from(resources)
+    .where(
+      and(
+        isNotNull(resources.nextReconcileAt),
+        lte(resources.nextReconcileAt, now),
+        sql`${excusedReconcileDueAtOfRow} <= ${now}`,
+      ),
+    );
+}
+
+/**
+ * The query counting repositories due by schedule at `now` that the sweep holds back because
+ * GitHub is rate-limiting their connection (`rate_limited_until` still ahead), across every
+ * workspace. Waiting on purpose, so a figure apart from lag.
+ */
+export function countRateLimitedReconciles(db: Db, now: Instant) {
+  return db
+    .select({ n: count() })
+    .from(resources)
+    .where(
+      and(
+        isNotNull(resources.nextReconcileAt),
+        lte(resources.nextReconcileAt, now),
+        rateLimitedConnection(now),
+      ),
+    );
 }
 
 /**
