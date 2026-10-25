@@ -1,5 +1,7 @@
 import { env } from "cloudflare:workers";
+import { simulatedEntitlementSource } from "@sharerepo/application";
 import { enqueueOutbox } from "@sharerepo/db";
+import { PaddleApiError } from "@sharerepo/integrations";
 import { createFakeGitHubApp, type FakeGitHubApp } from "@sharerepo/integrations/testing";
 import { ConflictError } from "@sharerepo/platform";
 import { captureLogs, type LogCapture } from "@sharerepo/testing";
@@ -269,5 +271,82 @@ describe("expiry confirmation at the entry points", () => {
       expect(await entitlementsOf(s)).toMatchObject([{ state: "active" }]);
     },
     ENTRY_POINT_TIMEOUT,
+  );
+});
+
+/**
+ * The simulated source, unreachable until `until`: every refresh fails `transient`, as a Paddle
+ * outage does at the real source.
+ */
+const sourceDownUntil =
+  (until: number): JobsWorkerDeps["simulatedSource"] =>
+  (database) => {
+    const source = simulatedEntitlementSource(database);
+    return {
+      ...source,
+      refreshSubscription: (ref) =>
+        clock.now() < until
+          ? Promise.reject(new PaddleApiError("transient", "source down (test)"))
+          : source.refreshSubscription(ref),
+    };
+  };
+
+describe("provider outages at the entry points", () => {
+  it(
+    "an outage of the source and of GitHub across the boundary revokes no one, and the sweeps converge once both answer",
+    async () => {
+      const { s, sub, isCollaborator } = await collaborator({ gracePeriodDays: 7 });
+      const pastDue = await act(s, sub.id, "mark_past_due");
+      await tick(s);
+      const boundary = (pastDue.subscription.pastDueSince as number) + 7 * DAY;
+      const [entitlement] = await entitlementsOf(s);
+      expect(entitlement).toMatchObject({ state: "active", validUntil: boundary });
+
+      // The payment is recovered just before the boundary and its webhook is lost. Then the
+      // source is down for three hours from the boundary, and GitHub for the first hour.
+      clock.set(boundary - HOUR);
+      const recovered = await act(s, sub.id, "recover");
+      await lose(recovered.outboxId);
+      const sourceBack = boundary + 3 * HOUR;
+      s.github.outage(boundary + HOUR);
+      const down = { simulatedSource: sourceDownUntil(sourceBack) };
+
+      // Every quarter hour through the outage: the boundary refresh and the reconciles fail and
+      // are retried; the entitlement is expiry pending, so nothing is revoked.
+      for (clock.set(boundary); clock.now() < sourceBack; clock.advance(15 * MINUTE)) {
+        await tick(s, down);
+        expect(removals(s.github)).toEqual([]);
+        expect(isCollaborator()).toBe(true);
+      }
+      expect(await entitlementsOf(s)).toMatchObject([
+        { id: entitlement?.id, state: "active", validUntil: boundary },
+      ]);
+      expect(
+        (
+          await env.DB.prepare(
+            "SELECT kind, attempts, last_error_code, created_at, failed_at FROM outbox WHERE workspace_id = ? AND failed_at IS NOT NULL",
+          )
+            .bind(s.workspaceId)
+            .all()
+        ).results,
+      ).toEqual([]);
+
+      // Both answer again: the retried refresh finds the renewal and the same entitlement goes
+      // on, within the confirmation window. Access was never revoked.
+      for (let i = 0; i < 8; i += 1) {
+        clock.advance(15 * MINUTE);
+        await tick(s, down);
+      }
+      expect(await entitlementsOf(s)).toMatchObject([
+        { id: entitlement?.id, state: "active", validUntil: null, decisionReason: "active" },
+      ]);
+      clock.set(boundary + WINDOW + MINUTE);
+      await tick(s, down);
+      await reconcileNow(s);
+      expect(removals(s.github)).toEqual([]);
+      expect(isCollaborator()).toBe(true);
+      expect(await grantState(s)).toBe("active");
+    },
+    ENTRY_POINT_TIMEOUT * 2,
   );
 });

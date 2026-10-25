@@ -41,7 +41,7 @@ interface WranglerEnv {
   observability?: { enabled?: boolean; issues?: { enabled?: boolean } };
   queues?: {
     producers?: { binding: string; queue: string }[];
-    consumers?: { queue: string; dead_letter_queue?: string }[];
+    consumers?: { queue: string; dead_letter_queue?: string; max_retries?: number }[];
   };
 }
 interface WranglerConfig extends WranglerEnv {
@@ -158,7 +158,9 @@ describe("apps/jobs/wrangler.jsonc", () => {
       const dlq = events.replace("sharerepo-events-", "sharerepo-events-dlq-");
       expect(events).toMatch(/^sharerepo-events-(dev|prod)$/);
       expect(env.queues?.consumers).toEqual([
-        expect.objectContaining({ queue: events, dead_letter_queue: dlq }),
+        // max_retries is QUEUE_MAX_RETRIES in apps/jobs/src/handlers.ts: from that retry on,
+        // a retryable job is handed to the outbox drain rather than dead-lettered.
+        expect.objectContaining({ queue: events, dead_letter_queue: dlq, max_retries: 5 }),
         expect.objectContaining({ queue: dlq }),
       ]);
       expect(env.queues?.consumers?.[1]).not.toHaveProperty("dead_letter_queue");

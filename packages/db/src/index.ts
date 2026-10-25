@@ -156,6 +156,7 @@ export {
 export {
   claimOutbox,
   dedupedOutboxInsert,
+  deferOutboxRow,
   enqueueOutbox,
   enqueueOutboxOnce,
   enqueueOutboxRows,

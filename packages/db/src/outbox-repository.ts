@@ -249,6 +249,30 @@ export async function claimOutbox(
     .returning();
 }
 
+/**
+ * Makes an open (unsent, unfailed) row of this kind and subject due no sooner than `availableAt`:
+ * a retryable failure's backoff. It never brings a row forward. Returns whether the row changed.
+ */
+export async function deferOutboxRow(
+  db: Db,
+  input: { id: string; kind: OutboxKind; subjectId: string; availableAt: Instant },
+): Promise<boolean> {
+  const changed = await db
+    .update(outbox)
+    .set({ availableAt: sql`max(${outbox.availableAt}, ${input.availableAt})` })
+    .where(
+      and(
+        eq(outbox.id, input.id),
+        eq(outbox.kind, input.kind),
+        eq(outbox.subjectId, input.subjectId),
+        isNull(outbox.sentAt),
+        isNull(outbox.failedAt),
+      ),
+    )
+    .returning({ id: outbox.id });
+  return changed.length === 1;
+}
+
 /** Marks rows delivered; they are never claimed again. */
 export async function markOutboxSent(db: Db, ids: readonly string[], now: Instant): Promise<void> {
   if (ids.length === 0) return;

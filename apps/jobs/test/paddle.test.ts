@@ -4,7 +4,7 @@ import { enqueueOutbox } from "@sharerepo/db";
 import type { OutboxKind } from "@sharerepo/domain";
 import { captureLogs, changedTables, type LogCapture, snapshotTables } from "@sharerepo/testing";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { CRONS } from "../src/handlers.ts";
+import { CRONS, QUEUE_MAX_RETRIES } from "../src/handlers.ts";
 import worker from "../src/index.ts";
 import { subscriptionVersion } from "./support/commerce.ts";
 import { clock, count, db, envWithGitHub, PRODUCTION } from "./support/github.ts";
@@ -191,6 +191,61 @@ describe("Paddle events and refreshes", () => {
     ]);
     expect(await sentAt(refresh.outboxId)).toBeNull();
     expect(await paddleSource(s, subscription.id)).toBeNull();
+  });
+
+  it("provider/timeout-is-retryable: a refresh whose Paddle call hangs is retried, never failed", async () => {
+    const s = await paddleShop();
+    const { subscription } = directPurchase(s);
+    const refresh = await job("refresh_subscription", refreshKey(s, subscription.id));
+    // An early attempt is retried by the queue.
+    s.paddle.hangNext("getSubscription");
+    const first = await deliver(paddleWorker(s), [refresh], { attempts: 1 });
+    expect(first.retryMessages).toHaveLength(1);
+    expect(retried()).toMatchObject([{ errorName: "PaddleApiError", errorKind: "transient" }]);
+
+    // From the queue's last retry on, the outbox drain takes it over with its own backoff: the
+    // message is acknowledged so it never reaches the dead-letter queue, and the row stays open.
+    s.paddle.hangNext("getSubscription");
+    const last = await deliver(paddleWorker(s), [refresh], { attempts: QUEUE_MAX_RETRIES });
+    expect(last.retryMessages).toHaveLength(0);
+    expect(last.explicitAcks).toHaveLength(1);
+    expect(logged().find((line) => line.msg === "job handed to the outbox drain")).toMatchObject({
+      outboxId: refresh.outboxId,
+      errorKind: "transient",
+    });
+    const row = await env.DB.prepare(
+      "SELECT sent_at, failed_at, available_at FROM outbox WHERE id = ?",
+    )
+      .bind(refresh.outboxId)
+      .first<{ sent_at: number | null; failed_at: number | null; available_at: number }>();
+    expect(row).toMatchObject({ sent_at: null, failed_at: null });
+    expect(row?.available_at).toBe(clock.now() + 16 * 60_000);
+    expect(await paddleSource(s, subscription.id)).toBeNull();
+
+    // The drain runs it once it is due, and Paddle answers.
+    clock.advance(16 * 60_000);
+    await runCron(paddleWorker(s), CRONS.drainOutbox);
+    expect(await sentAt(refresh.outboxId)).not.toBeNull();
+    expect(await paddleSource(s, subscription.id)).toEqual({ source: "paddle" });
+  });
+
+  it("provider/timeout-is-retryable: a hung call in the outbox drain counts an attempt and stays due", async () => {
+    const s = await paddleShop();
+    const { subscription } = directPurchase(s);
+    const refresh = await job("refresh_subscription", refreshKey(s, subscription.id));
+    s.paddle.hangNext("getSubscription");
+    await runCron(paddleWorker(s), CRONS.drainOutbox);
+    expect(await outboxRow(refresh.outboxId)).toMatchObject({
+      sent_at: null,
+      failed_at: null,
+      attempts: 1,
+    });
+    // A later drain, once the row is due again, runs it.
+    clock.advance(60 * 60_000);
+    await runCron(paddleWorker(s), CRONS.drainOutbox);
+    expect(await outboxRow(refresh.outboxId)).toMatchObject({ failed_at: null });
+    expect(await sentAt(refresh.outboxId)).not.toBeNull();
+    expect(await paddleSource(s, subscription.id)).toEqual({ source: "paddle" });
   });
 
   it("retries a Paddle rate limit after its Retry-After", async () => {

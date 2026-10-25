@@ -2,6 +2,7 @@ import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import {
   claimOutbox,
+  deferOutboxRow,
   enqueueOutbox,
   enqueueOutboxRows,
   failOutboxRow,
@@ -177,6 +178,56 @@ describe("markExternalEvent", () => {
     expect(ids.indexOf(older.id)).toBeLessThan(ids.indexOf(newer.id));
     expect(await listExternalEventsByState(db, state, 1)).toHaveLength(1);
     expect(await getExternalEvent(db, "no-such-event")).toBeNull();
+  });
+});
+
+describe("deferOutboxRow", () => {
+  const availableAt = async (id: string) =>
+    (
+      await env.DB.prepare("SELECT available_at AS at FROM outbox WHERE id = ?")
+        .bind(id)
+        .first<{ at: number }>()
+    )?.at;
+
+  it("pushes an open row later, never earlier, and only the row its kind and subject name", async () => {
+    const at = T0 + 5_000_000;
+    const row = work(uniqueId("defer"), { availableAt: at });
+    await enqueueOutbox(db, row);
+    const key = { id: row.id, kind: row.kind, subjectId: row.subjectId };
+    expect(await deferOutboxRow(db, { ...key, availableAt: at + 60_000 })).toBe(true);
+    expect(await availableAt(row.id)).toBe(at + 60_000);
+    // Never brought forward.
+    expect(await deferOutboxRow(db, { ...key, availableAt: at })).toBe(true);
+    expect(await availableAt(row.id)).toBe(at + 60_000);
+    // Another subject or kind does not match.
+    expect(
+      await deferOutboxRow(db, { ...key, subjectId: "other", availableAt: at + 120_000 }),
+    ).toBe(false);
+    expect(
+      await deferOutboxRow(db, { ...key, kind: "recompute_offer", availableAt: at + 120_000 }),
+    ).toBe(false);
+    expect(await availableAt(row.id)).toBe(at + 60_000);
+  });
+
+  it("leaves a sent or failed row alone", async () => {
+    const at = T0 + 6_000_000;
+    const sent = work(uniqueId("sent"), { availableAt: at });
+    const failed = work(uniqueId("failed"), { availableAt: at });
+    await enqueueOutbox(db, sent);
+    await enqueueOutbox(db, failed);
+    await markOutboxSent(db, [sent.id], at);
+    await failOutboxRow(db, { id: failed.id, now: at, errorCode: "rejected" }, []);
+    for (const row of [sent, failed]) {
+      expect(
+        await deferOutboxRow(db, {
+          id: row.id,
+          kind: row.kind,
+          subjectId: row.subjectId,
+          availableAt: at + 60_000,
+        }),
+      ).toBe(false);
+      expect(await availableAt(row.id)).toBe(at);
+    }
   });
 });
 

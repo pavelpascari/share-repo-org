@@ -171,6 +171,45 @@ describe("reconcile_resource in the per-minute cron", () => {
     ).toBe(0);
   });
 
+  it("provider/timeout-is-retryable: a reconcile whose GitHub call hangs is checked again, never failed", async () => {
+    const fake = github();
+    const { resource, message } = await subscribed(fake);
+    // The read hangs past the client's timeout, which the client reports as transient.
+    fake.hangNext("listCollaborators");
+    const result = await deliver(jobsWorker(fake), [message]);
+    expect(result.explicitAcks).toHaveLength(1);
+    expect(invitations(fake, resource.name)).toBe(0);
+    expect(await outboxRow(message.outboxId)).toMatchObject({
+      failed_at: null,
+      last_error_code: null,
+    });
+    const state = await env.DB.prepare(
+      "SELECT reconcile_failures, last_reconcile_error, next_reconcile_at FROM resources WHERE id = ?",
+    )
+      .bind(resource.id)
+      .first<{
+        reconcile_failures: number;
+        last_reconcile_error: string;
+        next_reconcile_at: number;
+      }>();
+    expect(state).toMatchObject({
+      reconcile_failures: 1,
+      last_reconcile_error: "provider_unavailable",
+    });
+    expect(state?.next_reconcile_at).toBeGreaterThanOrEqual(clock.now());
+    expect(
+      await count(
+        "SELECT count(*) AS n FROM audit_events WHERE action = 'job.failed' AND target_id = ?",
+        message.outboxId,
+      ),
+    ).toBe(0);
+
+    // The scheduled check runs it again and invites.
+    clock.set(state?.next_reconcile_at as number);
+    await runCron(jobsWorker(fake), CRONS.drainOutbox);
+    expect(invitations(fake, resource.name)).toBe(1);
+  });
+
   it("still sweeps evaluations and drains the outbox when the reconcile sweep fails", async () => {
     const { s, message } = await subscribed();
     await markOutboxSent(db, [message.outboxId], clock.now());

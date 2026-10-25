@@ -64,6 +64,14 @@ export interface FakeGitHubApp extends GitHubAppPort {
   failNext(operation: FakeGitHubOperation, error: GitHubApiError): void;
   /** The next call of `operation` does its work, then throws `transient` (a lost response). */
   loseNextResponse(operation: FakeGitHubOperation): void;
+  /**
+   * The next call of `operation` hangs past the client's timeout (`REQUEST_TIMEOUT_MS`): it does
+   * nothing and fails as the real client fails a request its timeout aborted, `transient` with
+   * no status. A hang after GitHub applied a change is `loseNextResponse`.
+   */
+  hangNext(operation: FakeGitHubOperation): void;
+  /** GitHub is down: every call fails `transient` with status 503 until the clock reaches `until`. */
+  outage(until: Instant): void;
   /** The creator adds a collaborator on GitHub (`permission` defaults to `write`). */
   addCollaboratorByHand(
     repo: string,
@@ -109,10 +117,20 @@ export function createFakeGitHubApp(options: FakeGitHubAppOptions = {}): FakeGit
   let failure: GitHubApiErrorKind | undefined;
   const failures = new Map<FakeGitHubOperation, GitHubApiError>();
   const lostResponses = new Set<FakeGitHubOperation>();
+  const hangs = new Set<FakeGitHubOperation>();
+  let outageUntil: Instant | null = null;
   let nextInvitationId = 1;
 
   function begin(operation: FakeGitHubOperation, installationId: string): State {
     calls.push(`${operation}:${installationId}`);
+    if (outageUntil !== null && clock.now() < outageUntil) {
+      throw new GitHubApiError("transient", `GitHub ${operation} failed with status 503`, {
+        status: 503,
+      });
+    }
+    if (hangs.delete(operation)) {
+      throw new GitHubApiError("transient", `GitHub ${operation} failed: network error`);
+    }
     if (failure !== undefined) {
       const kind = failure;
       failure = undefined;
@@ -360,6 +378,14 @@ export function createFakeGitHubApp(options: FakeGitHubAppOptions = {}): FakeGit
 
     loseNextResponse(operation) {
       lostResponses.add(operation);
+    },
+
+    hangNext(operation) {
+      hangs.add(operation);
+    },
+
+    outage(until) {
+      outageUntil = until;
     },
 
     addCollaboratorByHand(repo, user, permission = "write") {

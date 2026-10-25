@@ -16,6 +16,7 @@ import {
   claimOutbox,
   createDb,
   type Db,
+  deferOutboxRow,
   markOutboxSent,
   type OutboxRow,
   pendingOutboxSince,
@@ -43,7 +44,7 @@ import {
 } from "@sharerepo/platform";
 import { type JobsConfig, parseJobsEnv } from "./env.ts";
 import { type JobMessage, jobMessageSchema } from "./messages.ts";
-import { type JobDeps, JobOutcome, retryDelaySeconds, runJob } from "./work.ts";
+import { type JobDeps, JobOutcome, outboxRetryDelayMs, retryDelaySeconds, runJob } from "./work.ts";
 
 export interface JobsWorkerDeps {
   readonly ids: IdGenerator;
@@ -87,6 +88,13 @@ const OUTBOX_LEASE_MS = 60_000;
 export const OUTBOX_DRAIN_BUDGET_MS = 20_000;
 /** After this many attempts a row is marked failed and left for the operator. */
 export const OUTBOX_MAX_ATTEMPTS = 10;
+/**
+ * The events queue's `max_retries` (wrangler.jsonc). A retryable job still failing on the queue's
+ * last retry is handed to the outbox drain instead of the dead-letter queue: the drain's backoff
+ * outlasts a provider outage (see `outboxRetryDelayMs`), and the dead-letter queue would fail it
+ * for good after about 15 minutes.
+ */
+export const QUEUE_MAX_RETRIES = 5;
 /** Subscriptions whose next policy boundary passed, queued per minute (phase-3 plan § Time). */
 export const DUE_EVALUATION_BATCH = 100;
 /** Repositories due for reconciliation, queued per minute (phase-4 plan § Reconciliation job). */
@@ -281,8 +289,16 @@ export function createJobsWorker(deps: JobsWorkerDeps) {
         // Will not succeed by waiting: record it once (row, `job.failed`, alert line) instead of
         // retrying every minute.
         await recordJobFailure(ctx, { outboxId: row.id, errorCode: errorCode(error) });
+      } else {
+        // Backs off past the lease, so a provider outage does not use up the attempts in minutes.
+        const retryAfterMs = isProviderError(error) ? error.retryAfterMs : undefined;
+        await deferOutboxRow(db, {
+          id: row.id,
+          kind: row.kind,
+          subjectId: row.subjectId,
+          availableAt: now + outboxRetryDelayMs(row.attempts, retryAfterMs),
+        });
       }
-      // Otherwise left leased: the row becomes due again when the lease expires.
       logger.warn("outbox job failed", {
         outboxId: row.id,
         kind: row.kind,
@@ -528,7 +544,8 @@ export function createJobsWorker(deps: JobsWorkerDeps) {
      * The fast path for handed-off work. Each message is acknowledged unless a retry can help:
      * poison messages and work without a workspace are dropped with a warning; GitHub and Paddle
      * outages and rate limits, an unavailable Paddle connection or commerce configuration, and
-     * concurrent writers are retried with a delay; other failures (including a key that does not
+     * concurrent writers are retried with a delay, and from the queue's last retry on are left to
+     * the outbox drain's longer backoff (never the dead-letter queue); other failures (including a key that does not
      * decode, or an unavailable entitlement source) are marked failed on the outbox row with a
      * classified code and acknowledged.
      */
@@ -571,7 +588,23 @@ export function createJobsWorker(deps: JobsWorkerDeps) {
           await handOff(env, db, startedAt, logger);
           message.ack();
         } catch (error) {
-          if (isRetryable(error)) {
+          if (isRetryable(error) && message.attempts >= QUEUE_MAX_RETRIES) {
+            // The queue's retries are nearly spent: the outbox drain takes the row over with its
+            // longer backoff, rather than the dead-letter queue failing it for good.
+            const retryAfterMs = isProviderError(error) ? error.retryAfterMs : undefined;
+            await deferOutboxRow(db, {
+              id: job.outboxId,
+              kind: job.kind,
+              subjectId: job.subjectId,
+              availableAt: deps.clock.now() + outboxRetryDelayMs(message.attempts, retryAfterMs),
+            });
+            logger.warn("job handed to the outbox drain", {
+              outboxId: job.outboxId,
+              attempts: message.attempts,
+              ...classify(error),
+            });
+            message.ack();
+          } else if (isRetryable(error)) {
             const retryAfterMs = isProviderError(error) ? error.retryAfterMs : undefined;
             const delaySeconds = retryDelaySeconds(message.attempts, retryAfterMs);
             logger.warn("job will be retried", {

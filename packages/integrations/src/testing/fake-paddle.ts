@@ -245,6 +245,14 @@ export interface FakePaddle extends PaddlePort {
   ): void;
   /** The next call of `operation` does its work, then throws `transient` (a lost response). */
   loseNextResponse(operation: FakePaddleMutation): void;
+  /**
+   * The next call of `operation` hangs past the client's timeout (`PADDLE_REQUEST_TIMEOUT_MS`):
+   * it does nothing and fails as the real client fails a request its timeout aborted,
+   * `transient` with no status. A hang after Paddle applied a change is `loseNextResponse`.
+   */
+  hangNext(operation: FakePaddleOperation): void;
+  /** Paddle is down: every call fails `transient` with status 503 until the clock reaches `until`. */
+  outage(until: Instant): void;
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -318,6 +326,8 @@ export function createFakePaddle(options: FakePaddleOptions = {}): FakePaddle {
   const calls: string[] = [];
   const failures = new Map<FakePaddleOperation, PaddleApiError>();
   const lostResponses = new Set<FakePaddleOperation>();
+  const hangs = new Set<FakePaddleOperation>();
+  let outageUntil: Instant | null = null;
   const prices = new Map<string, PaddlePrice>();
   const customers = new Map<string, PaddleCustomer>();
   const subscriptions = new Map<string, WireSubscription>();
@@ -335,6 +345,14 @@ export function createFakePaddle(options: FakePaddleOptions = {}): FakePaddle {
 
   function begin(operation: FakePaddleOperation): void {
     calls.push(operation);
+    if (outageUntil !== null && clock.now() < outageUntil) {
+      throw new PaddleApiError("transient", `Paddle ${operation} failed with status 503`, {
+        status: 503,
+      });
+    }
+    if (hangs.delete(operation)) {
+      throw new PaddleApiError("transient", `Paddle ${operation} failed: network error`);
+    }
     const injected = failures.get(operation);
     if (injected !== undefined) {
       failures.delete(operation);
@@ -870,6 +888,14 @@ export function createFakePaddle(options: FakePaddleOptions = {}): FakePaddle {
 
     loseNextResponse(operation) {
       lostResponses.add(operation);
+    },
+
+    hangNext(operation) {
+      hangs.add(operation);
+    },
+
+    outage(until) {
+      outageUntil = until;
     },
   };
   return fake;

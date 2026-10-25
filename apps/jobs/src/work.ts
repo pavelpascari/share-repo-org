@@ -216,3 +216,23 @@ export function retryDelaySeconds(attempts: number, retryAfterMs?: number): numb
       : Math.ceil(retryAfterMs / 1000);
   return Math.min(Math.max(seconds, 1), MAX_RETRY_DELAY_SECONDS);
 }
+
+/** The outbox drain's first retry delay after a retryable failure. */
+export const OUTBOX_RETRY_BASE_MS = 60_000;
+/** The outbox drain's longest retry delay. */
+export const OUTBOX_RETRY_MAX_DELAY_MS = 2 * 60 * 60 * 1000;
+
+/**
+ * How long the outbox drain waits before the next attempt of a row that failed retryably on its
+ * `attempts`-th attempt: the provider's reset when known, else 1 minute doubling per attempt, at
+ * most 2 hours. Over `OUTBOX_MAX_ATTEMPTS` (10) attempts the waits add up to just over 6 hours,
+ * longer than the expiry confirmation window (decision 0013): a provider outage shorter than that
+ * never fails a job for good, and access the outage would end is confirmed first.
+ */
+export function outboxRetryDelayMs(attempts: number, retryAfterMs?: number): number {
+  const backoff = Math.min(
+    OUTBOX_RETRY_BASE_MS * 2 ** Math.max(0, attempts - 1),
+    OUTBOX_RETRY_MAX_DELAY_MS,
+  );
+  return Math.max(backoff, retryAfterMs ?? 0);
+}

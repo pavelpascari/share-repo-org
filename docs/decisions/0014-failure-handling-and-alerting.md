@@ -76,3 +76,16 @@ Cloudflare has no built-in alert for Worker errors, queue backlog or dead letter
 
 - **Deleted GitHub connections** are listed on `/ops` for 30 days after their deletion (`DELETED_CONNECTION_LISTED_MS`), and after that only while they still have managed grants: access ShareRepo created and may still need to revoke by hand. An old uninstall with nothing left to revoke is history, not a failure, and listing it for ever would bury the live ones.
 - **A purge that waits** (decision 0015: `system_state` key `purge_blocked:<workspaceId>`) is shown on the owner's Access page under "Needs attention" and on `/ops`, with its reason, since when it waits and when it was last checked. It is not an outbox failure: the daily cron queues the purge again, so it needs no retry or dismissal. A workspace whose GitHub App was uninstalled before its purge waits on `managed_access_remaining` until an operator resolves it (incident runbook).
+
+## Amendment — a provider outage does not fail jobs early (Phase 6 T6)
+
+Fault injection found that an outage of about 15 minutes failed jobs for good:
+
+- the outbox drain retried a row each time its one-minute lease expired, so its 10 attempts were spent in 10 minutes;
+- the queue's 5 retries took about 15 minutes, and the dead-letter queue then marked the row failed.
+
+A webhook's processing job then needed an operator, although the provider had recovered.
+
+- **The drain backs off.** A retryable failure (`transient`, `rate_limited`, an unavailable Paddle connection, a concurrent writer) moves the row's `available_at` by `outboxRetryDelayMs`: 1 minute doubling per attempt, at most 2 hours, or the provider's reset when that is later. The waits before the 10th attempt add up to just over 6 hours, longer than the expiry confirmation window ([0013](0013-database-timers-and-expiry-confirmation.md)).
+- **The queue hands over.** From the queue's last retry on (`QUEUE_MAX_RETRIES`, the events queue's `max_retries`), a retryable failure acknowledges the message and defers the row in the same way, so the drain takes it over. The dead-letter queue now receives only messages whose consumer crashed or timed out, and those are still failed with `dead_lettered`.
+- A non-retryable failure is still recorded at once.

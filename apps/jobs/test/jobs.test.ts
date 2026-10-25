@@ -1,6 +1,6 @@
 import { env } from "cloudflare:workers";
 import { claimOutbox, enqueueOutbox, getExternalEvent } from "@sharerepo/db";
-import { dailyOffsetMs } from "@sharerepo/domain";
+import { dailyOffsetMs, EXPIRY_CONFIRMATION_WINDOW_MS } from "@sharerepo/domain";
 import { GitHubApiError, type GitHubAppPort } from "@sharerepo/integrations";
 import { createFakeGitHubApp, type FakeGitHubApp } from "@sharerepo/integrations/testing";
 import { ConflictError, NotFoundError } from "@sharerepo/platform";
@@ -19,7 +19,7 @@ import {
   OUTBOX_MAX_ATTEMPTS,
 } from "../src/handlers.ts";
 import worker from "../src/index.ts";
-import { retryDelaySeconds } from "../src/work.ts";
+import { outboxRetryDelayMs, retryDelaySeconds } from "../src/work.ts";
 import {
   clock,
   connectedCreator,
@@ -209,6 +209,33 @@ describe("retryDelaySeconds", () => {
     [1, 3_600_000, 900],
   ])("attempt %i, retry-after %s ms → %i s", (attempts, retryAfterMs, expected) => {
     expect(retryDelaySeconds(attempts, retryAfterMs)).toBe(expected);
+  });
+});
+
+describe("outboxRetryDelayMs", () => {
+  const MINUTE = 60_000;
+  it.each([
+    [0, undefined, MINUTE],
+    [1, undefined, MINUTE],
+    [2, undefined, 2 * MINUTE],
+    [7, undefined, 64 * MINUTE],
+    [8, undefined, 120 * MINUTE],
+    [20, undefined, 120 * MINUTE],
+    [1, 90_000, 90_000],
+    [8, 3 * 60 * MINUTE, 3 * 60 * MINUTE],
+    [3, 1_000, 4 * MINUTE],
+  ])("attempt %i, retry-after %s ms → %i ms", (attempts, retryAfterMs, expected) => {
+    expect(outboxRetryDelayMs(attempts, retryAfterMs)).toBe(expected);
+  });
+
+  it("outlasts the expiry confirmation window before a row's last attempt", () => {
+    // Attempts 1…9 fail and wait; the 10th (OUTBOX_MAX_ATTEMPTS) is the last.
+    let waited = 0;
+    for (let attempt = 1; attempt < OUTBOX_MAX_ATTEMPTS; attempt += 1) {
+      waited += outboxRetryDelayMs(attempt);
+    }
+    expect(waited).toBe(367 * 60_000);
+    expect(waited).toBeGreaterThan(EXPIRY_CONFIRMATION_WINDOW_MS);
   });
 });
 
