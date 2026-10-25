@@ -418,6 +418,60 @@ Where the build differs from, or adds to, the design above.
   - `apps/jobs/src/work.ts` handles `RewrapCredentials`, and `apps/jobs/test/jobs.test.ts` drops it from the placeholder list.
   - `packages/application/src/index.ts`, `packages/db/src/index.ts` and `packages/domain/src/audit.ts` gain exports and entries.
 
+### T6
+
+- **Crash between writes** ([testing strategy](../testing-strategy.md#fake-providers)).
+  - `crashingD1` (`packages/testing/src/crash.ts`) wraps the D1 binding, not the Drizzle `Db`. The write it fails is a `batch()` or a single INSERT, UPDATE or DELETE (statements are proxied and unwrapped for `batch()`). Drizzle wraps a failed single statement's error, so the matrix looks for `InjectedCrash` along the `cause` chain.
+  - `packages/application/test/crash.test.ts` covers nine operations: subscription refresh, reconcile, Paddle connect, webhook secret rotation, claim path 2 (confirming the link), claim path 1 (the refresh that links), workspace purge, account deletion and failure retry.
+  - For each operation it does a clean run to count the writes. It then crashes at every write N, before and after it commits, and re-runs as the queue or the owner would. The snapshot is every workspace-scoped table, Paddle's received events, the account audit events about the fixture and the fake provider's state. It drops ID, instant, hash, digest and token columns, keeps only the key ID of envelopes, and replaces the fixture's slugs, logins and generated IDs.
+  - Every run starts at the same fake instant. The fixtures drain the offer's recompute before subscribing, because the two jobs' order otherwise depends on random IDs.
+  - **Allowances, per case:**
+    - `recovery`: the history a recovery may add or record differently. A mutation in doubt is resolved (`provider.mutation_attempted`/`_resolved`, `grant.observed`, a `resolved` mutation in place of `succeeded`), and a repeated catalog refresh is audited again.
+    - `tolerates`: failures absorbed by design (connect's catalog import).
+    - `settle`: follow-up work drained before comparing (path 1's second refresh grants the access).
+  - **The reconcile re-run is the sweep's.** It waits out the crashed run's lease, then runs at `next_reconcile_at` until no grant is `provisioning` or `revoking`. An intent in doubt settles only after the observation grace.
+  - T4's own purge and account-deletion crash tests stay as they are.
+- **Bugs found by the matrix, each fixed with a regression test:**
+  - Paddle connect deleted the destination of a connection whose write had committed before the error. The connection then never received a webhook. It now re-reads the row first. The refreshes of earlier Paddle subscriptions moved into the connection's batch (`createPaddleConnection`).
+  - Rotation did the same with a stored next destination, which it now keeps. The re-run resumes it.
+  - A repeated claim confirmation by the claimant was refused and audited as `already_used`. It is now the same success, writing nothing (`repeatedConfirmation`), and anyone else is still refused. The route test and the audit test changed accordingly.
+  - After a crash, account deletion's tombstone reported `unlinkedSubjects: 0`. See the review's account-deletion fix below.
+- **Timeouts.**
+  - Both clients already passed `AbortSignal.timeout`. But a 2xx body that stalled until the timeout fired was read by `response.json()` in a try/catch, became `undefined` and was classified `malformed`, which is never retried. `json()` now reads the text first: a read failure is `transient`, and only text that is not JSON is malformed. Error bodies keep the lenient `errorJson`.
+  - Both clients take `requestTimeoutMs` for tests.
+  - The fakes gain `hangNext(operation)`, which fails as the client fails a request its timeout aborted, and `outage(until)`. One contract runs the hang against each fake and each real client (`packages/integrations/test/timeout.test.ts`).
+  - Entry points: a hung GitHub read is recorded on the repository and checked again, and a hung Paddle refresh is retried on the queue and in the drain. Neither is ever failed.
+- **Outage window** (`apps/jobs/test/timing.test.ts`, "provider outages at the entry points"). The source is down for three hours across a grace boundary whose renewal webhook was lost, and GitHub for the first hour. Every quarter-hour tick revokes nothing (expiry pending), and no row fails. Once both answer, the retried refresh continues the same entitlement within the window. `provider/outage-recovers-on-scheduled-reconcile` already had an entry-point test, so this one has a descriptive title.
+- **Bug found by the outage test: jobs failed early.** The drain re-claimed a failing row whenever its 1-minute lease expired, so 10 attempts lasted about 10 minutes. The queue dead-lettered after 5 retries, about 15 minutes. The changes ([decision 0014 amendment](../decisions/0014-failure-handling-and-alerting.md#amendment--a-provider-outage-does-not-fail-jobs-early-phase-6-t6)):
+  - The drain now defers a retryable failure by `outboxRetryDelayMs`: 1 minute doubling, at most 2 hours, or the provider's reset when later. That is 367 minutes before the 10th attempt, more than the confirmation window.
+  - From `QUEUE_MAX_RETRIES` (the events queue's `max_retries`, asserted in the wrangler config test), the queue consumer acknowledges a retryable failure and defers the row to the drain (`deferOutboxRow`, guarded on kind, subject, unsent and unfailed, never earlier).
+- **Stored rows and logs** (`security/no-secrets-in-stored-rows-or-logs`, `apps/jobs/test/security.test.ts` and `apps/web/test/security.test.ts`).
+  - `scanStoredRows` (`packages/testing/src/stored-rows.ts`) reads every text and blob value of every table. It looks for each canary as written and in hex, base64 and base64url (every alignment), and for email shapes, `%40` included.
+  - The jobs seed runs every job kind (asserted) over canary master keys (current and retired), claim key, GitHub private key, GitHub webhook secret, Paddle key and both webhook secrets. It covers services from sign-in to purge and failure paths with canaries in provider errors. The web seed covers every page and both webhooks through the handler, with canary auth secrets.
+  - The only allowed email is Better Auth's synthetic `github-<id>@users.sharerepo.invalid` in `auth_users.email`. A buyer's email is stored only sealed.
+  - Nothing leaked. The seeds do not cover installation tokens (the fake issues none), the GitHub setup route, offer updates, manual links or sign-out.
+- **Migration upgrade** (`migration/upgrade-from-each-release-keeps-data`, `packages/db/test/upgrade.test.ts`).
+  - There is one fixture per migration, `at-0000.sql` to `at-0010.sql`, and one test each. A guard fails when fixtures and migrations differ. Storage is reset between tests.
+  - The test uses `PRAGMA quick_check`, because D1 refuses `integrity_check`. **T7:** `db:drill` needs the same switch.
+  - The rule is in the testing strategy: every migration adds its fixture.
+- **Merge leftovers:**
+  - **Waiting purges.** `listPurgeBlocks` reads `purge_blocked:*` with its workspace. `WorkspaceFailures.purgeBlocked` shows it under "Needs attention" on the Access page, and in the operator's read-only view. `OperatorFailures.purgesBlocked` lists every waiting purge on `/ops` ("Workspace deletions that wait"). The texts moved to `failure-messages.ts` (`PURGE_BLOCK_MESSAGES`, `purgeBlockText`).
+  - **Deleted connections on `/ops`.** They are listed for `DELETED_CONNECTION_LISTED_MS` (30 days), then only while a managed grant remains (decision 0014 amendment).
+  - **E2E mail poll.** `claimLinkFor` reads the fake's mailbox through `mailTo`, which treats a request error or non-2xx response as "no mail yet".
+- **Adversarial review** ([threat model, status after T6](../security/operations-threat-model.md#status-after-phase-6-t6)):
+  - **Account deletion.**
+    - Matching is now by the account's GitHub ID, for subjects linked to the identity or to no user ([decision 0015 amendment](../decisions/0015-data-lifecycle.md#amendment--account-deletion-clears-every-subject-of-the-github-account-phase-6-t6)). `listSubjectsOfIdentity` replaces `listSubjectsLinkedToIdentity`, and a workspace with nothing left to clear is skipped.
+    - The last batch is guarded on ownership inside the batch (`deleteAccountRows` returns null when it wrote nothing).
+  - **Owner retry.** An owner's retry no longer undoes a dismissal (`retryOutboxFailure`'s `dismissed: "refused"`).
+  - **Open failures.** Delivered rows are no longer listed.
+  - **Operator view.** A cross-site or same-site GET of `/ops/w/:slug` redirects to `/ops` without writing (`isCrossSiteRequest`).
+  - **Accepted risks** are recorded with their status, among them a rewrap stalled by 50 or more unopenable envelopes, a sign-in racing the user's own deletion, and a rotation racing a disconnect.
+- **For T7:**
+  - `db:drill` should use `quick_check`.
+  - The incident runbook needs the operator procedure for a purge waiting on an uninstalled App. `/ops` now shows such purges.
+  - The secret-rotation runbook should check `credentials.rewrapped.failed` before removing a key.
+  - No E2E journey covers the outage backoff. The entry-point tests do.
+
 ## Risks and open points
 
 - **Monitors is a beta.** Alerting has a manual fallback, a daily `/ops` review, until it is stable.

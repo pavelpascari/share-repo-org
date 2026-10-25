@@ -54,7 +54,10 @@ Build these in Phase 0–1 so later phases can be tested without retrofitting.
 - fail with a retryable, rate-limited (including secondary rate limit), terminal, or user-action-required error;
 - succeed but lose the response, so the mutation is applied and the caller sees a timeout;
 - return stale state on the next read;
-- simulate an outage for a time window measured by the test clock.
+- simulate an outage for a time window measured by the test clock (`outage(until)`: 503 until the fake's clock reaches it);
+- hang past the client's timeout (`hangNext(operation)`): the call fails as the real client fails a request its `AbortSignal` timeout aborted, `transient` with no status. A contract runs the same hang against the fake and against the real client over a `fetch` that stalls at its headers or mid-body (`packages/integrations/test/timeout.test.ts`).
+
+**Crash between writes.** `crashingD1` (`packages/testing`) wraps a D1 binding so that its Nth write (a `batch()`, or a single INSERT, UPDATE or DELETE) fails before it runs or after it commits. `packages/application/test/crash.test.ts` (`crash/every-batch-boundary-converges`) runs each multi-write operation once to count its writes, then crashes at every write on both sides, re-runs it as the queue or the user would, and compares every workspace table, the account audit events and the fakes' state with the clean run. A case names the history a recovery may add (a mutation in doubt, resolved) and the failures an operation absorbs by design. A new multi-write operation adds a case.
 
 Tests can also make out-of-band changes that act as drift: a human removes a collaborator, adds one manually, renames a user or repository, suspends an installation, or a subscriber declines an invitation.
 
