@@ -93,6 +93,11 @@ export async function recordSignIn(
     );
     const result = await insertExternalIdentity(ctx.db, identity, [linked, signedIn]);
     if (result.ok) return { identityId: identity.id, outcome: "linked" };
+    // The account was deleted while this sign-in ran (decision 0015): refuse it, linking nothing,
+    // so a later sign-in creates a new user and links cleanly.
+    if (result.reason === "user_deleted") {
+      throw new ConflictError("the account was deleted", { code: "account_deleted" });
+    }
     // A uniqueness conflict: a concurrent sign-in linked this account first, or the user already
     // has a different account with this provider. Only the first can be read back.
     existing = await findExternalIdentity(ctx.db, profile);

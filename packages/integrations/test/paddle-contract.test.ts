@@ -26,6 +26,7 @@ import forbidden from "./fixtures/paddle/error-forbidden.json";
 import notFound from "./fixtures/paddle/error-not-found.json";
 import tooMany from "./fixtures/paddle/error-too-many-requests.json";
 import settingCreated from "./fixtures/paddle/notification-setting-created.json";
+import settingsList from "./fixtures/paddle/notification-settings.json";
 import prices1 from "./fixtures/paddle/prices-page-1.json";
 import prices2 from "./fixtures/paddle/prices-page-2.json";
 import subscription from "./fixtures/paddle/subscription.json";
@@ -171,6 +172,15 @@ function realPort(): Subject {
     on("POST", "/transactions", () =>
       paymentLink ? jsonResponse(201, transaction) : jsonResponse(400, paymentLinkError),
     ),
+    ({ method, url }) => {
+      if (method !== "GET" || url.pathname !== "/notification-settings") return undefined;
+      expect(url.searchParams.get("per_page")).toBe("200");
+      // Paddle lists every setting, another app's too; the deleted ones are gone.
+      const data = settingsList.data.filter(
+        (setting) => setting.description !== "ShareRepo" || settings.has(setting.id),
+      );
+      return jsonResponse(200, { ...settingsList, data });
+    },
     on("POST", "/notification-settings", () => {
       if (full) return jsonResponse(400, limitError);
       settings.add(settingCreated.data.id);
@@ -356,6 +366,7 @@ describe.each([
   it("creates, reads and deletes the webhook destination", async () => {
     const { port } = await make();
     const created = await port.createNotificationSetting({
+      description: "ShareRepo",
       destination: DESTINATION,
       events: EVENTS,
     });
@@ -363,6 +374,7 @@ describe.each([
     expect(created.secret).toMatch(/^pdl_ntfset_[a-zA-Z\d]{26}_[a-zA-Z\d]{32}$/);
     await expect(port.getNotificationSetting(created.id)).resolves.toEqual({
       id: created.id,
+      description: "ShareRepo",
       destination: DESTINATION,
       active: true,
       events: EVENTS,
@@ -375,11 +387,44 @@ describe.each([
     await expect(port.deleteNotificationSetting(UNKNOWN_SETTING)).resolves.toBe("not_found");
   });
 
+  it("lists every destination with its description, and none once deleted", async () => {
+    const { port } = await make();
+    const created = await port.createNotificationSetting({
+      description: "ShareRepo",
+      destination: DESTINATION,
+      events: EVENTS,
+    });
+    const own = {
+      id: created.id,
+      description: "ShareRepo",
+      destination: DESTINATION,
+      active: true,
+      events: EVENTS,
+    };
+    expect(await port.listNotificationSettings()).toContainEqual(own);
+    // The secret Paddle returns with each setting is never passed on.
+    for (const setting of await port.listNotificationSettings()) {
+      expect(Object.keys(setting).sort()).toEqual([
+        "active",
+        "description",
+        "destination",
+        "events",
+        "id",
+      ]);
+    }
+    await port.deleteNotificationSetting(created.id);
+    expect(await port.listNotificationSettings()).not.toContainEqual(own);
+  });
+
   it("refuses a destination when 10 are already active", async () => {
     const { port, fillDestinations } = await make();
     fillDestinations();
     const error = await failure(
-      port.createNotificationSetting({ destination: DESTINATION, events: EVENTS }),
+      port.createNotificationSetting({
+        description: "ShareRepo",
+        destination: DESTINATION,
+        events: EVENTS,
+      }),
     );
     expect(error).toMatchObject({
       kind: "rejected",
@@ -403,6 +448,7 @@ describe.each([
     "listSubscriptions",
     "listCustomerSubscriptions",
     "createNotificationSetting",
+    "listNotificationSettings",
   ] as const)("reports a rate limit on %s with the delay before retrying", async (operation) => {
     const { port, rateLimitNext } = await make();
     rateLimitNext(operation);
@@ -412,8 +458,13 @@ describe.each([
       getSubscription: () => port.getSubscription(SUB_JO),
       listSubscriptions: () => port.listSubscriptions(),
       listCustomerSubscriptions: () => port.listCustomerSubscriptions(CUSTOMER_JO.id),
+      listNotificationSettings: () => port.listNotificationSettings(),
       createNotificationSetting: () =>
-        port.createNotificationSetting({ destination: DESTINATION, events: EVENTS }),
+        port.createNotificationSetting({
+          description: "ShareRepo",
+          destination: DESTINATION,
+          events: EVENTS,
+        }),
     }[operation];
     expect(await failure(call())).toMatchObject({ kind: "rate_limited", retryAfterMs: 30_000 });
   });
@@ -430,7 +481,11 @@ interface Delivery {
 
 async function fakeDelivery(): Promise<Delivery> {
   const { fake, clock } = await seededFake();
-  const { id } = await fake.createNotificationSetting({ destination: DESTINATION, events: EVENTS });
+  const { id } = await fake.createNotificationSetting({
+    description: "ShareRepo",
+    destination: DESTINATION,
+    events: EVENTS,
+  });
   clock.set(T1);
   const delivery = await fake.emitSubscriptionEvent(id, "subscription.updated", SUB_JO);
   return {

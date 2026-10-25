@@ -2,6 +2,7 @@ import {
   dismissFailure,
   type FailedJob,
   listAllOpenFailures,
+  operatorSessionIsFresh,
   retryFailureAsOperator,
 } from "@sharerepo/application";
 import { NotFoundError } from "@sharerepo/platform";
@@ -18,8 +19,8 @@ import { cloudflareContext } from "../context.ts";
 import { formatInstant } from "../entitlement-messages.ts";
 import { CONNECTION_STATUS_TEXTS, DISMISS_ERRORS } from "../failure-messages.ts";
 import { enqueueJob } from "../jobs.server.ts";
-import { requireOperator } from "../operators.server.ts";
-import { assertSameOrigin } from "../security/same-origin.ts";
+import { requireOperator, requireOperatorSession } from "../operators.server.ts";
+import { assertSameOrigin, isCrossSiteRequest } from "../security/same-origin.ts";
 import type { Route } from "./+types/ops";
 
 // `/ops` (decision 0014): every workspace's open failures, repositories that keep failing,
@@ -31,9 +32,12 @@ export function meta(_: Route.MetaArgs) {
 
 export async function loader({ request, context }: Route.LoaderArgs) {
   const operator = await requireOperator(request, context);
+  // Reading the lists writes `operator.viewed_failures`: a navigation another site started must
+  // not write it, so it gets a page with only a link to continue (which is same-origin).
+  if (isCrossSiteRequest(request)) return { lists: null };
   const services = servicesFor(context);
   const failures = await listAllOpenFailures(services, operator);
-  return { ...failures, now: services.clock.now() };
+  return { lists: { ...failures, now: services.clock.now() } };
 }
 
 const id = z.string().min(1).max(128);
@@ -55,17 +59,28 @@ const opsForm = z.discriminatedUnion("intent", [
 ]);
 
 type ActionData =
-  | { ok: true; notice: string; error: null; outboxId: string }
-  | { ok: false; notice: null; error: string; outboxId: string | null };
+  | { ok: true; notice: string; error: null; outboxId: string; reauthenticate?: never }
+  | {
+      ok: false;
+      notice: null;
+      error: string;
+      outboxId: string | null;
+      /** The session is too old for a retry or dismissal: sign in again first. */
+      reauthenticate?: true;
+    };
 
 const GONE = "That failure is no longer open. Reload to see the current list.";
+const STALE_SESSION =
+  "For your security, sign in again with GitHub before you retry or dismiss a failure. Your session is more than two hours old.";
 
 /**
  * Retry (`intent=retry`) or dismiss (`intent=dismiss`, with a `reason`) one failure, named by its
- * workspace and outbox ID together (threat O3). Both are audited with the operator as actor.
+ * workspace and outbox ID together (threat O3). Both are audited with the operator as actor, and
+ * both need a session created within `OPERATOR_SESSION_MAX_AGE_MS`: an older one is asked to
+ * sign in again through GitHub, and nothing changes.
  */
 export async function action({ request, context }: Route.ActionArgs) {
-  const operator = await requireOperator(request, context);
+  const { operator, sessionCreatedAt } = await requireOperatorSession(request, context);
   assertSameOrigin(request, context.get(cloudflareContext).env.auth.baseURL);
   const parsed = opsForm.safeParse(Object.fromEntries(await request.formData()));
   if (!parsed.success) {
@@ -78,6 +93,15 @@ export async function action({ request, context }: Route.ActionArgs) {
   }
   const form = parsed.data;
   const services = servicesFor(context);
+  if (!operatorSessionIsFresh(sessionCreatedAt, services.clock.now())) {
+    return {
+      ok: false,
+      notice: null,
+      error: STALE_SESSION,
+      outboxId: form.outboxId,
+      reauthenticate: true,
+    } satisfies ActionData;
+  }
   try {
     if (form.intent === "retry") {
       const retried = await retryFailureAsOperator(services, operator, form);
@@ -125,7 +149,23 @@ function repositoryCount(n: number): string {
 }
 
 export default function Ops({ loaderData, actionData }: Route.ComponentProps) {
-  const { jobs, repositories, connections, purgesBlocked, sweep, now } = loaderData;
+  const { lists } = loaderData;
+  if (lists === null) {
+    // Another site sent the browser here: nothing was read or recorded yet.
+    return (
+      <main className="mx-auto max-w-6xl p-4 sm:p-8">
+        <h1 className="text-2xl font-semibold">Operations</h1>
+        <p className="mt-2 text-gray-700">
+          You followed a link from another site. Opening the operations lists is recorded in the
+          audit history.
+        </p>
+        <Link to="/ops" className="mt-4 inline-block underline">
+          Continue to operations
+        </Link>
+      </main>
+    );
+  }
+  const { jobs, repositories, connections, purgesBlocked, sweep, now } = lists;
   return (
     <main className="mx-auto max-w-6xl p-4 sm:p-8">
       <header className="flex items-center justify-between">
@@ -143,6 +183,14 @@ export default function Ops({ loaderData, actionData }: Route.ComponentProps) {
         <p role="alert" className="mt-4 text-red-700">
           {actionData.error}
         </p>
+      )}
+      {actionData?.reauthenticate && (
+        <Form method="post" action="/sign-in" className="mt-2">
+          <input type="hidden" name="returnTo" value="/ops" />
+          <button type="submit" className="rounded bg-gray-900 px-4 py-2 text-white">
+            Sign in again with GitHub
+          </button>
+        </Form>
       )}
 
       <section aria-labelledby="sweep-health" className="mt-6">

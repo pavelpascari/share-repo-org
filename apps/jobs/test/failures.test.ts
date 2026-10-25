@@ -147,6 +147,24 @@ describe("terminal failures", () => {
     expect(alerts()).toEqual([]);
   });
 
+  it("queue/outbox-ack-matches-kind-and-subject: a message for another job leaves the row open", async () => {
+    const github = createFakeGitHubApp();
+    const { message } = await pendingResync(github);
+    // A valid job (a decodable key of another kind) that names this row: it runs, but must not
+    // settle the row, which stays open for the drain to run its own job.
+    const other = { kind: "rewrap_credentials", subjectId: "rewrap:0", outboxId: message.outboxId };
+    const result = await deliver(jobsWorker(github), [other]);
+    expect(result.explicitAcks).toHaveLength(1);
+    expect(await outboxRow(message.outboxId)).toMatchObject({ sent_at: null, failed_at: null });
+    // The matching message settles it; a replay of it changes nothing.
+    await deliver(jobsWorker(github), [message]);
+    const sent = (await outboxRow(message.outboxId))?.sent_at;
+    expect(sent).toEqual(expect.any(Number));
+    clock.advance(60_000);
+    await deliver(jobsWorker(github), [message]);
+    expect(await outboxRow(message.outboxId)).toMatchObject({ sent_at: sent, failed_at: null });
+  });
+
   // A system-wide job (no workspace) whose key does not decode fails for good.
   it("records a system-wide job's failure as an account-scoped event", async () => {
     const outboxId = `sys-${crypto.randomUUID()}`;

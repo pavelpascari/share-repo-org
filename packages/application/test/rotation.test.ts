@@ -284,15 +284,22 @@ describe("rotatePaddleWebhookSecret", () => {
     expect(await rotate(s)).toMatchObject({ ok: true });
   });
 
-  it("stores nothing when the second destination's response is lost; a rerun creates another", async () => {
+  it("stores nothing when the second destination's response is lost, deletes it, and a rerun creates another", async () => {
     const s = await paddleShop();
     const before = await connectionOf(s);
     s.paddle.loseNextResponse("createNotificationSetting");
     expect(await failure(rotate(s))).toBeInstanceOf(PaddleApiError);
     expect(await connectionOf(s)).toEqual(before);
-    // The lost destination exists in Paddle, unknown to ShareRepo: its deliveries are refused.
-    expect(s.paddle.notificationSettings()).toHaveLength(2);
-    expect(await statusesOf(s, await deliveries(s))).toEqual(["accepted", "invalid_signature"]);
+    // The destination Paddle created at that attempt's unique URL is found and deleted at once.
+    expect(s.paddle.notificationSettings().map((setting) => setting.id)).toEqual([
+      before.destinationId,
+    ]);
+    expect(await auditOf(s.workspaceId, "paddle.destinations_swept")).toEqual([
+      expect.objectContaining({
+        details: { reason: "orphaned", destinationIds: [expect.any(String)] },
+      }),
+    ]);
+    expect(await statusesOf(s, await deliveries(s))).toEqual(["accepted"]);
     expect(await rotate(s)).toMatchObject({ ok: true });
   });
 
@@ -633,7 +640,7 @@ describe("rewrap_credentials", () => {
     expect(new Set(await kidsOf(s))).toEqual(new Set([keyring.newId]));
   });
 
-  it("counts envelopes that do not open as failed, and stops when a run makes no progress", async () => {
+  it("counts envelopes that do not open as failed, and ends the pass at the last envelope", async () => {
     await settleRewrapRows();
     const { keyring, s } = await sealedUnderOldKey();
     // An envelope copied to another row does not open there (it is bound to its row).
@@ -646,14 +653,81 @@ describe("rewrap_credentials", () => {
       rewrapped: 3,
       failed: 1,
       remaining: 1,
-      continued: true,
+      continued: false,
     });
-    expect(await rewrapCredentials(serviceContext(), 1, deps)).toEqual({
+    // The next pass (the daily check queues it while one remains) reports the failure again.
+    expect(await queueCredentialRewrap(serviceContext(), deps)).toBe(true);
+    expect(await rewrapCredentials(serviceContext(), 0, deps)).toEqual({
       rewrapped: 0,
       failed: 1,
       remaining: 1,
       continued: false,
     });
+  });
+
+  it("rotation/rewrap-progresses-past-unopenable-envelopes", async () => {
+    await settleRewrapRows();
+    const { keyring, s } = await sealedUnderOldKey();
+    // A full batch of envelopes that never open, ordered before a good one: each is sealed for
+    // another row, so it is bound to the wrong row.
+    const insert = async (id: string, envelope: string) =>
+      env.DB.prepare(
+        "INSERT INTO claim_requests (id, workspace_id, user_id, email_hash, email_envelope, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+      )
+        .bind(id, s.workspaceId, s.userId, "a".repeat(64), envelope, clock.now())
+        .run();
+    const seal = (rowId: string, plaintext: string) =>
+      sealSecret({
+        keyring: keyring.before,
+        plaintext,
+        aad: envelopeAad({ workspaceId: s.workspaceId, rowId, purpose: "email" }),
+      });
+    for (let i = 0; i < REWRAP_BATCH; i += 1) {
+      const id = `aaa-${String(i).padStart(3, "0")}-${crypto.randomUUID()}`;
+      await insert(id, await seal(`other-${id}`, `bad-${i}@example.com`));
+    }
+    const good = `zzz-${crypto.randomUUID()}`;
+    await insert(good, await seal(good, "good@example.com"));
+    const deps = { credentialKeys: keyring.during };
+
+    // Before the fix every run read the same first 50 and stopped. Now the pass moves on.
+    const runs: { rewrapped: number; failed: number; remaining: number; continued: boolean }[] = [];
+    for (let generation = 0; generation < 5; generation += 1) {
+      const run = await rewrapCredentials(serviceContext(), generation, deps);
+      runs.push(run);
+      if (!run.continued) break;
+    }
+    expect(runs).toHaveLength(2);
+    expect(runs[0]).toMatchObject({ continued: true });
+    // Every envelope that opens moved: three Paddle envelopes, the pending request and `good`.
+    expect(runs.reduce((sum, run) => sum + run.rewrapped, 0)).toBe(5);
+    // Each bad envelope is reported once per pass, and they are all that remain.
+    expect(runs.reduce((sum, run) => sum + run.failed, 0)).toBe(REWRAP_BATCH);
+    expect(runs[1]).toMatchObject({ remaining: REWRAP_BATCH, continued: false });
+    const moved = await env.DB.prepare("SELECT email_envelope FROM claim_requests WHERE id = ?")
+      .bind(good)
+      .first<{ email_envelope: string }>();
+    expect(JSON.parse(moved?.email_envelope as string).kid).toBe(keyring.newId);
+    // The Paddle envelopes moved too; only the bad emails stay under the old key.
+    const connection = await connectionOf(s);
+    expect(
+      [
+        connection.apiKeyEnvelope,
+        connection.webhookSecretEnvelope,
+        connection.webhookSecretNextEnvelope,
+      ].map((envelope) => JSON.parse(envelope as string).kid),
+    ).toEqual([keyring.newId, keyring.newId, keyring.newId]);
+    const old = await env.DB.prepare(
+      "SELECT count(*) AS n FROM claim_requests WHERE workspace_id = ? AND json_extract(email_envelope, '$.kid') = ?",
+    )
+      .bind(s.workspaceId, keyring.oldId)
+      .first<{ n: number }>();
+    expect(old?.n).toBe(REWRAP_BATCH);
+    // The pass ended: its cursor is gone, so the next pass starts at the beginning again.
+    const cursor = await env.DB.prepare("SELECT value FROM system_state WHERE key = ?")
+      .bind("rewrap.cursor")
+      .first();
+    expect(cursor).toBeNull();
   });
 
   it("queues nothing without a retired key", async () => {

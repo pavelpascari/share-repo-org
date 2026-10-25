@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import { ConfigurationError, parseEnv } from "../src/index.ts";
+import { ConfigurationError, optionalSecretText, parseEnv, secretText } from "../src/index.ts";
 
 const CANARY = "canary-env-5f1e8c2a-secret-value";
 
@@ -97,5 +97,36 @@ describe("parseEnv", () => {
   it("reports a missing environment object at the root", () => {
     const error = captureError(() => parseEnv(schema, undefined));
     expect(error.issues).toEqual([{ path: "(root)", code: "invalid_type" }]);
+  });
+});
+
+describe("secretText and optionalSecretText", () => {
+  it("accepts a secret with a visible character, surrounding whitespace included", () => {
+    expect(secretText().parse(" s ")).toBe(" s ");
+    expect(secretText(3).safeParse("ab").success).toBe(false);
+    expect(optionalSecretText().parse("x")).toBe("x");
+  });
+
+  it("security/blank-secret-fails-closed: refuses whitespace only", () => {
+    expect(
+      secretText()
+        .safeParse("   ")
+        .error?.issues.map((i) => i.code),
+    ).toEqual(["invalid_format"]);
+    expect(
+      secretText()
+        .safeParse("")
+        .error?.issues.map((i) => i.code),
+    ).toEqual(["too_small"]);
+    expect(
+      optionalSecretText()
+        .safeParse(" \n")
+        .error?.issues.map((i) => i.code),
+    ).toEqual(["invalid_format"]);
+  });
+
+  it("lets an optional secret be unset or empty", () => {
+    expect(optionalSecretText().parse(undefined)).toBeUndefined();
+    expect(optionalSecretText().parse("")).toBe("");
   });
 });

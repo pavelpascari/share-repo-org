@@ -292,13 +292,21 @@ export function startFakePaddle(options: { port?: number } = {}) {
       return single({ id: created.id, status: "ready", checkout: { url: created.checkoutUrl } });
     }
     if (method === "POST" && resource === "notification-settings") {
-      const input = JSON.parse(body) as { destination?: string; subscribed_events?: string[] };
+      const input = JSON.parse(body) as {
+        description?: string;
+        destination?: string;
+        subscribed_events?: string[];
+      };
       const created = await fake.createNotificationSetting({
+        description: input.description ?? "",
         destination: input.destination ?? "",
         events: input.subscribed_events ?? [],
       });
       const setting = await fake.getNotificationSetting(created.id);
       return single({ ...settingWire(setting), endpoint_secret_key: created.secret });
+    }
+    if (method === "GET" && resource === "notification-settings" && id === undefined) {
+      return list((await fake.listNotificationSettings()).map(settingWire));
     }
     if (method === "GET" && resource === "notification-settings" && id !== undefined) {
       return single(settingWire(await fake.getNotificationSetting(id)));
@@ -567,6 +575,7 @@ function customerWire(customer: { id: string; email: string; createdAt: number }
 function settingWire(setting: PaddleNotificationSetting) {
   return {
     id: setting.id,
+    description: setting.description,
     type: "url",
     destination: setting.destination,
     active: setting.active,

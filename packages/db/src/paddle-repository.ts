@@ -106,6 +106,22 @@ export async function getPaddleConnectionForWebhook(
   return rows[0] ?? null;
 }
 
+/**
+ * The IDs of every connection the workspace ever had, disconnected ones included: a destination
+ * ShareRepo created before destinations were tagged names one of them in its URL.
+ */
+export async function listPaddleConnectionIds(
+  db: Db,
+  key: { workspaceId: string },
+): Promise<string[]> {
+  const rows = await db
+    .select({ id: paddleConnections.id })
+    .from(paddleConnections)
+    .where(eq(paddleConnections.workspaceId, key.workspaceId))
+    .orderBy(asc(paddleConnections.id));
+  return rows.map((row) => row.id);
+}
+
 /** Connections the daily sweep visits: every `active` one. */
 export async function listActivePaddleConnections(
   db: Db,
@@ -254,20 +270,28 @@ export async function markPaddleEventReceived(
  * Disconnects a live connection, with its audit event (`paddle.disconnected`): erases every
  * envelope (a rotation's next secret too) and marks it `disconnected`. `destinationId` and
  * `destinationNextId` are what to keep: null once the destination was deleted in Paddle (or there
- * was none), or its ID when the creator must delete it by hand.
+ * was none), or its ID when the creator must delete it by hand. Guarded on the destinations the
+ * caller read (`expected`): a rotation that stored a second destination meanwhile makes it stale,
+ * so the caller deletes that one too before trying again.
  */
 export async function disconnectPaddleConnection(
   db: Db,
   input: {
     workspaceId: string;
     connectionId: string;
+    expected: { destinationId: string | null; destinationNextId: string | null };
     destinationId: string | null;
     destinationNextId: string | null;
     now: Instant;
   },
   audit: AuditEvents,
 ): Promise<GuardedWriteResult> {
-  const guard = and(scoped(input.workspaceId, input.connectionId), notDisconnected);
+  const guard = and(
+    scoped(input.workspaceId, input.connectionId),
+    notDisconnected,
+    sql`${paddleConnections.destinationId} IS ${input.expected.destinationId}`,
+    sql`${paddleConnections.destinationNextId} IS ${input.expected.destinationNextId}`,
+  );
   return guardedUpdate(
     db,
     guard,

@@ -17,6 +17,7 @@ import {
   services,
   shop,
   signedIn,
+  signedInAs,
   thrownStatus,
 } from "./support/shop.ts";
 import { db } from "./support/sign-in.ts";
@@ -47,6 +48,12 @@ async function failedJob(workspaceId: string | null, subjectId: string): Promise
     throw new Error("setup failed");
   }
   return id;
+}
+
+/** The `/ops` lists of a loader result that read them. */
+function listsOf<T>(loaded: { lists: T | null }): T {
+  if (loaded.lists === null) throw new Error("expected the lists");
+  return loaded.lists;
 }
 
 const connectionOf = async (s: Shop) => s.resources[0]?.connectionId as string;
@@ -86,7 +93,7 @@ describe("/ops", () => {
     const job = await failedJob(s.workspaceId, await connectionOf(s));
     const system = await failedJob(null, "x");
     const { context } = asOperator(operator);
-    const loaded = await ops.loader(args(get("/ops", operator), context));
+    const loaded = listsOf(await ops.loader(args(get("/ops", operator), context)));
     expect(loaded.jobs.map((j) => j.id)).toEqual(expect.arrayContaining([job, system]));
     expect(loaded.sweep).toHaveProperty("lastHeartbeatAt");
     expect(typeof loaded.now).toBe("number");
@@ -258,6 +265,70 @@ describe("/ops/w/:slug from another site", () => {
     }
   });
 
+  it("operator/list-views-audited: /ops audits each view, and a cross-site navigation reads and writes nothing", async () => {
+    const operator = await signedIn();
+    for (const site of ["cross-site", "same-site"]) {
+      const h = asOperator(operator);
+      const request = get("/ops", operator);
+      request.headers.set("sec-fetch-site", site);
+      expect(await ops.loader(args(request, h.context))).toEqual({ lists: null });
+      const correlationId = h.context.get(cloudflareContext).correlationId;
+      expect(await listAuditEventsByCorrelationId(db, correlationId)).toEqual([]);
+    }
+    for (const site of ["none", "same-origin"]) {
+      const h = asOperator(operator);
+      const request = get("/ops", operator);
+      request.headers.set("sec-fetch-site", site);
+      const loaded = listsOf(await ops.loader(args(request, h.context)));
+      const correlationId = h.context.get(cloudflareContext).correlationId;
+      expect(await listAuditEventsByCorrelationId(db, correlationId)).toMatchObject([
+        {
+          action: "operator.viewed_failures",
+          scope: "account",
+          actor: { type: "operator", id: operator.userId },
+          correlationId,
+          details: { jobs: loaded.jobs.length },
+        },
+      ]);
+    }
+  });
+
+  it("operator/mutation-needs-fresh-session: an old session must sign in again to retry or dismiss", async () => {
+    const s = await shop();
+    const operator = await signedIn();
+    const job = await failedJob(s.workspaceId, await connectionOf(s));
+    // The operator signed in three hours ago.
+    await env.DB.prepare("UPDATE auth_sessions SET created_at = ? WHERE user_id = ?")
+      .bind(systemClock.now() - 3 * 60 * 60 * 1000, operator.userId)
+      .run();
+    for (const fields of [
+      { intent: "retry", outboxId: job, workspaceId: s.workspaceId },
+      { intent: "dismiss", outboxId: job, workspaceId: s.workspaceId, reason: "Known outage" },
+    ]) {
+      const h = asOperator(operator);
+      const result = await ops.action(args(post("/ops", operator, fields), h.context));
+      expect(result).toMatchObject({ ok: false, reauthenticate: true, outboxId: job });
+      const correlationId = h.context.get(cloudflareContext).correlationId;
+      expect(await listAuditEventsByCorrelationId(db, correlationId)).toEqual([]);
+      expect(h.sent).toEqual([]);
+    }
+    const open = await env.DB.prepare("SELECT failed_at, dismissed_at FROM outbox WHERE id = ?")
+      .bind(job)
+      .first<{ failed_at: number | null; dismissed_at: number | null }>();
+    expect(open).toMatchObject({ failed_at: expect.any(Number), dismissed_at: null });
+    // Signing in again (a new session) makes it fresh: the retry goes through.
+    const again = await signedInAs(operator);
+    const h = asOperator(again);
+    expect(
+      await ops.action(
+        args(
+          post("/ops", again, { intent: "retry", outboxId: job, workspaceId: s.workspaceId }),
+          h.context,
+        ),
+      ),
+    ).toMatchObject({ ok: true });
+  });
+
   it("still answers 404 to a non-operator first", async () => {
     const s = await shop();
     const operator = await signedIn();
@@ -349,7 +420,7 @@ describe("purges that wait", () => {
     expect(other.failures.purgeBlocked).toBeNull();
 
     const { context } = asOperator(operator);
-    const loaded = await ops.loader(args(get("/ops", operator), context));
+    const loaded = listsOf(await ops.loader(args(get("/ops", operator), context)));
     expect(loaded.purgesBlocked).toContainEqual(block);
     expect(loaded.purgesBlocked.map((b) => b.workspaceId)).not.toContain(theirs.workspaceId);
     const viewed = await opsWorkspace.loader(

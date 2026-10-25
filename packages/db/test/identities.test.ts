@@ -83,6 +83,26 @@ describe("insertExternalIdentity", () => {
     expect(await auditCount(env.DB, event.correlationId)).toBe(0);
   });
 
+  it("reports user_deleted for a deleted account's kept users row, writing nothing", async () => {
+    const userId = await newUserId();
+    await env.DB.prepare("UPDATE users SET deleted_at = ? WHERE id = ?").bind(T0, userId).run();
+    const event = accountEvent();
+    expect(await insertExternalIdentity(db, identity(userId), [event])).toEqual({
+      ok: false,
+      reason: "user_deleted",
+    });
+    expect(await findExternalIdentityForUser(db, { userId, provider: "github" })).toBeNull();
+    expect(await auditCount(env.DB, event.correlationId)).toBe(0);
+    // The trigger refuses it at the database level too.
+    await expect(
+      env.DB.prepare(
+        "INSERT INTO external_identities (id, user_id, provider, external_user_id, username_snapshot, verified_at, created_at, updated_at) VALUES (?, ?, 'github', ?, 'octo', ?, ?, ?)",
+      )
+        .bind(uniqueId("idn"), userId, githubUserId(), T0, T0, T0)
+        .run(),
+    ).rejects.toThrow("external_identities: the user was deleted");
+  });
+
   it("propagates other constraint errors, such as an unknown user", async () => {
     const event = accountEvent();
     await expect(

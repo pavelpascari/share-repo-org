@@ -543,6 +543,7 @@ export async function deleteAccount(
   }
   const deleted = await repo.deleteAccountRows(ctx.db, {
     userId,
+    now,
     audit: (counts) => [
       auditEvent(
         "user.deleted",
