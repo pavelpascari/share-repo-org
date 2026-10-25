@@ -1,7 +1,10 @@
 import {
+  type CommerceDeps,
   type EntitlementSourcePort,
+  PaddleUnavailableError,
   queueDueEvaluations,
   queueDueReconciles,
+  queuePaddleSweeps,
   type ServiceContext,
 } from "@sharerepo/application";
 import {
@@ -13,9 +16,18 @@ import {
   markOutboxFailed,
   markOutboxSent,
   type OutboxRow,
+  pendingOutboxSince,
 } from "@sharerepo/db";
 import { type Clock, type IdGenerator, OutboxKind } from "@sharerepo/domain";
-import { GitHubApiError, type GitHubAppConfig, type GitHubAppPort } from "@sharerepo/integrations";
+import {
+  GitHubApiError,
+  type GitHubAppConfig,
+  type GitHubAppPort,
+  type MailPort,
+  type MailTransportConfig,
+  PaddleApiError,
+  type PaddlePort,
+} from "@sharerepo/integrations";
 import {
   AppError,
   ConflictError,
@@ -27,7 +39,7 @@ import {
   withCorrelationId,
 } from "@sharerepo/platform";
 import { type JobsConfig, parseJobsEnv } from "./env.ts";
-import { jobMessageSchema } from "./messages.ts";
+import { type JobMessage, jobMessageSchema } from "./messages.ts";
 import { type JobDeps, JobOutcome, retryDelaySeconds, runJob } from "./work.ts";
 
 export interface JobsWorkerDeps {
@@ -37,6 +49,21 @@ export interface JobsWorkerDeps {
   readonly github: (config: GitHubAppConfig) => GitHubAppPort;
   /** The simulated entitlement source; used outside production only. */
   readonly simulatedSource: (db: Db) => EntitlementSourcePort;
+  /**
+   * A Paddle client for one seller's key at the API base URL of its environment
+   * (`PaddleConfig.apiBaseUrls`); tests return a `FakePaddle`.
+   */
+  readonly paddle: (options: {
+    readonly apiKey: string;
+    readonly apiBaseUrl: string;
+  }) => PaddlePort;
+  /** The mail port for a configured transport and sender; tests return a `FakeMail`. */
+  readonly mail: (transport: MailTransportConfig, from: string) => MailPort;
+  /**
+   * Where the queue consumer hands follow-up work a job queued (the `EVENTS` producer binding),
+   * or undefined to leave it to the outbox drain. Tests leave it out or record the messages.
+   */
+  readonly followUps?: (env: Env) => { send(message: JobMessage): Promise<unknown> } | undefined;
 }
 
 const HEALTH_PATH = "/healthz";
@@ -61,6 +88,13 @@ export const OUTBOX_MAX_ATTEMPTS = 10;
 export const DUE_EVALUATION_BATCH = 100;
 /** Repositories due for reconciliation, queued per minute (phase-4 plan § Reconciliation job). */
 export const DUE_RECONCILE_BATCH = 100;
+/**
+ * Follow-up work a job's queue consumer hands to the queue at once (decision 0003): a refresh
+ * that a Paddle event or a customer link queued, and a Paddle key check. Reconciliations keep
+ * their own schedule. At most {@link FOLLOW_UP_LIMIT} per job; the drain runs the rest.
+ */
+export const FOLLOW_UP_KINDS = [OutboxKind.RefreshSubscription, OutboxKind.CheckPaddleConnection];
+export const FOLLOW_UP_LIMIT = 50;
 
 class MethodNotAllowedError extends AppError {
   constructor() {
@@ -72,33 +106,39 @@ class MethodNotAllowedError extends AppError {
   }
 }
 
+const isProviderError = (error: unknown): error is GitHubApiError | PaddleApiError =>
+  error instanceof GitHubApiError || error instanceof PaddleApiError;
+
 /**
- * Log fields for a failure: its class and, for GitHub, its classification; for an AppError, its
- * code. Never its message.
+ * Log fields for a failure: its class and, for GitHub or Paddle, its classification; for an
+ * AppError, its code. Never its message.
  */
 function classify(error: unknown) {
-  if (error instanceof GitHubApiError) return { errorName: error.name, errorKind: error.kind };
+  if (isProviderError(error)) return { errorName: error.name, errorKind: error.kind };
   if (error instanceof AppError) return { errorName: error.name, errorCode: error.code };
   return { errorName: error instanceof Error ? error.name : "unknown" };
 }
 
 /**
- * Worth retrying: GitHub was unavailable or rate limited, or a resync or subscription refresh kept
- * losing to concurrent writers (ConflictError). Anything else (rejected, malformed, a bug) will
- * not succeed by waiting.
+ * Worth retrying: GitHub or Paddle was unavailable or rate limited; Paddle cannot be read for the
+ * workspace now (no active connection, a refused key, or no commerce configuration); or a resync
+ * or subscription refresh kept losing to concurrent writers (ConflictError). Anything else
+ * (rejected, malformed, a bug) will not succeed by waiting.
  */
 const isRetryable = (error: unknown): boolean =>
   error instanceof ConflictError ||
-  (error instanceof GitHubApiError &&
-    (error.kind === "transient" || error.kind === "rate_limited"));
+  error instanceof PaddleUnavailableError ||
+  (isProviderError(error) && (error.kind === "transient" || error.kind === "rate_limited"));
+
+/** Warns about a job that ended without doing all of its work. */
+function logOutcome(logger: Logger, outcome: JobOutcome, fields: Record<string, string>): void {
+  if (outcome === JobOutcome.OutOfScope) logger.warn("job has no workspace scope", fields);
+  if (outcome === JobOutcome.Partial) logger.warn("job covered only part of its subject", fields);
+}
 
 /** A classified code for a failed outbox row, never a message. */
 const errorCode = (error: unknown): string =>
-  error instanceof GitHubApiError
-    ? error.kind
-    : error instanceof AppError
-      ? error.code
-      : "internal_error";
+  isProviderError(error) ? error.kind : error instanceof AppError ? error.code : "internal_error";
 
 export function createJobsWorker(deps: JobsWorkerDeps) {
   const logOptions = { now: () => deps.clock.now() };
@@ -109,10 +149,26 @@ export function createJobsWorker(deps: JobsWorkerDeps) {
     correlationId: deps.ids.next(),
   });
 
+  /** Paddle and claims from validated configuration; null without the commerce secrets. */
+  function commerceDeps(config: JobsConfig): CommerceDeps | null {
+    if (config.commerce === null) return null;
+    const { apiBaseUrls } = config.paddle;
+    return {
+      paddle: ({ apiKey, environment }) =>
+        deps.paddle({ apiKey, apiBaseUrl: apiBaseUrls[environment] }),
+      credentialKeys: config.commerce.credentialKeys,
+      claimSigningKey: config.commerce.claimSigningKey,
+      baseUrl: config.publicBaseUrl,
+      deployment: config.environment,
+    };
+  }
+
   const jobDeps = (config: JobsConfig, github: GitHubAppConfig): JobDeps => ({
     github: deps.github(github),
     environment: config.environment,
     simulatedSource: deps.simulatedSource,
+    commerce: commerceDeps(config),
+    mail: config.mail === null ? null : deps.mail(config.mail, config.mailFrom),
   });
 
   /** Parses the env, logging a classified error and rethrowing so the runtime records it. */
@@ -155,6 +211,29 @@ export function createJobsWorker(deps: JobsWorkerDeps) {
     logger.info("outbox drained", { claimed, sent });
   }
 
+  /**
+   * Sends the follow-up work queued since a job started to the queue, best effort: the rows are
+   * in the outbox, so a failure only waits for the drain. Rows queued meanwhile by other jobs may
+   * be sent too; every job is idempotent. Logged by classification, never thrown.
+   */
+  async function handOff(env: Env, db: Db, since: number, logger: Logger): Promise<void> {
+    const queue = deps.followUps?.(env);
+    if (queue === undefined) return;
+    try {
+      const rows = await pendingOutboxSince(db, {
+        kinds: FOLLOW_UP_KINDS,
+        since,
+        now: deps.clock.now(),
+        limit: FOLLOW_UP_LIMIT,
+      });
+      for (const row of rows) {
+        await queue.send({ kind: row.kind, subjectId: row.subjectId, outboxId: row.id });
+      }
+    } catch (error) {
+      logger.warn("follow-up hand-off failed; the outbox drain will deliver", classify(error));
+    }
+  }
+
   /** Runs one claimed row; returns whether it was sent. A failure is logged, never thrown. */
   async function runOutboxRow(
     db: Db,
@@ -166,9 +245,7 @@ export function createJobsWorker(deps: JobsWorkerDeps) {
     try {
       const outcome = await runJob(services(db), row, jobs);
       await markOutboxSent(db, [row.id], now);
-      if (outcome === JobOutcome.OutOfScope) {
-        logger.warn("job has no workspace scope", { outboxId: row.id, kind: row.kind });
-      }
+      logOutcome(logger, outcome, { outboxId: row.id, kind: row.kind });
       return true;
     } catch (error) {
       const final = !isRetryable(error) || row.attempts >= OUTBOX_MAX_ATTEMPTS;
@@ -234,6 +311,19 @@ export function createJobsWorker(deps: JobsWorkerDeps) {
     logger.info("daily resync queued", { connections: connections.length });
   }
 
+  /**
+   * The daily Paddle repair (Phase 5 plan): queues a `sweep_paddle_subscriptions` for every active
+   * Paddle connection, once. A failure is logged by its classification only.
+   */
+  async function dailyPaddleSweeps(db: Db, logger: Logger): Promise<void> {
+    try {
+      const queued = await queuePaddleSweeps(services(db));
+      logger.info("paddle sweeps queued", { queued });
+    } catch (error) {
+      logger.error("paddle sweep queueing failed", classify(error));
+    }
+  }
+
   return {
     /** Liveness only: answers without reading configuration or touching D1. */
     async fetch(request: Request): Promise<Response> {
@@ -255,7 +345,8 @@ export function createJobsWorker(deps: JobsWorkerDeps) {
 
     /**
      * Crons: heartbeat; every minute, the due-evaluation and due-reconcile sweeps then the outbox
-     * drain (each runs even when another fails); daily resync. Invalid configuration fails the run.
+     * drain (each runs even when another fails); daily, the Paddle sweeps and the connection
+     * resync. Invalid configuration fails the run.
      */
     async scheduled(controller: ScheduledController, env: Env): Promise<void> {
       const logger = createLogger(
@@ -280,6 +371,7 @@ export function createJobsWorker(deps: JobsWorkerDeps) {
       }
       const db = createDb(config.db);
       if (controller.cron === CRONS.dailyResync) {
+        await dailyPaddleSweeps(db, logger);
         await dailyResync(db, logger);
         return;
       }
@@ -290,10 +382,11 @@ export function createJobsWorker(deps: JobsWorkerDeps) {
 
     /**
      * The fast path for handed-off work. Each message is acknowledged unless a retry can help:
-     * poison messages and work without a workspace are dropped with a warning; GitHub outages,
-     * rate limits and concurrent writers are retried with a delay; other failures (including a
-     * key that does not decode, or an unavailable entitlement source) are marked failed on the
-     * outbox row with a classified code and acknowledged.
+     * poison messages and work without a workspace are dropped with a warning; GitHub and Paddle
+     * outages and rate limits, an unavailable Paddle connection or commerce configuration, and
+     * concurrent writers are retried with a delay; other failures (including a key that does not
+     * decode, or an unavailable entitlement source) are marked failed on the outbox row with a
+     * classified code and acknowledged.
      */
     async queue(batch: MessageBatch<unknown>, env: Env): Promise<void> {
       const batchLogger = createLogger(
@@ -322,16 +415,16 @@ export function createJobsWorker(deps: JobsWorkerDeps) {
           { correlationId: ctx.correlationId, worker: "jobs", kind: job.kind },
           logOptions,
         );
+        const startedAt = deps.clock.now();
         try {
           const outcome = await runJob(ctx, job, jobs);
           await markOutboxSent(db, [job.outboxId], deps.clock.now());
-          if (outcome === JobOutcome.OutOfScope) {
-            logger.warn("job has no workspace scope", { outboxId: job.outboxId });
-          }
+          logOutcome(logger, outcome, { outboxId: job.outboxId });
+          await handOff(env, db, startedAt, logger);
           message.ack();
         } catch (error) {
           if (isRetryable(error)) {
-            const retryAfterMs = error instanceof GitHubApiError ? error.retryAfterMs : undefined;
+            const retryAfterMs = isProviderError(error) ? error.retryAfterMs : undefined;
             const delaySeconds = retryDelaySeconds(message.attempts, retryAfterMs);
             logger.warn("job will be retried", {
               outboxId: job.outboxId,

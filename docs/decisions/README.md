@@ -16,3 +16,5 @@ Each record has: **Status**, **Context**, **Decision**, **Consequences**.
 | [0008](0008-v1-personal-account-repositories.md) | v1 sells personal-account repositories, with write access | Accepted |
 | [0009](0009-entitlement-policy-v1.md) | Entitlement policy v1: creator-set grace period, derived entitlements, simulated source | Accepted |
 | [0010](0010-grant-ownership-and-reconciliation.md) | ShareRepo manages only access it created; per-repository reconciliation | Accepted |
+| [0011](0011-paddle-connection-and-tenant-credentials.md) | Paddle by API key, automatic webhook destination, envelope-encrypted tenant credentials | Accepted |
+| [0012](0012-purchase-claims.md) | Purchase claims: checkout reference, emailed claim link, audited manual link | Accepted |

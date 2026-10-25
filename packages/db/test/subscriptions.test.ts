@@ -5,9 +5,11 @@ import {
   getCustomer,
   getSubscription,
   getSubscriptionByExternal,
+  listCustomerSubscriptionIds,
   listEntitlementsForWorkspace,
   listLiveEntitlementsForSubscription,
   listLiveEntitlementsForWorkspace,
+  listSubscriptionSourceVersions,
   type SubscriptionRefresh,
 } from "../src/index.ts";
 import { auditCount, workspaceEvent } from "./support/audit.ts";
@@ -48,6 +50,44 @@ const entitlementState = (id: string) =>
   )
     .bind(id)
     .first();
+
+describe("listCustomerSubscriptionIds", () => {
+  it("lists one customer's subscriptions by external ID, in its workspace only", async () => {
+    const ws = await subscribedWorkspace();
+    const { customerId, externalSubscriptionId } = ws.subscription;
+    await expect(
+      listCustomerSubscriptionIds(db, { workspaceId: ws.workspaceId, customerId }),
+    ).resolves.toEqual([externalSubscriptionId]);
+    await expect(
+      listCustomerSubscriptionIds(db, { workspaceId: ws.workspaceId, customerId: "nobody" }),
+    ).resolves.toEqual([]);
+    const elsewhere = await subscribedWorkspace();
+    await expect(
+      listCustomerSubscriptionIds(db, { workspaceId: elsewhere.workspaceId, customerId }),
+    ).resolves.toEqual([]);
+  });
+});
+
+describe("listSubscriptionSourceVersions", () => {
+  it("maps the workspace's subscriptions of one source to their source updated_at", async () => {
+    const ws = await subscribedWorkspace();
+    const { source, externalSubscriptionId, sourceUpdatedAt } = ws.subscription;
+    await expect(
+      listSubscriptionSourceVersions(db, { workspaceId: ws.workspaceId, source }),
+    ).resolves.toEqual(new Map([[externalSubscriptionId, sourceUpdatedAt]]));
+    const other = source === "paddle" ? "simulated" : "paddle";
+    await expect(
+      listSubscriptionSourceVersions(db, { workspaceId: ws.workspaceId, source: other }),
+    ).resolves.toEqual(new Map());
+    // Another workspace's subscriptions never appear.
+    const elsewhere = await subscribedWorkspace();
+    expect(
+      (
+        await listSubscriptionSourceVersions(db, { workspaceId: elsewhere.workspaceId, source })
+      ).has(externalSubscriptionId),
+    ).toBe(false);
+  });
+});
 
 describe("applySubscriptionRefresh: new subscription", () => {
   it("records customer, subscription, items, entitlements, outbox and audit together", async () => {

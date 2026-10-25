@@ -7,19 +7,30 @@ import {
 import { env } from "cloudflare:workers";
 import { simulatedEntitlementSource } from "@sharerepo/application";
 import type { GitHubAppPort } from "@sharerepo/integrations";
+import { createFakeMail, createFakePaddle } from "@sharerepo/integrations/testing";
 import { SequentialIds } from "@sharerepo/testing";
 import { createJobsWorker, type JobsWorkerDeps } from "../../src/handlers.ts";
 import { clock, envWithGitHub } from "./github.ts";
 
 const QUEUE = "sharerepo-events-dev";
 
-/** The jobs Worker over the given GitHub App, with the real simulated source unless replaced. */
+/**
+ * The jobs Worker over the given GitHub App, with the real simulated source unless replaced.
+ * Without a Paddle override every key is refused, as a revoked one would be; mail goes to a fresh
+ * fake mailbox.
+ */
 export function jobsWorker(github: GitHubAppPort, overrides: Partial<JobsWorkerDeps> = {}) {
   return createJobsWorker({
     ids: new SequentialIds({ prefix: `corr-${crypto.randomUUID()}-` }),
     clock,
     github: () => github,
     simulatedSource: simulatedEntitlementSource,
+    paddle: () => {
+      const refused = createFakePaddle({ clock });
+      refused.revokeKey();
+      return refused;
+    },
+    mail: () => createFakeMail(),
     ...overrides,
   });
 }

@@ -8,7 +8,8 @@ export function TextField(props: {
   defaultValue?: string;
   error?: string | undefined;
   isRequired?: boolean;
-  type?: "text" | "number";
+  type?: "text" | "number" | "password" | "date" | "email";
+  autoComplete?: string;
   min?: number;
   max?: number;
   className?: string;
@@ -27,6 +28,7 @@ export function TextField(props: {
         type={props.type ?? "text"}
         {...(props.min === undefined ? {} : { min: props.min })}
         {...(props.max === undefined ? {} : { max: props.max })}
+        {...(props.autoComplete === undefined ? {} : { autoComplete: props.autoComplete })}
         className="rounded border border-gray-300 px-3 py-2 data-[invalid]:border-red-600"
       />
       {props.description !== undefined && (

@@ -1,5 +1,12 @@
-import { type GitHubAppConfig, parseGitHubAppConfig } from "@sharerepo/integrations";
-import { parseEnv } from "@sharerepo/platform";
+import {
+  type GitHubAppConfig,
+  type MailTransportConfig,
+  type PaddleConfig,
+  parseGitHubAppConfig,
+  parseMailConfig,
+  parsePaddleConfig,
+} from "@sharerepo/integrations";
+import { type CommerceSecrets, parseCommerceSecrets, parseEnv } from "@sharerepo/platform";
 import { z } from "zod";
 import { type AuthConfig, parseAuthEnv } from "../app/auth/env.ts";
 
@@ -16,6 +23,11 @@ export type WebEnv = z.output<typeof webEnvSchema> & {
   readonly auth: AuthConfig;
   /** The GitHub App, or null when it is not configured in local development. */
   readonly github: GitHubAppConfig | null;
+  /** Keys for Paddle credentials and claims, or null when not configured in local development. */
+  readonly commerce: CommerceSecrets | null;
+  readonly paddle: PaddleConfig;
+  /** How claim emails are sent, or null when no transport is configured. */
+  readonly mail: MailTransportConfig | null;
 };
 
 /** Validates the Worker env; failures name keys and issue codes, never values. */
@@ -24,6 +36,9 @@ export function parseWebEnv(env: unknown): WebEnv {
     ...parseEnv(webEnvSchema, env),
     auth: parseAuthEnv(env),
     github: parseGitHubAppConfig(env, { requireWebhookSecret: true, requireSlug: true }),
+    commerce: parseCommerceSecrets(env),
+    paddle: parsePaddleConfig(env),
+    mail: parseMailConfig(env),
   };
 }
 

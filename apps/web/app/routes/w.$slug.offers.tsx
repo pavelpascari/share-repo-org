@@ -1,7 +1,9 @@
 import {
   archiveOffer,
+  type CatalogPrice,
   createOffer,
   encodeOfferKey,
+  getBillingView,
   listOfferableResources,
   listOffers,
   type OfferableResource,
@@ -24,6 +26,8 @@ import {
 } from "react-aria-components";
 import { data, Form, Link, useNavigation } from "react-router";
 import { servicesFor } from "../auth/server.ts";
+import { commerceFor, publicOrigin } from "../commerce.server.ts";
+import { priceLabel } from "../commerce-messages.ts";
 import { Checkbox } from "../components/checkbox.tsx";
 import { TextField } from "../components/text-field.tsx";
 import { cloudflareContext } from "../context.ts";
@@ -33,7 +37,7 @@ import {
   parseItemIds,
   repositoryUnavailableReason,
 } from "../entitlement-messages.ts";
-import { attempt } from "../entitlements.server.ts";
+import { attempt, simulatorEnabled } from "../entitlements.server.ts";
 import { enqueueJob } from "../jobs.server.ts";
 import { assertSameOrigin } from "../security/same-origin.ts";
 import { asResponse, loadWorkspace } from "../workspaces.server.ts";
@@ -52,26 +56,47 @@ export async function loader({ request, params, context }: Route.LoaderArgs) {
   ]).catch((error: unknown) => {
     throw asResponse(error);
   });
+  const canManage = roleAllows(workspace.role, "workspace.manage");
+  // The owner chooses Paddle prices from the catalog while Paddle is connected.
+  const billing =
+    canManage && commerceFor(context) !== null
+      ? await getBillingView(services, user, params.slug).catch((error: unknown) => {
+          throw asResponse(error);
+        })
+      : null;
   return {
     offers,
     repositories,
-    canManage: roleAllows(workspace.role, "workspace.manage"),
+    canManage,
+    paddlePrices: billing?.connection ? billing.prices : null,
+    simulatedItems: simulatorEnabled(context),
+    origin: publicOrigin(context),
+    slug: params.slug,
     // From the loader, so the domain package stays out of the browser bundle.
     defaultGracePeriodDays: GRACE_PERIOD_DAYS_DEFAULT,
     editing: new URL(request.url).searchParams.get("edit"),
   };
 }
 
-/** The offer configuration a form submits; the service validates it. */
-function offerInput(form: FormData) {
+/**
+ * The offer configuration a form submits; the service validates it. Paddle prices come from the
+ * catalog checkboxes; simulated item IDs from free text, outside production only.
+ */
+function offerInput(form: FormData, simulated: boolean) {
   const grace = String(form.get("gracePeriodDays") ?? "").trim();
+  const simulatedItems = simulated
+    ? parseItemIds(String(form.get("items") ?? "")).map((externalItemId) => ({
+        source: "simulated",
+        externalItemId,
+      }))
+    : [];
+  const paddleItems = form
+    .getAll("paddlePrices")
+    .map((priceId) => ({ source: "paddle", externalItemId: String(priceId) }));
   return {
     name: String(form.get("name") ?? ""),
     gracePeriodDays: grace === "" ? undefined : Number(grace),
-    items: parseItemIds(String(form.get("items") ?? "")).map((externalItemId) => ({
-      source: "simulated",
-      externalItemId,
-    })),
+    items: [...paddleItems, ...simulatedItems],
     // Personal repositories can only be granted write access (decision 0008).
     accesses: form
       .getAll("repositories")
@@ -91,11 +116,13 @@ export async function action({ request, params, context }: Route.ActionArgs) {
   const intent = String(form.get("intent") ?? "");
   const offerId = String(form.get("offerId") ?? "");
   const formKey = intent === "create" ? "new" : offerId;
+  const simulated = simulatorEnabled(context);
 
   const run = async (): Promise<OfferResult> => {
-    if (intent === "create") return createOffer(services, user, params.slug, offerInput(form));
+    if (intent === "create")
+      return createOffer(services, user, params.slug, offerInput(form, simulated));
     if (intent === "update") {
-      return updateOffer(services, user, params.slug, offerId, offerInput(form));
+      return updateOffer(services, user, params.slug, offerId, offerInput(form, simulated));
     }
     if (intent === "archive") return archiveOffer(services, user, params.slug, offerId);
     throw data(null, { status: 400 });
@@ -133,8 +160,14 @@ export async function action({ request, params, context }: Route.ActionArgs) {
 
 export default function Offers({ loaderData, actionData }: Route.ComponentProps) {
   const { offers, repositories, canManage, editing, defaultGracePeriodDays } = loaderData;
+  const { paddlePrices, simulatedItems, origin, slug } = loaderData;
   const names = new Map(repositories.map((r) => [r.id, r.name]));
+  const prices = new Map((paddlePrices ?? []).map((price) => [price.priceId, price]));
   const editingOffer = offers.find((offer) => offer.id === editing && offer.status === "active");
+  const sellsWithPaddle = offers.some(
+    (offer) => offer.status === "active" && offer.items.some((item) => item.source === "paddle"),
+  );
+  const itemChoices = { paddlePrices, simulatedItems };
   return (
     <>
       <h1 className="text-2xl font-semibold">Offers</h1>
@@ -147,6 +180,12 @@ export default function Offers({ loaderData, actionData }: Route.ComponentProps)
           {actionData.notice}
         </p>
       )}
+      {sellsWithPaddle && (
+        <p className="mt-4 text-sm text-gray-700">
+          Buyers who paid through a Paddle link you shared can claim their purchase at{" "}
+          <CopyableUrl label="Claim page link" url={`${origin}/c/${slug}/claim`} />
+        </p>
+      )}
       {offers.length === 0 ? (
         <p className="mt-6 text-gray-600">No offers yet.</p>
       ) : (
@@ -156,6 +195,8 @@ export default function Offers({ loaderData, actionData }: Route.ComponentProps)
               key={offer.id}
               offer={offer}
               repositoryNames={names}
+              prices={prices}
+              checkoutUrl={`${origin}/buy/${offer.id}`}
               canManage={canManage}
               errors={actionData?.formKey === offer.id && !actionData.ok ? actionData.errors : []}
             />
@@ -169,6 +210,7 @@ export default function Offers({ loaderData, actionData }: Route.ComponentProps)
             key="new"
             heading="New offer"
             repositories={repositories}
+            {...itemChoices}
             errors={actionData?.formKey === "new" && !actionData.ok ? actionData.errors : []}
           />
         ) : (
@@ -178,6 +220,7 @@ export default function Offers({ loaderData, actionData }: Route.ComponentProps)
             heading={`Edit “${editingOffer.name}”`}
             offer={editingOffer}
             repositories={repositories}
+            {...itemChoices}
             errors={
               actionData?.formKey === editingOffer.id && !actionData.ok ? actionData.errors : []
             }
@@ -198,14 +241,38 @@ function Errors({ errors }: { errors: readonly string[] }) {
   );
 }
 
+/** A URL to copy: a read-only field with its own accessible name. */
+function CopyableUrl({ label, url }: { label: string; url: string }) {
+  return (
+    <input
+      readOnly
+      aria-label={label}
+      value={url}
+      onFocus={(event) => event.currentTarget.select()}
+      className="w-full max-w-md rounded border border-gray-300 bg-gray-50 px-2 py-1 font-mono text-sm"
+    />
+  );
+}
+
+function itemText(
+  item: { source: string; externalItemId: string },
+  prices: ReadonlyMap<string, CatalogPrice>,
+) {
+  const price = item.source === "paddle" ? prices.get(item.externalItemId) : undefined;
+  return price === undefined ? item.externalItemId : `${priceLabel(price)} (${price.priceId})`;
+}
+
 function OfferCard(props: {
   offer: OfferSummary;
   repositoryNames: ReadonlyMap<string, string>;
+  prices: ReadonlyMap<string, CatalogPrice>;
+  checkoutUrl: string;
   canManage: boolean;
   errors: readonly string[];
 }) {
   const { offer, repositoryNames, canManage } = props;
   const archived = offer.status === "archived";
+  const sellsWithPaddle = !archived && offer.items.some((item) => item.source === "paddle");
   return (
     <li className="rounded border border-gray-200 p-4" aria-label={offer.name}>
       <div className="flex flex-wrap items-baseline justify-between gap-2">
@@ -232,8 +299,16 @@ function OfferCard(props: {
         <dd>
           {offer.items.length === 0
             ? "None yet"
-            : offer.items.map((item) => item.externalItemId).join(", ")}
+            : offer.items.map((item) => itemText(item, props.prices)).join(", ")}
         </dd>
+        {sellsWithPaddle && (
+          <>
+            <dt className="text-gray-600">Checkout link</dt>
+            <dd>
+              <CopyableUrl label={`Checkout link for ${offer.name}`} url={props.checkoutUrl} />
+            </dd>
+          </>
+        )}
       </dl>
       <Errors errors={props.errors} />
       {canManage && !archived && (
@@ -288,9 +363,25 @@ function OfferForm(props: {
   heading: string;
   offer?: OfferSummary;
   repositories: readonly OfferableResource[];
+  /** The Paddle catalog while Paddle is connected; null otherwise. */
+  paddlePrices: readonly CatalogPrice[] | null;
+  simulatedItems: boolean;
   errors: readonly string[];
 }) {
-  const { offer, repositories } = props;
+  const { offer, repositories, paddlePrices } = props;
+  const offerItems = offer?.items ?? [];
+  const selectedPrices = new Set(
+    offerItems.filter((item) => item.source === "paddle").map((item) => item.externalItemId),
+  );
+  // Active recurring prices can be added; prices already in the offer stay listed whatever their
+  // state, so saving never drops them silently.
+  const choosable = (paddlePrices ?? []).filter(
+    (price) =>
+      selectedPrices.has(price.priceId) ||
+      (price.status === "active" && price.billingInterval !== null),
+  );
+  const known = new Set(choosable.map((price) => price.priceId));
+  const unknownSelected = [...selectedPrices].filter((priceId) => !known.has(priceId));
   const navigation = useNavigation();
   const inOffer = new Set(offer?.accesses.map((access) => access.resourceId) ?? []);
   // Unsellable repositories can't be added, but ones already in the offer stay listed.
@@ -350,18 +441,70 @@ function OfferForm(props: {
           GitHub can't grant read-only access on personal repositories, so subscribers can push.
         </span>
       </div>
-      <AriaTextField
-        name="items"
-        defaultValue={offer?.items.map((item) => item.externalItemId).join("\n") ?? ""}
-        className="flex flex-col gap-1"
-      >
-        <Label className="text-sm font-medium">Commercial item IDs</Label>
-        <TextArea rows={3} className="rounded border border-gray-300 px-3 py-2 font-mono" />
-        <Text slot="description" className="text-sm text-gray-600">
-          Separate with commas or new lines, for example sim_monthly. These become Paddle price IDs
-          later.
-        </Text>
-      </AriaTextField>
+      {paddlePrices !== null && (
+        <fieldset className="flex flex-col gap-2">
+          <legend className="mb-1 text-sm font-medium">Paddle prices</legend>
+          {choosable.length === 0 && unknownSelected.length === 0 && (
+            <p className="text-sm text-gray-600">
+              No active recurring prices. Add one in Paddle, then refresh the catalog on the Billing
+              page.
+            </p>
+          )}
+          {choosable.map((price) => (
+            <Checkbox
+              key={price.priceId}
+              name="paddlePrices"
+              value={price.priceId}
+              defaultSelected={selectedPrices.has(price.priceId)}
+            >
+              {priceLabel(price)}
+              {price.status !== "active" && (
+                <span className="ml-2 text-sm text-amber-800">Archived in Paddle</span>
+              )}
+            </Checkbox>
+          ))}
+          {unknownSelected.map((priceId) => (
+            <Checkbox key={priceId} name="paddlePrices" value={priceId} defaultSelected>
+              {priceId}
+              <span className="ml-2 text-sm text-amber-800">Not in the catalog</span>
+            </Checkbox>
+          ))}
+        </fieldset>
+      )}
+      {paddlePrices === null &&
+        offerItems
+          .filter((item) => item.source === "paddle")
+          .map((item) => (
+            // Without the catalog (Paddle disconnected), the offer keeps its prices.
+            <input
+              key={item.externalItemId}
+              type="hidden"
+              name="paddlePrices"
+              value={item.externalItemId}
+            />
+          ))}
+      {props.simulatedItems && (
+        <AriaTextField
+          name="items"
+          defaultValue={offerItems
+            .filter((item) => item.source === "simulated")
+            .map((item) => item.externalItemId)
+            .join("\n")}
+          className="flex flex-col gap-1"
+        >
+          <Label className="text-sm font-medium">Commercial item IDs</Label>
+          <TextArea rows={3} className="rounded border border-gray-300 px-3 py-2 font-mono" />
+          <Text slot="description" className="text-sm text-gray-600">
+            Simulated items for testing, separated with commas or new lines, for example
+            sim_monthly.
+          </Text>
+        </AriaTextField>
+      )}
+      {paddlePrices === null && !props.simulatedItems && (
+        <p className="text-sm text-gray-600">
+          Connect Paddle on the Billing page to choose the prices this offer sells.
+        </p>
+      )}
       <div className="flex items-center gap-4">
         <button
           type="submit"

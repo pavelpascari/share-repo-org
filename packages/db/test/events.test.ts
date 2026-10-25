@@ -15,17 +15,21 @@ import {
   recordExternalEvent,
 } from "../src/index.ts";
 import { count, db } from "./support/connections.ts";
-import { T0, uniqueId } from "./support/rows.ts";
+import { seedPaddleConnection } from "./support/paddle.ts";
+import { insertWorkspaceRow, T0, uniqueId } from "./support/rows.ts";
 
 function event(overrides: Partial<NewExternalEvent> = {}): NewExternalEvent {
   return {
     id: uniqueId("evt"),
     provider: "github",
+    connectionId: null,
     externalEventId: crypto.randomUUID(),
     eventType: "installation_repositories",
     action: "removed",
     installationId: "42",
+    externalSubscriptionId: null,
     payloadDigest: "sha256:abc",
+    occurredAt: null,
     receivedAt: T0,
     ...overrides,
   };
@@ -71,6 +75,40 @@ describe("recordExternalEvent", () => {
       eventId: first.id,
     });
     expect([await count("external_events"), await count("outbox")]).toEqual(before);
+  });
+
+  it("webhook/duplicate-delivery-is-noop: dedupes Paddle events within their connection", async () => {
+    const seed = async () => {
+      const workspaceId = uniqueId("ws");
+      await insertWorkspaceRow({ id: workspaceId });
+      return seedPaddleConnection(workspaceId);
+    };
+    const a = await seed();
+    const b = await seed();
+    const paddle = (connectionId: string) =>
+      event({
+        provider: "paddle",
+        connectionId,
+        externalEventId: "evt_01h",
+        eventType: "subscription.updated",
+        action: null,
+        installationId: null,
+        occurredAt: T0 - 1,
+      });
+
+    const first = paddle(a.id);
+    await expect(recordExternalEvent(db, first, [])).resolves.toEqual({
+      inserted: true,
+      eventId: first.id,
+    });
+    await expect(recordExternalEvent(db, paddle(a.id), [])).resolves.toEqual({
+      inserted: false,
+      eventId: first.id,
+    });
+    // The same event ID signed for another connection is that connection's own event.
+    await expect(recordExternalEvent(db, paddle(b.id), [])).resolves.toMatchObject({
+      inserted: true,
+    });
   });
 
   it("treats the same delivery ID from another provider position as distinct per provider", async () => {

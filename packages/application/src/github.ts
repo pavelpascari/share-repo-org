@@ -314,11 +314,15 @@ export async function ingestGitHubWebhook(
     {
       id: eventId,
       provider: "github",
+      // One App, one webhook: GitHub events belong to no connection and carry no event time.
+      connectionId: null,
       externalEventId: envelope.deliveryId,
       eventType: envelope.event,
       action: envelope.action,
       installationId: envelope.installationId,
+      externalSubscriptionId: null,
       payloadDigest: await payloadDigest(input.rawBody),
+      occurredAt: null,
       receivedAt: now,
     },
     [

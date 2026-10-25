@@ -91,3 +91,35 @@ describe("audit/no-secrets-in-logs-or-audit (logging)", () => {
     expect(capture.text()).toContain("GITHUB_WEBHOOK_SECRET (too_small)");
   });
 });
+
+describe("audit/no-secrets-in-logs-or-audit (Paddle and claims)", () => {
+  it("canaries for every Phase 5 secret never reach captured console output", () => {
+    const phase5 = {
+      credentialKeys: canary("credential-keys"),
+      claimSigningKey: canary("claim-signing-key"),
+      apiKey: `pdl_sdbx_apikey_${crypto.randomUUID().replaceAll("-", "")}`,
+      apiKeyEnvelope: canary("api-key-envelope"),
+      webhookSecretEnvelope: canary("webhook-secret-envelope"),
+      emailEnvelope: canary("email-envelope"),
+      claimReference: canary("claim-reference"),
+      email: canary("email"),
+    };
+    const logger = createLogger({ correlationId: "req-00000001" });
+    logger.info("paddle connection checked", {
+      env: { CREDENTIAL_KEYS: phase5.credentialKeys, CLAIM_SIGNING_KEY: phase5.claimSigningKey },
+      connection: {
+        apiKeyEnvelope: phase5.apiKeyEnvelope,
+        webhook_secret_envelope: phase5.webhookSecretEnvelope,
+      },
+      request: { emailEnvelope: phase5.emailEnvelope, email: phase5.email },
+      customData: { sharerepo_claim_reference: phase5.claimReference },
+    });
+    logger.error(`paddle rejected key ${phase5.apiKey}`);
+
+    expect(capture.lines.length).toBe(2);
+    for (const [name, value] of Object.entries(phase5)) {
+      expect(capture.text(), `canary ${name} leaked`).not.toContain(value);
+    }
+    expect(capture.text()).toContain("paddle connection checked");
+  });
+});

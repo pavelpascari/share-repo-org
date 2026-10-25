@@ -5,6 +5,27 @@ export {
   listAuditEventsByCorrelationId,
   listAuditEventsForWorkspace,
 } from "./audit-repository.ts";
+export {
+  type CheckoutClaim,
+  type ClaimConsumption,
+  type ClaimRequest,
+  type ClaimToken,
+  type ConsumeCheckoutClaimResult,
+  type ConsumeClaimTokenResult,
+  consumeCheckoutClaim,
+  consumeClaimToken,
+  createCheckoutClaim,
+  createClaimRequest,
+  createClaimTokens,
+  findClaimTokenByHash,
+  findReusableCheckoutClaim,
+  finishClaimRequest,
+  getCheckoutClaim,
+  getClaimRequest,
+  type NewClaimToken,
+  setCheckoutClaimTransaction,
+  takeRateLimits,
+} from "./claim-repository.ts";
 export { createDb, type Db, ping } from "./client.ts";
 export {
   type Connection,
@@ -20,7 +41,16 @@ export {
   type UpdateConnectionResult,
   updateConnection,
 } from "./connection-repository.ts";
-export { type Customer, findCustomer, getCustomer } from "./customer-repository.ts";
+export {
+  type ApplyCustomerLinkResult,
+  applyCustomerLink,
+  type Customer,
+  type CustomerSubscriptionSummary,
+  type CustomerWithLink,
+  findCustomer,
+  getCustomer,
+  listCustomersWithLinks,
+} from "./customer-repository.ts";
 export { isUniqueViolation, uniqueViolationColumns } from "./errors.ts";
 export {
   type ExternalEvent,
@@ -43,8 +73,15 @@ export {
   updateExternalIdentitySnapshot,
 } from "./identity-repository.ts";
 export {
+  listMyAccess,
+  type MyAccessEntitlement,
+  type MyAccessGrant,
+  type MyAccessSubscription,
+} from "./my-access-repository.ts";
+export {
   createOffer,
   findOffersForItems,
+  findOfferWorkspaceId,
   getOffer,
   getOfferVersion,
   listOffers,
@@ -74,7 +111,30 @@ export {
   outboxInsert,
   pendingOutbox,
   pendingOutboxId,
+  pendingOutboxMessage,
+  pendingOutboxSince,
 } from "./outbox-repository.ts";
+export {
+  type CreatePaddleConnectionResult,
+  createPaddleConnection,
+  disconnectPaddleConnection,
+  type GuardedWriteResult,
+  getPaddleConnection,
+  getPaddleConnectionForWebhook,
+  listActivePaddleConnections,
+  listPaddlePrices,
+  markPaddleEventReceived,
+  type PaddleConnection,
+  type PaddleEnvelopeField,
+  type PaddlePrice,
+  type PaddlePriceImport,
+  type PaddleWebhookConnection,
+  recordPaddleConnectionChecked,
+  replacePaddleCredentials,
+  rewrapPaddleEnvelope,
+  updatePaddleConnectionStatus,
+  upsertPaddlePrices,
+} from "./paddle-repository.ts";
 export {
   applyGrantObservation,
   type BeginMutation,
@@ -126,6 +186,7 @@ export {
   updateSimulatedSubscription,
 } from "./simulation-repository.ts";
 export {
+  findOrCreateSubjectForIdentity,
   findSubjectByExternalId,
   insertSubject,
   listSubjects,
@@ -141,9 +202,11 @@ export {
   type EntitlementPlanWrite,
   getSubscription,
   getSubscriptionByExternal,
+  listCustomerSubscriptionIds,
   listEntitlementsForWorkspace,
   listLiveEntitlementsForSubscription,
   listLiveEntitlementsForWorkspace,
+  listSubscriptionSourceVersions,
   type NewEntitlement,
   type OfferVersionRef,
   type Subscription,
@@ -158,7 +221,9 @@ export {
   type CreateWorkspaceInput,
   type CreateWorkspaceResult,
   createWorkspace,
+  findWorkspaceBySlug,
   findWorkspaceForMemberBySlug,
+  getWorkspace,
   getWorkspaceForMember,
   listWorkspacesForUser,
   renameWorkspace,

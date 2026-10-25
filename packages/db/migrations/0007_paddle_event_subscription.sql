@@ -1,0 +1,1 @@
+ALTER TABLE `external_events` ADD `external_subscription_id` text;

@@ -21,6 +21,32 @@ export {
 } from "./audit.ts";
 export type { WorkspaceMembership, WorkspacePermission, WorkspaceScope } from "./authorization.ts";
 export { authorizeMembership, roleAllows, WORKSPACE_PERMISSIONS } from "./authorization.ts";
+export type {
+  CheckoutClaimUsability,
+  ClaimTokenUsability,
+  CustomerPurchases,
+  CustomerSubscriptionListing,
+  UsableCheckoutClaim,
+  UsableClaimToken,
+} from "./claim.ts";
+export {
+  CHECKOUT_CLAIM_LIFETIME_MS,
+  CHECKOUT_REJECTION_REASONS,
+  CHECKOUT_REUSE_WINDOW_MS,
+  CLAIM_REJECTION_REASONS,
+  CLAIM_TOKEN_LIFETIME_MS,
+  ClaimRejectionReason,
+  CUSTOMER_LINK_DECISIONS,
+  CustomerLinkDecision,
+  checkoutClaimUsable,
+  claimTokenUsable,
+  customerKnownBeforeClaim,
+  decideCustomerLink,
+  EMAIL_REJECTION_REASONS,
+  LINK_PATHS,
+  LinkPath,
+  purchasesOnlyThroughClaim,
+} from "./claim.ts";
 export type { ConnectableAccountType, ConnectionStatus } from "./connection.ts";
 export {
   CONNECTABLE_ACCOUNT_TYPES,
@@ -51,7 +77,13 @@ export type {
 } from "./entitlement-plan.ts";
 export { planEntitlements } from "./entitlement-plan.ts";
 export type { ExternalEventState } from "./external-event.ts";
-export { EXTERNAL_EVENT_STATES, OUTBOX_KINDS, OutboxKind } from "./external-event.ts";
+export {
+  EVENT_PROVIDERS,
+  EventProvider,
+  EXTERNAL_EVENT_STATES,
+  OUTBOX_KINDS,
+  OutboxKind,
+} from "./external-event.ts";
 export type {
   GrantState,
   MutationOperation,
@@ -104,6 +136,21 @@ export {
   parseOfferInput,
   parseOfferSnapshot,
 } from "./offer.ts";
+export {
+  CONNECTION_CALL_OUTCOMES,
+  ConnectionCallOutcome,
+  CREDENTIAL_KINDS,
+  CredentialKind,
+  nextConnectionStatus,
+  PADDLE_BILLING_INTERVALS,
+  PADDLE_CONNECTION_STATUSES,
+  PADDLE_ENVIRONMENTS,
+  PADDLE_PRICE_STATUSES,
+  PaddleBillingInterval,
+  PaddleConnectionStatus,
+  PaddleEnvironment,
+  PaddlePriceStatus,
+} from "./paddle.ts";
 export type { AccessDecision, AccessDecisionReason, PolicySubscription } from "./policy.ts";
 export { ACCESS_DECISION_REASONS, decideAccess } from "./policy.ts";
 export type {
@@ -150,6 +197,15 @@ export {
   RETRY_BACKOFF_MS,
   retryBackoff,
 } from "./provisioning.ts";
+export type { RateLimitBucket, RateLimitCounter, RateLimitDecision } from "./rate-limit.ts";
+export {
+  CHECKOUT_RATE_LIMITS,
+  CLAIM_RATE_LIMITS,
+  checkoutRateLimitBuckets,
+  claimRateLimitBuckets,
+  rateLimitDecision,
+  rateLimitWindowStart,
+} from "./rate-limit.ts";
 export type {
   InvitationBudget,
   ReconciliationAction,
@@ -183,6 +239,7 @@ export type {
 export { planResourceSync } from "./resource-sync.ts";
 export type { SubscriptionSnapshot, SubscriptionState } from "./subscription.ts";
 export {
+  carryPastDueSince,
   isNewerSnapshot,
   parseSubscriptionSnapshot,
   SUBSCRIPTION_STATES,
@@ -199,6 +256,7 @@ export type {
   WorkspaceStatus,
 } from "./workspace.ts";
 export {
+  hasAsciiControlCharacter,
   isWorkspaceRole,
   isWorkspaceStatus,
   normalizeWorkspaceSlug,

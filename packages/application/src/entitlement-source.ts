@@ -2,6 +2,7 @@ import * as repo from "@sharerepo/db";
 import {
   COMMERCIAL_SOURCES,
   type CommercialSource,
+  type CustomerPurchases,
   type ParseResult,
   parseSubscriptionSnapshot,
   type SubscriptionSnapshot,
@@ -29,11 +30,37 @@ export type SourceSubscription =
       readonly found: true;
       readonly snapshot: SubscriptionSnapshot;
       readonly customerLink: CustomerLink | null;
+      /**
+       * The checkout claim reference the source carried (Paddle's `custom_data.sharerepo_claim`),
+       * untrusted until the refresh verifies it (decision 0012, path 1). Null when there is none.
+       */
+      readonly claimReference: string | null;
     };
+
+/**
+ * What path 1 of the claim flow needs from a source that reports checkout references (decision
+ * 0012): the key that verifies them, and every subscription the source holds for a customer, so
+ * a customer is linked only when all of its purchases came through the checkout.
+ */
+export interface CheckoutClaimSupport {
+  /** `CLAIM_SIGNING_KEY`. */
+  readonly signingKey: Uint8Array;
+  /**
+   * Every subscription the source lists for the customer, any status, each with the customer the
+   * source says it belongs to and the claim reference it carries. Fails (and is worth retrying)
+   * when the source cannot be read now.
+   */
+  customerPurchases(ref: {
+    readonly workspaceId: string;
+    readonly externalCustomerId: string;
+  }): Promise<CustomerPurchases>;
+}
 
 /** Reads the current commercial facts of one subscription from where they originate. */
 export interface EntitlementSourcePort {
   readonly source: CommercialSource;
+  /** Absent for a source that reports no checkout references, such as the simulator. */
+  readonly checkoutClaims?: CheckoutClaimSupport;
   refreshSubscription(ref: {
     readonly workspaceId: string;
     readonly externalSubscriptionId: string;
@@ -81,6 +108,7 @@ export function simulatedSnapshot(row: repo.SimulatedSubscription): SourceSubscr
       externalSubjectId: row.customerGithubId,
       login: row.customerLogin,
     },
+    claimReference: null,
   };
 }
 
@@ -172,4 +200,58 @@ export function decodeReconcileKey(key: string): ParseResult<ReconcileRef, "key_
   return parsed.success && parts.length === 2
     ? { ok: true, value: parsed.data }
     : { ok: false, error: "key_invalid" };
+}
+
+/** Identifies one Paddle connection, within its workspace. */
+export interface PaddleConnectionRef {
+  readonly workspaceId: string;
+  readonly connectionId: string;
+}
+
+/** Identifies one claim request (decision 0012, path 2), within its workspace. */
+export interface ClaimRequestRef {
+  readonly workspaceId: string;
+  readonly claimRequestId: string;
+}
+
+const pairKeySchema = z.object({ workspaceId: id, id });
+
+function encodePair(workspaceId: string, value: string): string {
+  const parsed = pairKeySchema.parse({ workspaceId, id: value });
+  return `${parsed.workspaceId}:${parsed.id}`;
+}
+
+function decodePair(key: string): { workspaceId: string; id: string } | null {
+  const parts = key.split(":");
+  const parsed = pairKeySchema.safeParse({ workspaceId: parts[0], id: parts[1] });
+  return parsed.success && parts.length === 2 ? parsed.data : null;
+}
+
+/**
+ * The `check_paddle_connection` and `sweep_paddle_subscriptions` outbox subject:
+ * `<workspaceId>:<connectionId>`.
+ */
+export function encodePaddleConnectionKey(ref: PaddleConnectionRef): string {
+  return encodePair(ref.workspaceId, ref.connectionId);
+}
+
+export function decodePaddleConnectionKey(
+  key: string,
+): ParseResult<PaddleConnectionRef, "key_invalid"> {
+  const pair = decodePair(key);
+  return pair === null
+    ? { ok: false, error: "key_invalid" }
+    : { ok: true, value: { workspaceId: pair.workspaceId, connectionId: pair.id } };
+}
+
+/** The `send_claim_email` outbox subject: `<workspaceId>:<claimRequestId>`. */
+export function encodeClaimRequestKey(ref: ClaimRequestRef): string {
+  return encodePair(ref.workspaceId, ref.claimRequestId);
+}
+
+export function decodeClaimRequestKey(key: string): ParseResult<ClaimRequestRef, "key_invalid"> {
+  const pair = decodePair(key);
+  return pair === null
+    ? { ok: false, error: "key_invalid" }
+    : { ok: true, value: { workspaceId: pair.workspaceId, claimRequestId: pair.id } };
 }

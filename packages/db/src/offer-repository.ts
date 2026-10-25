@@ -174,6 +174,19 @@ export async function getOffer(
   return offer ?? null;
 }
 
+/**
+ * System use (`/buy/:offerId`, a public checkout page): the workspace that owns an offer, or null.
+ * The caller then reads the offer within that workspace (`getOffer`).
+ */
+export async function findOfferWorkspaceId(db: Db, offerId: string): Promise<string | null> {
+  const rows = await db
+    .select({ workspaceId: offers.workspaceId })
+    .from(offers)
+    .where(eq(offers.id, offerId))
+    .limit(1);
+  return rows[0]?.workspaceId ?? null;
+}
+
 /** Every offer of the workspace, archived ones included, by name. */
 export async function listOffers(db: Db, workspaceId: string): Promise<OfferWithConfig[]> {
   const rows = await db

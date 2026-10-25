@@ -17,3 +17,11 @@
 - Application services cannot hold a transaction open across a provider call. Provider mutations always happen in the jobs Worker after a committed intent, followed by a separate observe-and-persist batch.
 - Tests must cover crash points between batches (see `testing-strategy.md`, convergence model).
 - The outbox can deliver more than once; consumers are already required to be idempotent.
+
+## Amendment — follow-up work goes to the queue (Phase 5)
+
+A Paddle purchase passes through several queued steps: the event, then the refresh it asks for, then the refresh a customer link asks for. With only the web Worker handing work to the queue, each later step waited for the minute drain, and in local development, which runs no crons, it never ran.
+
+- The jobs Worker also produces to the queue it consumes (`EVENTS`). After a job succeeds, its queue consumer sends the pending `refresh_subscription` and `check_paddle_connection` rows created since the job started, up to 50. Reconciliations keep their own schedule (decision 0010).
+- The web Worker does the same for the refreshes a confirmed claim or a manual customer link queued in its workspace, off the response path.
+- Both are best effort. The rows are already committed, the drain remains the safety net, and a row sent twice is harmless because every job is idempotent.

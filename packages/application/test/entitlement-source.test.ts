@@ -3,9 +3,13 @@ import { createSecretCanaries, expectNoCanaryLeak } from "@sharerepo/testing";
 import { describe, expect, it } from "vitest";
 import { simulatedSnapshot } from "../src/entitlement-source.ts";
 import {
+  decodeClaimRequestKey,
   decodeOfferKey,
+  decodePaddleConnectionKey,
   decodeRefreshKey,
+  encodeClaimRequestKey,
   encodeOfferKey,
+  encodePaddleConnectionKey,
   encodeRefreshKey,
   simulatedEntitlementSource,
 } from "../src/index.ts";
@@ -49,6 +53,7 @@ describe("simulatedSnapshot", () => {
         sourceUpdatedAt: T + DAY,
       },
       customerLink: { provider: "github", externalSubjectId: "583231", login: "octocat" },
+      claimReference: null,
     });
   });
 
@@ -117,5 +122,25 @@ describe("outbox subject keys", () => {
       encodeRefreshKey({ workspaceId: "a:b", source: "simulated", externalSubscriptionId: "x" }),
     ).toThrow();
     expect(() => encodeOfferKey({ workspaceId: "ws-1", offerId: "a:b" })).toThrow();
+  });
+});
+
+describe("Paddle connection and claim request keys", () => {
+  it("round-trip `<workspaceId>:<id>` and refuse anything else", () => {
+    const connection = { workspaceId: "ws1", connectionId: "pdc1" };
+    expect(decodePaddleConnectionKey(encodePaddleConnectionKey(connection))).toEqual({
+      ok: true,
+      value: connection,
+    });
+    const request = { workspaceId: "ws1", claimRequestId: "cr1" };
+    expect(decodeClaimRequestKey(encodeClaimRequestKey(request))).toEqual({
+      ok: true,
+      value: request,
+    });
+    for (const key of ["ws1", "ws1:a:b", ":a", "ws1:"]) {
+      expect(decodePaddleConnectionKey(key)).toEqual({ ok: false, error: "key_invalid" });
+      expect(decodeClaimRequestKey(key)).toEqual({ ok: false, error: "key_invalid" });
+    }
+    expect(() => encodeClaimRequestKey({ workspaceId: "a:b", claimRequestId: "c" })).toThrow();
   });
 });

@@ -39,6 +39,8 @@ Build these in Phase 0–1 so later phases can be tested without retrofitting.
 | Queue port | Cloudflare Queues producer | In-process queue that tests drain explicitly, with redelivery and reordering | Repeated delivery and crash-between-steps scenarios |
 | Transactional outbox | D1 table drained by jobs | Same table, drained by the test | Event receipt, state change, and job intent commit in one `batch()` |
 | OAuth provider | GitHub OAuth | Local fake GitHub OAuth server | E2E signs in through OAuth with no test-only login backdoor. Wired through endpoint overrides accepted only when `ENVIRONMENT=e2e` ([0006](decisions/0006-authentication-with-better-auth.md)) |
+| Payment provider | Paddle Billing API and webhooks | `FakePaddle` in process; for E2E, an HTTP fake built on it (`apps/web/e2e/support/fake-paddle.ts`) with a payment page, lifecycle controls and signed webhooks | Purchases and subscription lifecycles with no Paddle account. The API override is accepted only when `ENVIRONMENT=e2e` |
+| Mail | Cloudflare `send_email` binding | `FakeMail`; E2E posts to the fake Paddle's mailbox (`MAIL_CAPTURE_URL`, e2e only) | Claim links are read from captured mail |
 | Secrets/key provider | Cloudflare secrets | Fixed test keys | Signature and envelope-encryption tests use known material |
 
 ## Fake providers
@@ -83,6 +85,11 @@ Each scenario has a stable name used as the test title so coverage of the matrix
 | `claim/get-never-mutates` | Claim threat model T3 | Entry point | 5 |
 | `claim/request-does-not-reveal-purchases` | Claim threat model T4 | Service | 5 |
 | `claim/request-rate-limited` | Claim threat model T5 | Service | 5 |
+| `claim/checkout-start-rate-limited` | Claim threat model T5 | Service | 5 |
+| `claim/checkout-reference-tamper-rejected` | Claim threat model T11 | Service | 5 |
+| `claim/checkout-cannot-adopt-existing-customer` | Claim threat model T13 | Service | 5 |
+| `connection/revoked-key-keeps-last-facts` | Decision 0011: connection loss | Service | 5 |
+| `credential/envelope-bound-to-row` | AGENTS: encrypted, versioned tenant credentials | Platform, DB | 5 |
 | `timing/renewal-during-scheduled-revocation` | Matrix: renewal during scheduled revocation; AGENTS: reactivation | Service, entry point | 5–6 |
 | `timing/cancellation-revokes-at-effective-time` | AGENTS: cancellation timing | Domain, service | 3, 5 |
 | `timing/past-due-within-grace-keeps-access` | AGENTS: grace periods | Domain, service | 3, 5 |

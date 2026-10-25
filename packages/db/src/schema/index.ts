@@ -7,6 +7,7 @@ export {
   authUsers,
   authVerifications,
 } from "./auth.ts";
+export { checkoutClaims, claimRateLimits, claimRequests, claimTokens } from "./claims.ts";
 export {
   customers,
   offerAccesses,
@@ -20,6 +21,7 @@ export {
 export { connectionIntents, connections } from "./connections.ts";
 export { externalEvents, outbox } from "./events.ts";
 export { externalIdentities } from "./identities.ts";
+export { paddleConnections, paddlePrices } from "./paddle.ts";
 export { resources } from "./resources.ts";
 export { simulatedSubscriptions } from "./simulation.ts";
 export { users } from "./users.ts";

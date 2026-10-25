@@ -7,9 +7,16 @@ export default [
   // Only the OAuth callback is exposed. Sign-in and sign-out go through our own actions, so
   // Better Auth's other endpoints (account linking, profile updates) are unreachable.
   route("api/auth/callback/github", "routes/api.auth.callback.ts"),
+  // A buyer's pages: signed-out visitors are offered sign-in and come back (decision 0012).
+  layout("routes/buyer-layout.tsx", [
+    route("buy/:offerId", "routes/buy.$offerId.tsx"),
+    route("c/:slug/claim", "routes/c.$slug.claim.tsx"),
+    route("claim/:token", "routes/claim.$token.tsx"),
+  ]),
   layout("routes/signed-in-layout.tsx", [
     route("workspaces/new", "routes/workspaces.new.tsx"),
     route("github/setup", "routes/github.setup.ts"),
+    route("me/access", "routes/me.access.tsx"),
     route("w/:slug", "routes/w.$slug.tsx", [
       index("routes/w.$slug._index.tsx"),
       route("settings", "routes/w.$slug.settings.tsx"),
@@ -17,6 +24,8 @@ export default [
       route("offers", "routes/w.$slug.offers.tsx"),
       route("access", "routes/w.$slug.access.tsx"),
       route("simulator", "routes/w.$slug.simulator.tsx"),
+      route("billing", "routes/w.$slug.billing.tsx"),
+      route("customers", "routes/w.$slug.customers.tsx"),
     ]),
   ]),
 ] satisfies RouteConfig;

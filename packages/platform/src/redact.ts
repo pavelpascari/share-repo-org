@@ -11,10 +11,23 @@ const SENSITIVE_WORDS = [
   "signature",
   "credential",
   "session",
+  // Phase 5: credential envelopes and the keyring that opens them, claim references, and the
+  // emails buyers claim with (decisions 0011 and 0012).
+  "envelope",
+  "keyring",
+  "claimreference",
+  "email",
 ] as const;
 
 /** Key names that end with one of these words are sensitive (`encryptionKey`, `jwt`). */
-const SENSITIVE_SUFFIXES = ["jwt", "pem", "encryptionkey", "masterkey", "signingkey"] as const;
+const SENSITIVE_SUFFIXES = [
+  "jwt",
+  "pem",
+  "encryptionkey",
+  "masterkey",
+  "signingkey",
+  "datakey",
+] as const;
 
 /** Key names that start with one of these words are sensitive (`accessKeyId`). */
 const SENSITIVE_PREFIXES = ["accesskey"] as const;
@@ -48,6 +61,9 @@ const TOKEN_PATTERNS: readonly (readonly [RegExp, string])[] = [
   [/\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]+/gi, `$1 ${REDACTED}`],
   [/\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})/g, REDACTED],
   [/\bpdl_[A-Za-z0-9_]{10,}/g, REDACTED],
+  // Claim references (`v1.<checkoutClaimId>.<mac>`) and claim links (`/claim/<token>`).
+  [/\bv1\.[A-Za-z0-9_-]{1,128}\.[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])/g, REDACTED],
+  [/\/claim\/[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])/g, `/claim/${REDACTED}`],
 ];
 
 // `key=value`, `key: value`, `"key":"value"`. A key is a whole run of key characters (the

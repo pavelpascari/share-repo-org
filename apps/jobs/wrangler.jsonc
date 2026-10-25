@@ -11,10 +11,20 @@
   "vars": {
     "ENVIRONMENT": "development",
     // The GitHub App (docs/runbooks/github-app-setup.md). Empty disables GitHub work locally.
-    "GITHUB_APP_ID": ""
+    "GITHUB_APP_ID": "",
+    // The web Worker's public origin (its BETTER_AUTH_URL), for claim links in emails.
+    "PUBLIC_BASE_URL": "http://localhost:5173",
+    // The sender of claim emails, on the onboarded sending domain (docs/deployment.md).
+    "MAIL_FROM": "ShareRepo <claims@sharerepo.org>"
   },
-  "secrets": { "required": ["GITHUB_APP_PRIVATE_KEY"] },
+  // Paddle credential envelopes and purchase claims (decisions 0011 and 0012). Optional in local
+  // development, where Paddle is then unavailable. The `EMAIL` send_email binding for claim
+  // emails is added once the sending domain is onboarded (docs/deployment.md § Claim emails).
+  "secrets": { "required": ["GITHUB_APP_PRIVATE_KEY", "CREDENTIAL_KEYS", "CLAIM_SIGNING_KEY"] },
+  // Consumes the events queue, and produces to it too: follow-up work a job queued (such as the
+  // refresh a Paddle event asks for) goes to the queue rather than waiting for the outbox drain.
   "queues": {
+    "producers": [{ "binding": "EVENTS", "queue": "sharerepo-events-dev" }],
     "consumers": [{ "queue": "sharerepo-events-dev", "max_batch_size": 10, "max_retries": 5 }]
   },
   // Shared database; see docs/decisions/0002. Replace the ID after `wrangler d1 create sharerepo-dev`.
@@ -30,9 +40,17 @@
     "production": {
       "name": "sharerepo-jobs-production",
       "triggers": { "crons": ["0 * * * *", "* * * * *", "17 3 * * *"] },
-      "vars": { "ENVIRONMENT": "production", "GITHUB_APP_ID": "REPLACE_WITH_PRODUCTION_APP_ID" },
-      "secrets": { "required": ["GITHUB_APP_PRIVATE_KEY"] },
+      "vars": {
+        "ENVIRONMENT": "production",
+        "GITHUB_APP_ID": "REPLACE_WITH_PRODUCTION_APP_ID",
+        "PUBLIC_BASE_URL": "https://REPLACE-WITH-PRODUCTION-HOST.invalid",
+        "MAIL_FROM": "ShareRepo <claims@sharerepo.org>"
+      },
+      "secrets": {
+        "required": ["GITHUB_APP_PRIVATE_KEY", "CREDENTIAL_KEYS", "CLAIM_SIGNING_KEY"]
+      },
       "queues": {
+        "producers": [{ "binding": "EVENTS", "queue": "sharerepo-events-prod" }],
         "consumers": [{ "queue": "sharerepo-events-prod", "max_batch_size": 10, "max_retries": 5 }]
       },
       // Replace the ID after `wrangler d1 create sharerepo-prod`.
@@ -45,18 +63,25 @@
         }
       ]
     },
-    // Local Playwright runs only; never deployed. The GitHub API override is accepted only
-    // when ENVIRONMENT is "e2e" (decision 0006).
+    // Local Playwright runs only; never deployed. The GitHub and Paddle API overrides and the
+    // mail capture are accepted only when ENVIRONMENT is "e2e" (decision 0006).
     "e2e": {
       "name": "sharerepo-jobs-e2e",
       "triggers": { "crons": ["0 * * * *", "* * * * *", "17 3 * * *"] },
       "vars": {
         "ENVIRONMENT": "e2e",
         "GITHUB_APP_ID": "1000",
-        "GITHUB_API_BASE_URL": "http://localhost:5190/api"
+        "PUBLIC_BASE_URL": "http://localhost:5180",
+        "MAIL_FROM": "ShareRepo <claims@sharerepo.test>",
+        "GITHUB_API_BASE_URL": "http://localhost:5190/api",
+        "PADDLE_API_BASE_URL": "http://localhost:5191/api",
+        "MAIL_CAPTURE_URL": "http://localhost:5191/mail"
       },
-      "secrets": { "required": ["GITHUB_APP_PRIVATE_KEY"] },
+      "secrets": {
+        "required": ["GITHUB_APP_PRIVATE_KEY", "CREDENTIAL_KEYS", "CLAIM_SIGNING_KEY"]
+      },
       "queues": {
+        "producers": [{ "binding": "EVENTS", "queue": "sharerepo-events-dev" }],
         "consumers": [{ "queue": "sharerepo-events-dev", "max_batch_size": 10, "max_retries": 5 }]
       },
       // Same local database as the top level, where E2E applies migrations.

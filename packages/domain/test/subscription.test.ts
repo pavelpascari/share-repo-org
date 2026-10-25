@@ -1,6 +1,7 @@
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 import {
+  carryPastDueSince,
   isNewerSnapshot,
   parseSubscriptionSnapshot,
   type SubscriptionSnapshot,
@@ -126,6 +127,43 @@ describe("isNewerSnapshot", () => {
           expect(stored?.sourceUpdatedAt).toBe(Math.max(...times));
         },
       ),
+    );
+  });
+});
+
+describe("carryPastDueSince", () => {
+  const pastDue = (since: number) => ({ pastDueSince: since });
+  const notPastDue = { pastDueSince: null };
+
+  it.each([
+    ["nothing is stored", null, pastDue(T), T],
+    ["the stored subscription was not past due", notPastDue, pastDue(T), T],
+    ["it stays past due, restamped later", pastDue(T), pastDue(T + 5), T],
+    ["it stays past due, reported earlier", pastDue(T + 5), pastDue(T), T],
+    ["it recovers", pastDue(T), notPastDue, null],
+    ["it was and is not past due", notPastDue, notPastDue, null],
+    ["nothing is stored and it is not past due", null, notPastDue, null],
+  ] as const)("when %s", (_, stored, incoming, expected) => {
+    expect(carryPastDueSince(stored, incoming)).toBe(expected);
+  });
+
+  // The domain half of timing/past-due-within-grace-keeps-access; the service test proves the rest.
+  it("updates while past due never move the start of grace later", () => {
+    const since = fc.option(fc.integer({ min: 0, max: 1_000_000 }), { nil: null });
+    fc.assert(
+      fc.property(fc.array(since, { minLength: 1 }), (sequence) => {
+        let stored: { pastDueSince: number | null } | null = null;
+        let runStart: number | null = null;
+        for (const incoming of sequence) {
+          const next = carryPastDueSince(stored, { pastDueSince: incoming });
+          // Past due exactly when the incoming snapshot is.
+          expect(next === null).toBe(incoming === null);
+          // Within a past-due run, the start is the earliest reported.
+          runStart = incoming === null ? null : Math.min(runStart ?? incoming, incoming);
+          expect(next).toBe(runStart);
+          stored = { pastDueSince: next };
+        }
+      }),
     );
   });
 });

@@ -1,3 +1,15 @@
+export type { ClaimReferenceBinding, ParsedClaimReference } from "./claims.ts";
+export {
+  CLAIM_REFERENCE_MAX_LENGTH,
+  hashClaimEmail,
+  hashClaimToken,
+  hashIp,
+  isClaimToken,
+  newClaimToken,
+  parseClaimReference,
+  signClaimReference,
+  verifyClaimReference,
+} from "./claims.ts";
 export type { CorrelationIdSource } from "./correlation.ts";
 export {
   correlationIdFrom,
@@ -6,6 +18,14 @@ export {
   withCorrelationId,
 } from "./correlation.ts";
 export { parseEnv } from "./env.ts";
+export type { CredentialEnvelopeFailure, EnvelopePurpose } from "./envelope.ts";
+export {
+  CredentialEnvelopeError,
+  ENVELOPE_VERSION,
+  envelopeAad,
+  openSecret,
+  sealSecret,
+} from "./envelope.ts";
 export type { AppErrorOptions, ConfigurationIssue } from "./errors.ts";
 export {
   AppError,
@@ -22,3 +42,5 @@ export type { LogContext, LogFields, Logger, LoggerOptions, LogLevel, LogSink } 
 export { createLogger } from "./logger.ts";
 export type { RedactOptions } from "./redact.ts";
 export { isSensitiveKey, REDACTED, redact, redactString } from "./redact.ts";
+export type { CommerceSecrets, CredentialKeyring } from "./secrets.ts";
+export { CLAIM_SIGNING_KEY_MIN_BYTES, parseCommerceSecrets } from "./secrets.ts";

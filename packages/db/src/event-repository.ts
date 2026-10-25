@@ -1,5 +1,5 @@
 import type { ExternalEventState, Instant } from "@sharerepo/domain";
-import { and, asc, eq, sql } from "drizzle-orm";
+import { and, asc, eq, isNull, sql } from "drizzle-orm";
 import type { Db } from "./client.ts";
 import { conditionalOutboxInsert, type NewOutboxRow } from "./outbox-repository.ts";
 import { externalEvents } from "./schema/index.ts";
@@ -37,7 +37,9 @@ export async function recordExternalEvent(
         lastErrorCode: null,
         processedAt: null,
       })
-      .onConflictDoNothing({ target: [externalEvents.provider, externalEvents.externalEventId] }),
+      // No target: the dedupe key is an expression index (see schema/events.ts). The only other
+      // unique key is the primary key, which a fresh ID never repeats.
+      .onConflictDoNothing(),
     ...outbox.map((row) => conditionalOutboxInsert(db, row, thisEvent)),
   ]);
   if (insert.meta.changes > 0) return { inserted: true, eventId: event.id };
@@ -47,6 +49,9 @@ export async function recordExternalEvent(
     .where(
       and(
         eq(externalEvents.provider, event.provider),
+        event.connectionId === null
+          ? isNull(externalEvents.connectionId)
+          : eq(externalEvents.connectionId, event.connectionId),
         eq(externalEvents.externalEventId, event.externalEventId),
       ),
     )

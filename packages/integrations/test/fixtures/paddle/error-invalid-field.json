@@ -1,0 +1,17 @@
+{
+  "error": {
+    "type": "request_error",
+    "code": "invalid_field",
+    "detail": "Invalid request.",
+    "documentation_url": "https://developer.paddle.com/errors/shared/invalid_field",
+    "errors": [
+      {
+        "field": "custom_data",
+        "message": "jo@example.com is not allowed"
+      }
+    ]
+  },
+  "meta": {
+    "request_id": "5b2e8c1a-3f4d-4e6a-9b7c-0d1e2f3a4b5c"
+  }
+}

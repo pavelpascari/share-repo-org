@@ -1,7 +1,11 @@
 import { createExecutionContext, createScheduledController } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { simulatedEntitlementSource } from "@sharerepo/application";
-import { createFakeGitHubApp } from "@sharerepo/integrations/testing";
+import {
+  createFakeGitHubApp,
+  createFakeMail,
+  createFakePaddle,
+} from "@sharerepo/integrations/testing";
 import { REQUEST_ID_HEADER } from "@sharerepo/platform";
 import {
   captureLogs,
@@ -22,6 +26,8 @@ function testWorker(clock = new FakeClock("2026-10-18T12:00:01.500Z")) {
     clock,
     github: () => createFakeGitHubApp(),
     simulatedSource: simulatedEntitlementSource,
+    paddle: () => createFakePaddle(),
+    mail: () => createFakeMail(),
   });
 }
 
@@ -92,7 +98,12 @@ describe("scheduled()", () => {
   });
 
   it("logs a classified error and rethrows when the environment is invalid", async () => {
-    await expect(runScheduled(testWorker(), { ENVIRONMENT: "staging" })).rejects.toMatchObject({
+    const bindings = {
+      ENVIRONMENT: "staging",
+      PUBLIC_BASE_URL: env.PUBLIC_BASE_URL,
+      MAIL_FROM: env.MAIL_FROM,
+    };
+    await expect(runScheduled(testWorker(), bindings)).rejects.toMatchObject({
       name: "ConfigurationError",
       code: "configuration_error",
     });

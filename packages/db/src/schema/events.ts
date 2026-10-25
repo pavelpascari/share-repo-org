@@ -1,31 +1,46 @@
 import {
+  EVENT_PROVIDERS,
+  type EventProvider,
   EXTERNAL_EVENT_STATES,
   type ExternalEventState,
-  IDENTITY_PROVIDERS,
-  type IdentityProvider,
   type Instant,
   OUTBOX_KINDS,
   type OutboxKind,
 } from "@sharerepo/domain";
 import { sql } from "drizzle-orm";
-import { check, index, integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+import { check, index, integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { paddleConnections } from "./paddle.ts";
 import { literalList } from "./sql.ts";
 
 /**
  * Receipt of a provider webhook (domain `ExternalEvent`). Global: an event can arrive before any
  * workspace is connected. Stores metadata and a payload digest, never the payload, which can
- * contain personal data. Unique per provider delivery ID, so redelivery is a no-op.
+ * contain personal data. Unique per provider, connection and event ID, so redelivery is a no-op.
+ *
+ * Paddle events arrive per connection (`/webhooks/paddle/:connectionId`) and are deduplicated
+ * within it, so a creator who signs a colliding `evt_` ID cannot suppress another workspace's
+ * events. GitHub events have no connection (one App, one webhook) and dedupe per provider.
  */
 export const externalEvents = sqliteTable(
   "external_events",
   {
     id: text("id").primaryKey(),
-    provider: text("provider", { enum: IDENTITY_PROVIDERS }).$type<IdentityProvider>().notNull(),
+    provider: text("provider", { enum: EVENT_PROVIDERS }).$type<EventProvider>().notNull(),
+    // The Paddle connection whose destination received the event; null for GitHub.
+    connectionId: text("connection_id").references(() => paddleConnections.id, {
+      onDelete: "restrict",
+    }),
     externalEventId: text("external_event_id").notNull(),
     eventType: text("event_type").notNull(),
     action: text("action"),
     installationId: text("installation_id"),
+    // Paddle: the subscription the event concerns (`data.id` of a `subscription.*` event,
+    // `data.subscription_id` of a `transaction.*` event), which processing refreshes. Null for
+    // other events and for GitHub. An ID only: the payload itself is never stored.
+    externalSubscriptionId: text("external_subscription_id"),
     payloadDigest: text("payload_digest").notNull(),
+    // When the provider says the event happened, if it says (Paddle's `occurred_at`).
+    occurredAt: integer("occurred_at").$type<Instant>(),
     receivedAt: integer("received_at").$type<Instant>().notNull(),
     processingState: text("processing_state", { enum: EXTERNAL_EVENT_STATES })
       .$type<ExternalEventState>()
@@ -35,9 +50,19 @@ export const externalEvents = sqliteTable(
     processedAt: integer("processed_at").$type<Instant>(),
   },
   (t) => [
-    uniqueIndex("external_events_provider_event_unique").on(t.provider, t.externalEventId),
+    // Deduplication is the unique expression index `external_events_connection_event_unique` on
+    // (provider, coalesce(connection_id, ''), external_event_id): `coalesce` makes GitHub's null
+    // connections compare equal. drizzle-kit 0.31 cannot generate an expression index (it quotes
+    // the expression as a column), so it is hand-written at the end of migration 0006 and is
+    // absent from the snapshots; `pnpm db:check` compares snapshots only. Writers use
+    // ON CONFLICT DO NOTHING without a target, which covers this index.
     index("external_events_state_idx").on(t.processingState, t.receivedAt),
-    check("external_events_provider_valid", sql`provider IN (${literalList(IDENTITY_PROVIDERS)})`),
+    check("external_events_provider_valid", sql`provider IN (${literalList(EVENT_PROVIDERS)})`),
+    // Paddle events always name their connection; GitHub events never do.
+    check(
+      "external_events_connection_iff_paddle",
+      sql`(provider = 'paddle') = (connection_id IS NOT NULL)`,
+    ),
     check(
       "external_events_state_valid",
       sql`processing_state IN (${literalList(EXTERNAL_EVENT_STATES)})`,

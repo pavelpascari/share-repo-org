@@ -14,6 +14,9 @@ export default function SignedInLayout({ loaderData }: Route.ComponentProps) {
           ShareRepo
         </Link>
         <Form method="post" action="/sign-out" className="flex items-center gap-3">
+          <Link to="/me/access" className="text-sm underline">
+            My access
+          </Link>
           <span className="text-sm text-gray-600">{loaderData.user.name}</span>
           <button type="submit" className="text-sm underline">
             Sign out

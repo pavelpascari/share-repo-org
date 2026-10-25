@@ -1,0 +1,1 @@
+ALTER TABLE `checkout_claims` ADD `checkout_url` text;

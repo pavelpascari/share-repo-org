@@ -1,10 +1,17 @@
 import { z } from "zod";
+import {
+  CHECKOUT_REJECTION_REASONS,
+  CLAIM_REJECTION_REASONS,
+  EMAIL_REJECTION_REASONS,
+  LinkPath,
+} from "./claim.ts";
 import { CONNECTION_STATUSES } from "./connection.ts";
 import { ACCESS_LEVELS } from "./entitlement.ts";
 import { GRANT_STATES, MUTATION_OPERATIONS, RETRY_CLASSES } from "./grant.ts";
 import { IDENTITY_PROVIDERS } from "./identity.ts";
 import type { IdGenerator } from "./ids.ts";
 import { COMMERCIAL_SOURCES, GRACE_PERIOD_DAYS_MAX, GRACE_PERIOD_DAYS_MIN } from "./offer.ts";
+import { PADDLE_ENVIRONMENTS, PaddleConnectionStatus } from "./paddle.ts";
 import { ACCESS_DECISION_REASONS } from "./policy.ts";
 import { GRANT_ERROR_CODES, MUTATION_STOP_REASONS } from "./provisioning.ts";
 import { RESOURCE_SELECTIONS } from "./resource.ts";
@@ -43,6 +50,8 @@ interface AuditActionDefinition {
   readonly scope: AuditScope;
   readonly targetType: string;
   readonly details: z.ZodObject;
+  /** The event must carry a human reason, such as an owner's justification for a manual link. */
+  readonly requiresReason?: true;
 }
 
 const text = z.string().min(1);
@@ -58,6 +67,13 @@ const subscriptionState = z.enum(SUBSCRIPTION_STATES);
 const decisionReason = z.enum(ACCESS_DECISION_REASONS);
 const accessLevel = z.enum(ACCESS_LEVELS);
 const grantState = z.enum(GRANT_STATES);
+/** A Paddle connection status other than `disconnected`, which is final. */
+const liveConnectionStatus = z.enum([
+  PaddleConnectionStatus.Active,
+  PaddleConnectionStatus.Unauthorized,
+]);
+/** The self-service claim paths; an owner's manual link has its own action. */
+const claimPath = z.enum([LinkPath.Checkout, LinkPath.Email]);
 
 /** The grant fields a `grant.observed` event reports, before and after. */
 const observedGrant = z.strictObject({
@@ -351,6 +367,130 @@ export const AUDIT_ACTIONS = {
       kind: z.enum(RECONCILIATION_REQUEST_KINDS),
     }),
   },
+  // Paddle connections and claims (Phase 5, decisions 0011 and 0012). Details carry IDs only:
+  // never an email, token, claim reference or key.
+  "paddle.connected": {
+    scope: "workspace",
+    targetType: "paddle_connection",
+    details: z.strictObject({ environment: z.enum(PADDLE_ENVIRONMENTS), sellerId: text }),
+  },
+  // A new key for the same seller. `destinationRecreated` is true when the destination had been
+  // deleted outside ShareRepo and a new one was created.
+  "paddle.reconnected": {
+    scope: "workspace",
+    targetType: "paddle_connection",
+    details: z.strictObject({
+      sellerId: text,
+      previousStatus: liveConnectionStatus,
+      destinationRecreated: z.boolean(),
+    }),
+  },
+  "paddle.disconnected": {
+    scope: "workspace",
+    targetType: "paddle_connection",
+    // False when the destination could not be deleted and the creator must delete it in Paddle.
+    details: z.strictObject({
+      previousStatus: liveConnectionStatus,
+      destinationDeleted: z.boolean(),
+    }),
+  },
+  // Between active and unauthorized only: disconnecting has its own action. The classified
+  // status reason, when there is one, is the event's `reason`.
+  "paddle.status_changed": {
+    scope: "workspace",
+    targetType: "paddle_connection",
+    details: z
+      .strictObject({ previousStatus: liveConnectionStatus, status: liveConnectionStatus })
+      .refine((d) => d.previousStatus !== d.status, { path: ["status"] }),
+  },
+  // An envelope sealed under a retired master key was re-sealed under the current one (decision
+  // 0011, rotation). The secret itself is unchanged; `field` names which envelope.
+  "paddle.credentials_rewrapped": {
+    scope: "workspace",
+    targetType: "paddle_connection",
+    details: z.strictObject({ field: z.enum(["api_key", "webhook_secret"]) }),
+  },
+  "paddle.catalog_synced": {
+    scope: "workspace",
+    targetType: "paddle_connection",
+    details: z.strictObject({ added: count, updated: count, archived: count }),
+  },
+  "checkout.started": {
+    scope: "workspace",
+    targetType: "checkout_claim",
+    details: z.strictObject({ offerId: text, priceId: text }),
+  },
+  // The same shape whether or not a purchase matches (threat T4).
+  "claim.requested": {
+    scope: "workspace",
+    targetType: "claim_request",
+    details: z.strictObject({}),
+  },
+  "claim.token_issued": {
+    scope: "workspace",
+    targetType: "claim_token",
+    details: z.strictObject({ claimRequestId: text, customerId: text }),
+  },
+  // A claim linked the customer, or found it already linked to the claimant's subject. `claimId`
+  // is the checkout claim's (path 1) or the claim token's (path 2) ID.
+  "claim.completed": {
+    scope: "workspace",
+    targetType: "customer",
+    details: z.strictObject({ path: claimPath, claimId: text, userId: text, subjectId: text }),
+  },
+  // `claimId` is null when no claim was identified: a reference that does not verify, or a token
+  // that matches nothing. Each path has its own reasons.
+  "claim.rejected": {
+    scope: "workspace",
+    targetType: "customer",
+    details: z
+      .strictObject({
+        path: claimPath,
+        claimId: text.nullable(),
+        reason: z.enum(CLAIM_REJECTION_REASONS),
+      })
+      .refine(
+        (d) =>
+          (d.path === LinkPath.Checkout
+            ? (CHECKOUT_REJECTION_REASONS as readonly string[])
+            : (EMAIL_REJECTION_REASONS as readonly string[])
+          ).includes(d.reason),
+        { path: ["reason"] },
+      ),
+  },
+  // Path 1 never moves an existing link (decideCustomerLink): the linked subject and the
+  // claimant's user are recorded, and the link stays.
+  "claim.conflict": {
+    scope: "workspace",
+    targetType: "customer",
+    details: z.strictObject({
+      path: z.literal(LinkPath.Checkout),
+      claimId: text,
+      subjectId: text,
+      userId: text,
+    }),
+  },
+  // Path 2 moved the link; path 3 records `customer.linked_manually` instead.
+  "customer.relinked": {
+    scope: "workspace",
+    targetType: "customer",
+    details: z
+      .strictObject({
+        path: z.literal(LinkPath.Email),
+        previousSubjectId: text,
+        subjectId: text,
+      })
+      .refine((d) => d.previousSubjectId !== d.subjectId, { path: ["subjectId"] }),
+  },
+  // The owner's reason is the event's `reason`, which is required.
+  "customer.linked_manually": {
+    scope: "workspace",
+    targetType: "customer",
+    requiresReason: true,
+    details: z
+      .strictObject({ previousSubjectId: text.nullable(), subjectId: text })
+      .refine((d) => d.previousSubjectId !== d.subjectId, { path: ["subjectId"] }),
+  },
 } as const satisfies Record<string, AuditActionDefinition>;
 
 export type AuditAction = keyof typeof AUDIT_ACTIONS;
@@ -362,12 +502,18 @@ type WorkspaceField<A extends AuditAction> = Definition<A>["scope"] extends "wor
   ? { readonly workspaceId: string }
   : { readonly workspaceId?: never };
 
-export type AuditEventInput<A extends AuditAction> = WorkspaceField<A> & {
-  readonly actor: AuditEvent["actor"];
-  readonly targetId: string;
-  readonly reason?: string;
-  readonly details: AuditDetails<A>;
-};
+/** A reason is required for actions that demand one and optional for the rest. */
+type ReasonField<A extends AuditAction> =
+  Definition<A> extends { readonly requiresReason: true }
+    ? { readonly reason: string }
+    : { readonly reason?: string };
+
+export type AuditEventInput<A extends AuditAction> = WorkspaceField<A> &
+  ReasonField<A> & {
+    readonly actor: AuditEvent["actor"];
+    readonly targetId: string;
+    readonly details: AuditDetails<A>;
+  };
 
 export interface AuditContext {
   readonly ids: IdGenerator;
@@ -386,7 +532,10 @@ export function auditEvent<A extends AuditAction>(
 ): AuditEvent {
   if (!Object.hasOwn(AUDIT_ACTIONS, action)) throw new Error(`unknown audit action: ${action}`);
   const definition: AuditActionDefinition = AUDIT_ACTIONS[action];
-  const { workspaceId } = input as { readonly workspaceId?: string };
+  const { workspaceId, reason } = input as {
+    readonly workspaceId?: string;
+    readonly reason?: string;
+  };
 
   if (definition.scope === "workspace" && !workspaceId) {
     throw new Error(`${action} is workspace-scoped and needs a workspace ID`);
@@ -398,6 +547,9 @@ export function auditEvent<A extends AuditAction>(
     throw new Error(`audit actor of type ${input.actor.type} needs an ID`);
   }
   if (!input.targetId) throw new Error("audit target ID is required");
+  if (definition.requiresReason && !reason?.trim()) {
+    throw new Error(`${action} needs a reason`);
+  }
   if (!context.correlationId) throw new Error("audit correlation ID is required");
 
   const parsed = definition.details.safeParse(input.details);
@@ -418,7 +570,7 @@ export function auditEvent<A extends AuditAction>(
     actor: { type: input.actor.type, id: input.actor.id },
     action,
     target: { type: definition.targetType, id: input.targetId },
-    reason: input.reason ?? null,
+    reason: reason ?? null,
     correlationId: context.correlationId,
     occurredAt: context.clock.now(),
     details: parsed.data,
