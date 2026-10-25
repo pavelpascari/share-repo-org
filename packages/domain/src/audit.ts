@@ -546,6 +546,18 @@ export const AUDIT_ACTIONS = {
     targetType: "workspace",
     details: z.strictObject({}),
   },
+  // An operator read the cross-workspace lists on `/ops`; the actor is the operator, the target
+  // the page, and the details how many rows each list showed.
+  "operator.viewed_failures": {
+    scope: "account",
+    targetType: "ops_page",
+    details: z.strictObject({
+      jobs: count,
+      repositories: count,
+      connections: count,
+      purgesBlocked: count,
+    }),
+  },
   // One per pruning run, a system event (decision 0015).
   "data.pruned": {
     scope: "account",

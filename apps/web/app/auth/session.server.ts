@@ -15,6 +15,8 @@ export interface SignedInUser {
   readonly userId: string;
   readonly name: string;
   readonly image: string | null;
+  /** When this session was created (the sign-in through GitHub), epoch milliseconds. */
+  readonly sessionCreatedAt: number;
 }
 
 /** The signed-in user, or null. Sessions are checked against D1 on every request. */
@@ -22,7 +24,12 @@ export async function getSignedInUser(request: Request, context: Context) {
   const session = await authFor(context).api.getSession({ headers: request.headers });
   if (session === null) return null;
   const { id, name, image } = session.user;
-  return { userId: id, name, image: image ?? null } satisfies SignedInUser;
+  return {
+    userId: id,
+    name,
+    image: image ?? null,
+    sessionCreatedAt: new Date(session.session.createdAt).getTime(),
+  } satisfies SignedInUser;
 }
 
 /** The signed-in user; otherwise redirects to the home page, which offers sign-in. */

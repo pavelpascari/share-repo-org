@@ -43,6 +43,15 @@ export async function signedIn(): Promise<SignedIn> {
   return { userId: user.id, cookie, login: account.login, githubId: account.id };
 }
 
+/** A new session for the same GitHub account (signing in again). */
+export async function signedInAs(who: SignedIn): Promise<SignedIn> {
+  const account = fakeAccount({ id: who.githubId as never, login: who.login as never });
+  const { cookie } = await signIn(account);
+  const user = await sessionUser(cookie);
+  if (user?.id !== who.userId) throw new Error("sign-in failed");
+  return { ...who, cookie };
+}
+
 export interface Shop {
   readonly owner: SignedIn;
   readonly slug: string;

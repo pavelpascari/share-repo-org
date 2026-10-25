@@ -255,14 +255,29 @@ export interface OperatorFailures {
 }
 
 /**
+ * How old an operator's session may be for a retry or dismissal (threat model, operator account
+ * risk): two hours, as GitHub's own sudo mode. An older session must sign in again through
+ * GitHub first, so a stolen or forgotten session cookie alone cannot change failures for long.
+ */
+export const OPERATOR_SESSION_MAX_AGE_MS = 2 * 60 * 60 * 1000;
+
+/** Whether a session created at `sessionCreatedAt` may still retry or dismiss at `now`. */
+export const operatorSessionIsFresh = (sessionCreatedAt: Instant, now: Instant): boolean =>
+  now - sessionCreatedAt <= OPERATOR_SESSION_MAX_AGE_MS;
+
+/** The target ID of `operator.viewed_failures`: the `/ops` page. */
+export const OPS_PAGE_TARGET = "ops";
+
+/**
  * Every open failure, for an operator: failed jobs of every workspace and the system-wide ones,
  * repositories with repeated reconcile failures, unhealthy connections, purges that wait, and
- * sweep health. Each
- * job's affected access is resolved within its own workspace.
+ * sweep health. Each job's affected access is resolved within its own workspace. Each read is
+ * audited as `operator.viewed_failures` (account scope, the operator as actor, with how many rows
+ * each list holds), as an operator's read of one workspace is (decision 0014).
  */
 export async function listAllOpenFailures(
   context: ServiceContext,
-  _operator: OperatorPrincipal,
+  operator: OperatorPrincipal,
 ): Promise<OperatorFailures> {
   const ctx = atOneInstant(context);
   const { db } = ctx;
@@ -282,6 +297,22 @@ export async function listAllOpenFailures(
     repo.readSweepHealth(db, now),
   ]);
   const jobs = await Promise.all(rows.map((row) => failedJobOf(ctx, row)));
+  await repo.appendAuditEvents(ctx.db, [
+    auditEvent(
+      "operator.viewed_failures",
+      {
+        actor: operatorActor(operator),
+        targetId: OPS_PAGE_TARGET,
+        details: {
+          jobs: jobs.length,
+          repositories: repositories.length,
+          connections: connections.length,
+          purgesBlocked: purgesBlocked.length,
+        },
+      },
+      ctx,
+    ),
+  ]);
   return { jobs, repositories, connections, purgesBlocked, sweep };
 }
 
