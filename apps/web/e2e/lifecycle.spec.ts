@@ -13,9 +13,11 @@ test("an owner exports the workspace as a JSON file", async ({ page }) => {
   const file = await download;
   expect(file.suggestedFilename()).toMatch(new RegExp(`^sharerepo-${slug}-.*\\.json$`));
   const document = JSON.parse(await readFile((await file.path()) as string, "utf8")) as {
-    workspace: { slug: string };
+    formatVersion: number;
+    workspace: { slug: string; name: string };
   };
-  expect(document.workspace.slug).toBe(slug);
+  expect(document.formatVersion).toBe(1);
+  expect(document.workspace).toEqual(expect.objectContaining({ slug, name: "Exported" }));
 });
 
 test("an owner deletes the workspace, then cancels the deletion", async ({ page }) => {

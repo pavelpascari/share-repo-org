@@ -10,3 +10,9 @@ export const FAKE_GITHUB_URL = `http://localhost:${FAKE_GITHUB_PORT}`;
 export const FAKE_PADDLE_URL = `http://localhost:${FAKE_PADDLE_PORT}`;
 /** serve.ts prints this once both fakes run and the dev server is warm (playwright.config.ts). */
 export const READY_LINE = "E2E servers ready";
+/**
+ * The one operator of the E2E run (decision 0014): serve.ts lists this GitHub account ID in the
+ * web Worker's OPERATOR_GITHUB_IDS. It is above newGitHubAccount's range, so no other test's
+ * account is an operator.
+ */
+export const OPERATOR_GITHUB_ID = "3000000001";

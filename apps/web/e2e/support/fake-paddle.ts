@@ -9,18 +9,22 @@
 //   by email, creates the subscription with the transaction's custom data, and delivers signed
 //   `transaction.completed`, `subscription.created` and `subscription.activated` webhooks.
 // - `POST /mail`: captures ShareRepo's outgoing mail.
-// - `/_control/…`: what tests and people drive (forms or JSON); see docs/local-setup.md.
+// - `/_control/…`: what tests and people drive (forms or JSON); see docs/local-setup.md. Among
+//   them, `sellers/{id}/fail-next` (operation, kind) fails the seller's next API call, and
+//   `subscriptions/{id}/lose-webhooks` / `deliver-webhooks` make Paddle lose, or deliver again,
+//   that subscription's events (the change still applies).
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type {
   PaddleNotificationSetting,
   PaddlePrice,
   PaddleSubscription,
 } from "@sharerepo/integrations";
-import { PaddleApiError } from "@sharerepo/integrations";
+import { PaddleApiError, type PaddleApiErrorKind } from "@sharerepo/integrations";
 import {
   createFakePaddle,
   type FakePaddle,
   type FakePaddleDelivery,
+  type FakePaddleOperation,
 } from "@sharerepo/integrations/testing";
 import { FAKE_PADDLE_PORT } from "./ports.ts";
 
@@ -116,10 +120,15 @@ export function startFakePaddle(options: { port?: number } = {}) {
     return sent;
   }
 
-  const subscriptionEvent = (owner: Seller, eventType: string, subscriptionId: string) =>
-    broadcast(owner, eventType, (settingId) =>
-      owner.fake.emitSubscriptionEvent(settingId, eventType, subscriptionId),
-    );
+  /** Subscriptions whose events Paddle "loses": the change applies, no webhook is delivered. */
+  const losingWebhooks = new Set<string>();
+
+  const subscriptionEvent = async (owner: Seller, eventType: string, subscriptionId: string) =>
+    losingWebhooks.has(subscriptionId)
+      ? []
+      : broadcast(owner, eventType, (settingId) =>
+          owner.fake.emitSubscriptionEvent(settingId, eventType, subscriptionId),
+        );
 
   function clearTimer(owner: Seller, subscriptionId: string): void {
     clearTimeout(owner.timers.get(subscriptionId));
@@ -336,6 +345,14 @@ export function startFakePaddle(options: { port?: number } = {}) {
         owner.prices.set(price.id, price);
         return priceWire(price);
       }
+      if (method === "POST" && action === "fail-next") {
+        // The next call of `operation` fails with `kind` (Paddle's status for it), doing nothing.
+        owner.fake.failNext(
+          (body.operation ?? "") as FakePaddleOperation,
+          (body.kind ?? "") as PaddleApiErrorKind,
+        );
+        return { armed: true };
+      }
       if (method === "POST" && action === "revoke-key") {
         owner.fake.revokeKey();
         return { revoked: true };
@@ -368,6 +385,12 @@ export function startFakePaddle(options: { port?: number } = {}) {
       }
     }
     if (method === "POST" && area === "subscriptions" && id !== undefined && action) {
+      if (action === "lose-webhooks" || action === "deliver-webhooks") {
+        sellerOf((fake) => fake.subscription(id));
+        if (action === "lose-webhooks") losingWebhooks.add(id);
+        else losingWebhooks.delete(id);
+        return { losing: losingWebhooks.has(id) };
+      }
       return lifecycle(id, action, body);
     }
     if (method === "GET" && area === "mail") {
