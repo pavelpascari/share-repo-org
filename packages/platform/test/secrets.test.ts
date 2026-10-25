@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   CLAIM_SIGNING_KEY_MIN_BYTES,
   ConfigurationError,
+  claimSigningKeysOf,
   createLogger,
   parseCommerceSecrets,
   SINGLE_CLAIM_SIGNING_KEY_ID,
@@ -53,6 +54,22 @@ describe("parseCommerceSecrets", () => {
     const secrets = parseCommerceSecrets({ ...base, CLAIM_SIGNING_KEY: ` ${raw}` });
     expect(secrets?.claimSigningKeys).toEqual({ current: "c2", keys: { c1: old, c2: next } });
     expect(secrets?.claimSigningKey).toEqual(next);
+  });
+
+  it("lists the current claim signing key apart from the others still listed", () => {
+    const [a, b, c] = [1, 2, 3].map((fill) => new Uint8Array(32).fill(fill)) as [
+      Uint8Array,
+      Uint8Array,
+      Uint8Array,
+    ];
+    expect(claimSigningKeysOf({ current: "b", keys: { a, b, c } })).toEqual({
+      current: b,
+      retired: [a, c],
+    });
+    expect(claimSigningKeysOf({ current: "single", keys: { single: a } })).toEqual({
+      current: a,
+      retired: [],
+    });
   });
 
   it("is absent in local development when neither secret is set", () => {

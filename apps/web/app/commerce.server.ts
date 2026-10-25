@@ -27,7 +27,7 @@ export const providerOverrides = createContext<ProviderOverrides>({});
 
 /**
  * What the commerce services need, from the validated env: a Paddle client per key for the key's
- * environment, the credential keyring, the claim signing key, the public origin and the
+ * environment, the credential keyring, the claim signing keyring, the public origin and the
  * deployment. Null when `CREDENTIAL_KEYS` and `CLAIM_SIGNING_KEY` are not configured (local
  * development without secrets): Paddle pages then say Paddle is not configured.
  */
@@ -48,7 +48,7 @@ export function commerceDepsFromEnv(
           clock: systemClock,
         })),
     credentialKeys: env.commerce.credentialKeys,
-    claimSigningKey: env.commerce.claimSigningKey,
+    claimSigningKeys: env.commerce.claimSigningKeys,
     baseUrl: new URL(env.auth.baseURL).origin,
     deployment: env.ENVIRONMENT,
   };

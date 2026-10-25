@@ -430,6 +430,7 @@ describe("disconnectPaddle", () => {
       ok: true,
       destinationDeleted: true,
       destinationId: before.destinationId,
+      orphanedDestinationIds: [],
     });
     expect(s.paddle.notificationSettings()).toEqual([]);
     expect(await getPaddleConnection(db, { workspaceId: s.workspaceId })).toBeNull();
@@ -463,6 +464,7 @@ describe("disconnectPaddle", () => {
       ok: true,
       destinationDeleted: false,
       destinationId,
+      orphanedDestinationIds: [destinationId],
     });
     const row = await env.DB.prepare("SELECT destination_id FROM paddle_connections WHERE id = ?")
       .bind(s.connectionId)
@@ -647,6 +649,7 @@ describe("getBillingView", () => {
         apiKeyExpiresOn: row.apiKeyExpiresOn,
         keyExpiresSoon: false,
         destinationId: row.destinationId,
+        rotationInProgress: false,
         lastEventAt: null,
         lastCheckedAt: row.lastCheckedAt,
         catalogSyncedAt: row.catalogSyncedAt,

@@ -97,7 +97,7 @@ describe("queue()", () => {
   });
 
   // Phase 6 T1 placeholders: the kinds exist in the vocabulary; T4 and T5 add their handlers.
-  it.each(["prune_data", "purge_workspace", "rewrap_credentials"] as const)(
+  it.each(["prune_data", "purge_workspace"] as const)(
     "fails %s for good until its handler lands",
     async (kind) => {
       const outboxId = `row-${crypto.randomUUID()}`;

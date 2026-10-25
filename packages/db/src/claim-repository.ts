@@ -326,7 +326,8 @@ export async function consumeClaimToken(
  * counted once in each bucket's current window; false when any bucket is at its limit, and then
  * no counter changes, so refused requests never use up a limit (the domain's
  * `rateLimitDecision`, applied atomically). Windows are aligned to the epoch; a counter stored
- * for another window restarts.
+ * for another window restarts. A bucket's `retired` counters (the same limit under claim signing
+ * keys being rotated out) count towards its limit but are never incremented.
  *
  * One statement does it: an UPSERT whose rows are selected only if no bucket is exhausted. SQLite
  * evaluates a SELECT that reads the target table in full before inserting, so the check sees the
@@ -338,20 +339,26 @@ export async function takeRateLimits(
   now: Instant,
 ): Promise<boolean> {
   if (buckets.length === 0) return true;
+  // One row per stored counter consulted: each bucket itself (counted), and its retired names
+  // (consulted only), all grouped under the bucket they limit.
   const requested = sql.join(
-    buckets.map(
-      ({ bucket, windowMs, limit }) =>
-        sql`(${bucket}, ${rateLimitWindowStart(windowMs, now)}, ${limit})`,
-    ),
+    buckets.flatMap(({ bucket, windowMs, limit, retired }) => {
+      const windowStart = rateLimitWindowStart(windowMs, now);
+      return [
+        sql`(${bucket}, ${windowStart}, ${limit}, ${bucket}, 1)`,
+        ...retired.map((name) => sql`(${name}, ${windowStart}, ${limit}, ${bucket}, 0)`),
+      ];
+    }),
     sql`, `,
   );
   const rows = await db.all<{ bucket: string }>(sql`
-    WITH requested (bucket, window_start, request_limit) AS (VALUES ${requested})
+    WITH requested (bucket, window_start, request_limit, limited, counted) AS (VALUES ${requested})
     INSERT INTO claim_rate_limits (bucket, window_start, count)
     SELECT bucket, window_start, 1 FROM requested
-    WHERE NOT EXISTS (
+    WHERE counted = 1 AND NOT EXISTS (
       SELECT 1 FROM requested AS r JOIN claim_rate_limits AS c ON c.bucket = r.bucket
-      WHERE c.window_start = r.window_start AND c.count >= r.request_limit
+      WHERE c.window_start = r.window_start
+      GROUP BY r.limited HAVING sum(c.count) >= max(r.request_limit)
     )
     ON CONFLICT (bucket) DO UPDATE SET
       count = CASE WHEN claim_rate_limits.window_start = excluded.window_start

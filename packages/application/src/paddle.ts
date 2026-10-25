@@ -29,6 +29,8 @@ import {
   verifyPaddleSignature,
 } from "@sharerepo/integrations";
 import {
+  type ClaimSigningKeyring,
+  ConflictError,
   type CredentialKeyring,
   envelopeAad,
   openSecret,
@@ -76,8 +78,11 @@ export interface CommerceDeps {
   }) => PaddlePort;
   /** `CREDENTIAL_KEYS`: seals and opens tenant credential envelopes. */
   readonly credentialKeys: CredentialKeyring;
-  /** `CLAIM_SIGNING_KEY`: claim references, email and IP hashes. */
-  readonly claimSigningKey: Uint8Array;
+  /**
+   * `CLAIM_SIGNING_KEY`: claim references, email and IP hashes. The current key signs and hashes;
+   * the others still listed verify references and count rate limits during a rotation.
+   */
+  readonly claimSigningKeys: ClaimSigningKeyring;
   /** The public origin (`https://sharerepo.org`): webhook destinations and claim links. */
   readonly baseUrl: string;
   readonly deployment: Deployment;
@@ -148,8 +153,15 @@ const isUnauthorized = (error: unknown) =>
 const expectedEnvironment = (deps: CommerceDeps): PaddleEnvironment =>
   deps.deployment === "production" ? "live" : "sandbox";
 
-const webhookUrl = (deps: CommerceDeps, connectionId: string) =>
-  `${deps.baseUrl.replace(/\/+$/, "")}/webhooks/paddle/${connectionId}`;
+/**
+ * The connection's webhook URL. A rotation's second destination adds a version marker
+ * (`?v=<marker>`): Paddle refuses two destinations with the same URL, and the webhook route reads
+ * the connection from the path only, so both destinations reach the same connection.
+ */
+const webhookUrl = (deps: CommerceDeps, connectionId: string, marker?: string) =>
+  `${deps.baseUrl.replace(/\/+$/, "")}/webhooks/paddle/${connectionId}${
+    marker === undefined ? "" : `?v=${encodeURIComponent(marker)}`
+  }`;
 
 // Credentials ----------------------------------------------------------------------------------
 
@@ -355,10 +367,11 @@ async function createDestination(
   deps: CommerceDeps,
   client: PaddlePort,
   connectionId: string,
+  marker?: string,
 ): Promise<CreatedNotificationSetting | null> {
   try {
     return await client.createNotificationSetting({
-      destination: webhookUrl(deps, connectionId),
+      destination: webhookUrl(deps, connectionId, marker),
       events: PADDLE_WEBHOOK_EVENTS,
     });
   } catch (error) {
@@ -583,16 +596,22 @@ export async function reconnectPaddle(
 export type DisconnectPaddleResult =
   | {
       readonly ok: true;
-      /** False when Paddle could not be asked: the creator must delete `destinationId` there. */
+      /**
+       * False when Paddle could not be asked: the creator must delete each of
+       * `orphanedDestinationIds` there.
+       */
       readonly destinationDeleted: boolean;
       readonly destinationId: string;
+      /** The destinations ShareRepo could not delete, a rotation's second one included. */
+      readonly orphanedDestinationIds: readonly string[];
     }
   | { readonly ok: false; readonly reason: "not_connected" };
 
 /**
- * Disconnects the workspace's Paddle account (decision 0011): deletes the destination (best
- * effort), erases both envelopes and marks the connection disconnected. Customers, subscriptions
- * and entitlements stay as history. Needs `workspace.manage`.
+ * Disconnects the workspace's Paddle account (decision 0011): deletes the destination, and a
+ * webhook rotation's second destination if there is one (best effort), erases every envelope and
+ * marks the connection disconnected. Customers, subscriptions and entitlements stay as history.
+ * Needs `workspace.manage`.
  */
 export async function disconnectPaddle(
   context: ServiceContext,
@@ -606,16 +625,23 @@ export async function disconnectPaddle(
   const connection = await repo.getPaddleConnection(ctx.db, { workspaceId });
   if (connection === null) return { ok: false, reason: "not_connected" };
   const destinationId = connection.destinationId as string;
-  const destinationDeleted = await clientFor(ctx, deps, connection).then(
-    (client) => deleteDestination(client, destinationId),
-    () => false,
-  );
+  const nextId = connection.destinationNextId;
+  const client = await clientFor(ctx, deps, connection).catch(() => null);
+  const deleted = async (id: string) => client !== null && deleteDestination(client, id);
+  const currentDeleted = await deleted(destinationId);
+  const nextDeleted = nextId === null || (await deleted(nextId));
+  const orphanedDestinationIds = [
+    ...(currentDeleted ? [] : [destinationId]),
+    ...(nextDeleted ? [] : [nextId as string]),
+  ];
+  const destinationDeleted = orphanedDestinationIds.length === 0;
   const result = await repo.disconnectPaddleConnection(
     ctx.db,
     {
       workspaceId,
       connectionId: connection.id,
-      destinationId: destinationDeleted ? null : destinationId,
+      destinationId: currentDeleted ? null : destinationId,
+      destinationNextId: nextDeleted ? null : nextId,
       now: ctx.clock.now(),
     },
     [
@@ -632,7 +658,146 @@ export async function disconnectPaddle(
     ],
   );
   if (!result.ok) return { ok: false, reason: "not_connected" };
-  return { ok: true, destinationDeleted, destinationId };
+  return { ok: true, destinationDeleted, destinationId, orphanedDestinationIds };
+}
+
+// Webhook secret rotation ----------------------------------------------------------------------
+
+export type RotatePaddleWebhookSecretResult =
+  | {
+      readonly ok: true;
+      /** The connection's destination now, whose secret is the only one accepted. */
+      readonly destinationId: string;
+    }
+  | {
+      readonly ok: false;
+      /**
+       * `not_connected`: no connection; `not_active`: the key is refused (reconnect first);
+       * `destination_limit`: the seller has 10 active destinations, so no second one can be
+       * created (nothing changed).
+       */
+      readonly reason: "not_connected" | "not_active" | "destination_limit";
+    };
+
+/** True when the destination still exists in Paddle and delivers. */
+async function destinationDelivers(client: PaddlePort, destinationId: string): Promise<boolean> {
+  try {
+    return (await client.getNotificationSetting(destinationId)).active;
+  } catch (error) {
+    if (error instanceof PaddleApiError && error.kind === "not_found") return false;
+    throw error;
+  }
+}
+
+/**
+ * "Rotate webhook secret" on the billing page (Phase 6, secret rotation). Paddle cannot rotate a
+ * destination's secret, so ShareRepo replaces the destination. Needs `workspace.manage`.
+ *
+ * 1. **Start.** Create a second destination for the same connection, its URL marked `?v=<id>`;
+ *    store its ID and secret (sealed for `webhook_secret_next`), audited
+ *    `paddle.webhook_secret_rotated` (`started`). From then on the webhook accepts both secrets,
+ *    and Paddle delivers every event to both destinations (deduplicated by event ID).
+ * 2. **Complete.** Delete the old destination in Paddle, then promote the second destination and
+ *    its secret (re-sealed for `webhook_secret`), audited (`completed`). Only the new secret is
+ *    accepted afterwards.
+ *
+ * Every step leaves at least one destination and secret working, and running the action again
+ * continues where it stopped: a rotation in progress is completed, an old destination already
+ * deleted counts as deleted, and a second destination that no longer delivers is replaced. A
+ * Paddle failure propagates (the page asks to try again); a concurrent rotation or disconnect is a
+ * ConflictError. A second destination created but not stored is deleted again, best effort.
+ */
+export async function rotatePaddleWebhookSecret(
+  context: ServiceContext,
+  actor: UserActor,
+  slug: string,
+  deps: CommerceDeps,
+): Promise<RotatePaddleWebhookSecretResult> {
+  const ctx = atOneInstant(context);
+  const { scope } = await openWorkspace(ctx, actor, slug, "workspace.manage");
+  const { workspaceId } = scope;
+  const connection = await repo.getPaddleConnection(ctx.db, { workspaceId });
+  if (connection === null) return { ok: false, reason: "not_connected" };
+  if (connection.status !== "active") return { ok: false, reason: "not_active" };
+  const connectionId = connection.id;
+  const ids = { workspaceId, connectionId };
+  const by = asAuditActor(actor);
+  const paddle = <T>(call: (client: PaddlePort) => Promise<T>) =>
+    withPaddle(ctx, deps, connection, call);
+  const previousDestinationId = connection.destinationId as string;
+  const rotated = (stage: "started" | "completed", destinationId: string) =>
+    auditEvent(
+      "paddle.webhook_secret_rotated",
+      {
+        workspaceId,
+        actor: by,
+        targetId: connectionId,
+        details: { stage, previousDestinationId, destinationId },
+      },
+      ctx,
+    );
+
+  // Step 1: a second destination that delivers, stored with its secret.
+  let next: { id: string; envelope: string } | null = null;
+  const pendingId = connection.destinationNextId;
+  if (pendingId !== null) {
+    if (await paddle((client) => destinationDelivers(client, pendingId))) {
+      next = { id: pendingId, envelope: connection.webhookSecretNextEnvelope as string };
+    } else {
+      // Deleted or deactivated outside ShareRepo since the rotation started: replace it.
+      await paddle((client) => deleteDestination(client, pendingId));
+    }
+  }
+  if (next === null) {
+    const created = await paddle((client) =>
+      createDestination(deps, client, connectionId, ctx.ids.next()),
+    );
+    if (created === null) return { ok: false, reason: "destination_limit" };
+    const discard = () => paddle((client) => deleteDestination(client, created.id));
+    let envelope: string;
+    let started: repo.GuardedWriteResult;
+    try {
+      envelope = await sealFor(deps, ids, "webhook_secret_next", created.secret);
+      started = await repo.startPaddleWebhookRotation(
+        ctx.db,
+        {
+          ...ids,
+          destinationId: previousDestinationId,
+          expectedNextId: pendingId,
+          destinationNextId: created.id,
+          webhookSecretNextEnvelope: envelope,
+          now: ctx.clock.now(),
+        },
+        [rotated("started", created.id)],
+      );
+    } catch (error) {
+      await discard();
+      throw error;
+    }
+    if (!started.ok) {
+      // Another rotation, a reconnect or a disconnect won: this destination would be orphaned.
+      await discard();
+      throw new ConflictError("the Paddle connection changed concurrently; retry");
+    }
+    next = { id: created.id, envelope };
+  }
+
+  // Step 2: delete the old destination ("not found" counts as deleted), then promote.
+  await paddle((client) => client.deleteNotificationSetting(previousDestinationId));
+  const secret = await openCredential(ctx, deps, connection, "webhook_secret_next", next.envelope);
+  const completed = await repo.completePaddleWebhookRotation(
+    ctx.db,
+    {
+      ...ids,
+      previousDestinationId,
+      destinationId: next.id,
+      webhookSecretEnvelope: await sealFor(deps, ids, "webhook_secret", secret),
+      now: ctx.clock.now(),
+    },
+    [rotated("completed", next.id)],
+  );
+  if (!completed.ok) throw new ConflictError("the Paddle connection changed concurrently; retry");
+  return { ok: true, destinationId: next.id };
 }
 
 /**
@@ -796,6 +961,8 @@ export interface BillingView {
     /** From 14 days before the key's expiry date (decision 0011). */
     readonly keyExpiresSoon: boolean;
     readonly destinationId: string;
+    /** A webhook secret rotation started and has not completed: both secrets are accepted. */
+    readonly rotationInProgress: boolean;
     /** When the last signed webhook arrived. */
     readonly lastEventAt: Instant | null;
     readonly lastCheckedAt: Instant | null;
@@ -835,6 +1002,7 @@ export async function getBillingView(
               connection.apiKeyExpiresOn !== null &&
               now >= connection.apiKeyExpiresOn - PADDLE_KEY_EXPIRY_WARNING_MS,
             destinationId: connection.destinationId as string,
+            rotationInProgress: connection.destinationNextId !== null,
             lastEventAt: connection.lastEventAt,
             lastCheckedAt: connection.lastCheckedAt,
             catalogSyncedAt: connection.catalogSyncedAt,
@@ -867,8 +1035,10 @@ function subscriptionOf(envelope: PaddleEnvelope): string | null {
 
 /**
  * Receives a delivery to `/webhooks/paddle/:connectionId` (decision 0011). The connection named
- * by the URL selects the secret; the signature is verified on the raw body before anything is
- * parsed or stored. The receipt (metadata, the subscription ID and a digest, never the payload)
+ * by the URL selects the secret (and, while a webhook secret rotation is in progress, the next
+ * secret too: a delivery signed under either is accepted); the signature is verified on the raw
+ * body before anything is parsed or stored. A query string, such as a rotated destination's
+ * `?v=` marker, plays no part. The receipt (metadata, the subscription ID and a digest, never the payload)
  * and its processing intent are recorded in one batch, deduplicated per connection by `evt_` ID.
  */
 export async function ingestPaddleWebhook(
@@ -884,12 +1054,16 @@ export async function ingestPaddleWebhook(
   const connection = await repo.getPaddleConnectionForWebhook(ctx.db, input.connectionId);
   if (connection === null || connection.status === "disconnected") return { status: "not_found" };
   const envelope = connection.webhookSecretEnvelope as string;
-  const secret = await openCredential(ctx, deps, connection, "webhook_secret", envelope);
+  const nextEnvelope = connection.webhookSecretNextEnvelope;
+  const secrets = [await openCredential(ctx, deps, connection, "webhook_secret", envelope)];
+  if (nextEnvelope !== null) {
+    secrets.push(await openCredential(ctx, deps, connection, "webhook_secret_next", nextEnvelope));
+  }
   const now = ctx.clock.now();
   const verified = await verifyPaddleSignature({
     header: input.signatureHeader,
     rawBody: input.rawBody,
-    secrets: [secret],
+    secrets,
     now,
   });
   if (!verified.ok) return { status: "invalid_signature" };
@@ -1009,7 +1183,7 @@ export function paddleEntitlementSource(
   return {
     source: "paddle",
     checkoutClaims: {
-      signingKey: deps.claimSigningKey,
+      signingKeys: Object.values(deps.claimSigningKeys.keys),
       async customerPurchases({ workspaceId, externalCustomerId }) {
         const connection = await connected(workspaceId);
         const list = await withPaddle(ctx, deps, connection, (client) =>

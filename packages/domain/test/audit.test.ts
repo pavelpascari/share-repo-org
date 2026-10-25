@@ -153,8 +153,12 @@ const VALID_DETAILS = {
   "workspace.deletion_cancelled": {},
   "workspace.purged": { deleted: { audit_events: 40, workspaces: 1 } },
   "user.deleted": { unlinkedSubjects: 2, deleted: { users: 1, auth_sessions: 3 } },
-  "paddle.webhook_secret_rotated": { previousDestinationId: "ntfset_1", destinationId: "ntfset_2" },
-  "credentials.rewrapped": { rewrapped: 3, remaining: 0 },
+  "paddle.webhook_secret_rotated": {
+    stage: "started",
+    previousDestinationId: "ntfset_1",
+    destinationId: "ntfset_2",
+  },
+  "credentials.rewrapped": { rewrapped: 3, failed: 0, remaining: 0 },
 } as const satisfies { [A in AuditAction]: AuditDetails<A> };
 
 const ACTIONS = Object.keys(VALID_DETAILS) as AuditAction[];
@@ -366,6 +370,7 @@ describe("audit action catalog", () => {
     ["paddle.status_changed", "status", "disconnected"],
     ["paddle.credentials_rewrapped", "field", "email"],
     ["paddle.credentials_rewrapped", "field", "apiKey"],
+    ["paddle.credentials_rewrapped", "field", "webhook_secret_previous"],
     ["paddle.catalog_synced", "added", -1],
     ["paddle.catalog_synced", "updated", 1.5],
     ["paddle.catalog_synced", "archived", "0"],
@@ -406,7 +411,9 @@ describe("audit action catalog", () => {
     ["user.deleted", "unlinkedSubjects", -1],
     ["user.deleted", "deleted", { "users-x": 1 }],
     ["paddle.webhook_secret_rotated", "destinationId", "ntfset_1"],
+    ["paddle.webhook_secret_rotated", "stage", "finished"],
     ["credentials.rewrapped", "rewrapped", -1],
+    ["credentials.rewrapped", "failed", -1],
     ["credentials.rewrapped", "remaining", 1.5],
   ] as const)("%s rejects %s %j", (action, key, value) => {
     const details = { ...VALID_DETAILS[action], [key]: value };
@@ -578,6 +585,11 @@ describe("Paddle and claim details", () => {
     ["paddle.status_changed", { previousStatus: "unauthorized", status: "active" }],
     ["paddle.disconnected", { previousStatus: "unauthorized", destinationDeleted: false }],
     ["paddle.credentials_rewrapped", { field: "webhook_secret" }],
+    ["paddle.credentials_rewrapped", { field: "webhook_secret_next" }],
+    [
+      "paddle.webhook_secret_rotated",
+      { stage: "completed", previousDestinationId: "ntfset_1", destinationId: "ntfset_2" },
+    ],
     ["claim.completed", { path: "email", claimId: "t1", userId: "u1", subjectId: "s1" }],
     ["claim.rejected", { path: "checkout", claimId: null, reason: "signature_invalid" }],
     ["claim.rejected", { path: "email", claimId: null, reason: "unknown_claim" }],

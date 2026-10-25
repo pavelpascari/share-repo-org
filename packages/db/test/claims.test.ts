@@ -472,7 +472,12 @@ describe("takeRateLimits", () => {
   const HOUR = 60 * 60_000;
   const bucketsOf = (...limits: [number, number][]): RateLimitBucket[] => {
     const prefix = uniqueId("rl");
-    return limits.map(([windowMs, limit], i) => ({ bucket: `${prefix}:${i}`, windowMs, limit }));
+    return limits.map(([windowMs, limit], i) => ({
+      bucket: `${prefix}:${i}`,
+      windowMs,
+      limit,
+      retired: [],
+    }));
   };
 
   async function stored(buckets: readonly RateLimitBucket[]): Promise<RateLimitCounter[]> {
@@ -551,6 +556,50 @@ describe("takeRateLimits", () => {
       expect(await takeRateLimits(db, asked, now)).toBe(expected.allowed);
       const after = await stored(asked);
       expect(after).toEqual(expected.allowed ? expected.counters : before);
+    }
+  });
+
+  it("rotation/old-and-new-secret-both-accepted: counts retired keys' counters, increments none", async () => {
+    const [old, other, cur] = bucketsOf([HOUR, 1], [HOUR, 1], [HOUR, 4]) as [
+      RateLimitBucket,
+      RateLimitBucket,
+      RateLimitBucket,
+    ];
+    // Requests made before the rotation, under the old keys.
+    expect(await takeRateLimits(db, [old], T0)).toBe(true);
+    expect(await takeRateLimits(db, [other], T0)).toBe(true);
+    const rotated = { ...cur, retired: [old.bucket, other.bucket] };
+    // 1 + 1 under the old keys: two more under the new key reach the limit of 4.
+    expect(await takeRateLimits(db, [rotated], T0)).toBe(true);
+    expect(await takeRateLimits(db, [rotated], T0)).toBe(true);
+    expect(await takeRateLimits(db, [rotated], T0)).toBe(false);
+    expect(await stored([old, other, cur])).toEqual([
+      { bucket: old.bucket, windowStart: T0, count: 1 },
+      { bucket: other.bucket, windowStart: T0, count: 1 },
+      { bucket: cur.bucket, windowStart: T0, count: 2 },
+    ]);
+    // The old counters' window ends: they no longer count.
+    expect(await takeRateLimits(db, [rotated], T0 + HOUR)).toBe(true);
+  });
+
+  it("agrees with the domain's rateLimitDecision with retired counters", async () => {
+    const [a, b, c] = bucketsOf([HOUR, 3], [HOUR, 3], [HOUR, 3]) as [
+      RateLimitBucket,
+      RateLimitBucket,
+      RateLimitBucket,
+    ];
+    const asks = [
+      [a],
+      [b],
+      [{ ...c, retired: [a.bucket, b.bucket] }],
+      [{ ...b, retired: [a.bucket] }],
+    ];
+    for (let step = 0; step < 24; step += 1) {
+      const now = T0 + step * 11 * 60_000;
+      const asked = asks[step % asks.length] as RateLimitBucket[];
+      const before = await stored([a, b, c]);
+      const expected = rateLimitDecision(asked, before, now);
+      expect(await takeRateLimits(db, asked, now)).toBe(expected.allowed);
     }
   });
 

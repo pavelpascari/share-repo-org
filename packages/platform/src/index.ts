@@ -48,6 +48,7 @@ export { isSensitiveKey, REDACTED, redact, redactString } from "./redact.ts";
 export type { ClaimSigningKeyring, CommerceSecrets, CredentialKeyring } from "./secrets.ts";
 export {
   CLAIM_SIGNING_KEY_MIN_BYTES,
+  claimSigningKeysOf,
   parseCommerceSecrets,
   SINGLE_CLAIM_SIGNING_KEY_ID,
 } from "./secrets.ts";

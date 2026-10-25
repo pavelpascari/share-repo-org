@@ -7,6 +7,7 @@ import {
   PADDLE_REQUIRED_PERMISSIONS,
   type ReconnectPaddleResult,
   reconnectPaddle,
+  rotatePaddleWebhookSecret,
   syncPaddleCatalog,
 } from "@sharerepo/application";
 import { data, Form, Link, useNavigation } from "react-router";
@@ -20,6 +21,8 @@ import {
   paddleKeyErrorMessage,
   paddleStatusReasonText,
   priceText,
+  WEBHOOK_ROTATED,
+  WEBHOOK_ROTATION_ERRORS,
 } from "../commerce-messages.ts";
 import { TextField } from "../components/text-field.tsx";
 import { cloudflareContext } from "../context.ts";
@@ -65,31 +68,34 @@ type ActionData =
   | {
       ok: true;
       notice: string;
-      /** After a disconnect that could not delete ShareRepo's destination in Paddle. */
-      orphanedDestinationId: string | null;
+      /** After a disconnect that could not delete ShareRepo's destinations in Paddle. */
+      orphanedDestinationIds: readonly string[];
       errors: Record<string, never>;
     }
   | {
       ok: false;
       notice: null;
-      orphanedDestinationId: null;
+      orphanedDestinationIds: readonly [];
       errors: { form?: string; apiKey?: string; apiKeyExpiresOn?: string };
     };
 
 const failed = (errors: Extract<ActionData, { ok: false }>["errors"]): ActionData => ({
   ok: false,
   notice: null,
-  orphanedDestinationId: null,
+  orphanedDestinationIds: [],
   errors,
 });
-const done = (notice: string, orphanedDestinationId: string | null = null): ActionData => ({
+const done = (notice: string, orphanedDestinationIds: readonly string[] = []): ActionData => ({
   ok: true,
   notice,
-  orphanedDestinationId,
+  orphanedDestinationIds,
   errors: {},
 });
 
-/** Owner only: `connect`, `reconnect` (a new key), `refresh` (the catalog), `disconnect`. */
+/**
+ * Owner only: `connect`, `reconnect` (a new key), `refresh` (the catalog), `rotate_webhook` (the
+ * webhook secret), `disconnect`.
+ */
 export async function action({ request, params, context }: Route.ActionArgs) {
   const { env } = context.get(cloudflareContext);
   assertSameOrigin(request, env.auth.baseURL);
@@ -150,6 +156,16 @@ export async function action({ request, params, context }: Route.ActionArgs) {
     const { added, updated, archived } = attempted.value.summary;
     return done(`Catalog refreshed: ${added} added, ${updated} updated, ${archived} archived.`);
   }
+  if (intent === "rotate_webhook") {
+    const attempted = await attemptPaddle(
+      () => rotatePaddleWebhookSecret(services, user, params.slug, commerce),
+      PADDLE_UNREACHABLE,
+    );
+    if (!attempted.ok) return failed({ form: attempted.error });
+    const result = attempted.value;
+    if (!result.ok) return failed({ form: WEBHOOK_ROTATION_ERRORS[result.reason] });
+    return done(WEBHOOK_ROTATED);
+  }
   if (intent === "disconnect") {
     const attempted = await attemptPaddle(
       () => disconnectPaddle(services, user, params.slug, commerce),
@@ -160,7 +176,7 @@ export async function action({ request, params, context }: Route.ActionArgs) {
     if (!result.ok) return failed({ form: "Paddle isn't connected." });
     return done(
       "Paddle is disconnected. Subscribers keep their history; ShareRepo no longer reads Paddle.",
-      result.destinationDeleted ? null : result.destinationId,
+      result.orphanedDestinationIds,
     );
   }
   throw data(null, { status: 400 });
@@ -181,11 +197,18 @@ export default function Billing({ loaderData, actionData }: Route.ComponentProps
           {actionData.notice}
         </p>
       )}
-      {actionData?.orphanedDestinationId && (
+      {actionData !== undefined && actionData.orphanedDestinationIds.length > 0 && (
         <p role="alert" className="mt-4 text-amber-800">
-          ShareRepo couldn't delete its notification destination{" "}
-          <code>{actionData.orphanedDestinationId}</code> in Paddle. Delete it in Paddle under
-          Developer tools › Notifications.
+          ShareRepo couldn't delete its notification{" "}
+          {actionData.orphanedDestinationIds.length === 1 ? "destination" : "destinations"}{" "}
+          {actionData.orphanedDestinationIds.map((id, index) => (
+            <span key={id}>
+              {index > 0 && " and "}
+              <code>{id}</code>
+            </span>
+          ))}{" "}
+          in Paddle. Delete {actionData.orphanedDestinationIds.length === 1 ? "it" : "them"} in
+          Paddle under Developer tools › Notifications.
         </p>
       )}
       {actionData?.errors.form !== undefined && (
@@ -347,6 +370,27 @@ function Connected(props: {
           <input type="hidden" name="intent" value="reconnect" />
           <KeyFields errors={props.errors} />
           <SubmitButton>Reconnect</SubmitButton>
+        </Form>
+      </section>
+
+      <section aria-labelledby="webhook-heading" className="mt-8">
+        <h2 id="webhook-heading" className="text-lg font-semibold">
+          Webhook secret
+        </h2>
+        <p className="mt-1 text-gray-700">
+          Paddle signs the events it sends ShareRepo with a secret. Rotate it if you think it
+          leaked: ShareRepo adds a new notification destination, then deletes the old one, so no
+          event is missed.
+        </p>
+        {connection.rotationInProgress && (
+          <p role="status" className="mt-2 text-amber-800">
+            A rotation is in progress: ShareRepo accepts events signed with the old or the new
+            secret. Rotate again to finish it.
+          </p>
+        )}
+        <Form method="post" className="mt-3">
+          <input type="hidden" name="intent" value="rotate_webhook" />
+          <SubmitButton>Rotate webhook secret</SubmitButton>
         </Form>
       </section>
 

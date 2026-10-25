@@ -27,7 +27,9 @@ async function pkcs8Pem(): Promise<string> {
   return `-----BEGIN PRIVATE KEY-----\n${base64}\n-----END PRIVATE KEY-----\n`;
 }
 
-async function harness(options: { configured?: boolean; sendFails?: boolean } = {}) {
+async function harness(
+  options: { configured?: boolean; sendFails?: boolean; previousSecret?: string } = {},
+) {
   const sent: unknown[] = [];
   const lines: string[] = [];
   const record = (line: string) => {
@@ -48,6 +50,9 @@ async function harness(options: { configured?: boolean; sendFails?: boolean } = 
           GITHUB_APP_SLUG: "sharerepo-test",
           GITHUB_APP_PRIVATE_KEY: await pkcs8Pem(),
           GITHUB_WEBHOOK_SECRET: SECRET,
+          ...(options.previousSecret === undefined
+            ? {}
+            : { GITHUB_WEBHOOK_SECRET_PREVIOUS: options.previousSecret }),
         }),
   };
   const webEnv: WebEnv = parseWebEnv(raw);
@@ -114,6 +119,20 @@ describe("POST /webhooks/github", () => {
     expect(response.status).toBe(401);
     expect(sent).toEqual([]);
     expect(lines.join("\n")).not.toContain("installation");
+  });
+
+  it("rotation/old-and-new-secret-both-accepted: the previous secret is accepted only while set", async () => {
+    const OLD = "old-webhook-secret";
+    const rotating = await harness({ previousSecret: OLD });
+    // During the rotation, deliveries signed with either secret are accepted.
+    expect((await rotating.call(await delivery(BODY, { secret: OLD }))).status).toBe(202);
+    expect((await rotating.call(await delivery(BODY))).status).toBe(202);
+    expect((await rotating.call(await delivery(BODY, { secret: "other" }))).status).toBe(401);
+    expect(rotating.sent).toHaveLength(2);
+    // Once the previous secret is removed, its signatures are refused.
+    const rotated = await harness();
+    expect((await rotated.call(await delivery(BODY, { secret: OLD }))).status).toBe(401);
+    expect((await rotated.call(await delivery(BODY))).status).toBe(202);
   });
 
   it("refuses oversized payloads, declared or actual", async () => {

@@ -120,7 +120,7 @@ export async function receivedWebhook(installationId: string) {
     "x-hub-signature-256": await signWebhook(SECRET, raw),
   });
   const result = await ingestGitHubWebhook(serviceContext(), {
-    secret: SECRET,
+    secrets: [SECRET],
     rawBody: new TextEncoder().encode(raw).buffer as ArrayBuffer,
     headers,
   });

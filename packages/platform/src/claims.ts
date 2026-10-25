@@ -105,10 +105,13 @@ export function parseClaimReference(reference: unknown): ParsedClaimReference {
 
 /**
  * True when `reference` is the reference for exactly this workspace, checkout claim, user and
- * offer. The MAC comparison is WebCrypto's HMAC verify, which is constant time.
+ * offer under one of `keys`. References carry no key ID, so during a rotation of
+ * `CLAIM_SIGNING_KEY` every listed key is tried (Phase 6, secret rotation). Each comparison is
+ * WebCrypto's HMAC verify, which is constant time, and every key is always tried, so the time
+ * taken does not say which key matched.
  */
 export async function verifyClaimReference(input: {
-  key: Uint8Array;
+  keys: readonly Uint8Array[];
   reference: unknown;
   workspaceId: string;
   userId: string;
@@ -118,18 +121,16 @@ export async function verifyClaimReference(input: {
   if (!parsed.ok) return false;
   const { workspaceId, userId, offerId } = input;
   if (![workspaceId, userId, offerId].every((part) => SIGNED_PART.test(part))) return false;
-  const message = referenceMessage({
-    workspaceId,
-    checkoutClaimId: parsed.checkoutClaimId,
-    userId,
-    offerId,
-  });
-  return crypto.subtle.verify(
-    "HMAC",
-    await hmacKey(input.key, "verify"),
-    fromBase64Url(parsed.mac),
-    encoder.encode(message),
+  const message = encoder.encode(
+    referenceMessage({ workspaceId, checkoutClaimId: parsed.checkoutClaimId, userId, offerId }),
   );
+  const mac = fromBase64Url(parsed.mac);
+  const results = await Promise.all(
+    input.keys.map(async (key) =>
+      crypto.subtle.verify("HMAC", await hmacKey(key, "verify"), mac, message),
+    ),
+  );
+  return results.includes(true);
 }
 
 /**

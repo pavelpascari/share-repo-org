@@ -1,6 +1,6 @@
 import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { disconnectPaddle } from "@sharerepo/application";
+import { disconnectPaddle, rotatePaddleWebhookSecret } from "@sharerepo/application";
 import { randomIds, systemClock } from "@sharerepo/domain";
 import { signPaddleWebhook } from "@sharerepo/integrations/testing";
 import { createLogger } from "@sharerepo/platform";
@@ -209,5 +209,41 @@ describe("POST /webhooks/paddle/:connectionId", () => {
     const get = await handler(new Request(url), env, ctx);
     expect(get.status).toBe(405);
     expect(get.headers.get("allow")).toBe("POST");
+  });
+
+  it("rotation/old-and-new-secret-both-accepted: routes a rotated destination's ?v= URL by connection, accepting both secrets", async () => {
+    const s = await paddleShop();
+    // A rotation stopped after its first step: two destinations, the second marked `?v=`.
+    s.paddle.failNext("deleteNotificationSetting", "transient");
+    await rotatePaddleWebhookSecret(services(), s.owner, s.slug, s.deps).catch(() => null);
+    const handler = createFetchHandler({
+      renderApp: () => Promise.reject(new Error("must not render")),
+    });
+    const both = await s.paddle.emitToAll({
+      eventType: "api_key.updated",
+      data: { id: `apikey_${"0".repeat(26)}` },
+    });
+    expect(both.map((d) => new URL(d.destination).search)).toEqual([
+      "",
+      expect.stringMatching(/^\?v=/),
+    ]);
+    const statuses = [];
+    for (const d of both) {
+      const ctx = createExecutionContext();
+      const response = await handler(
+        new Request(d.destination, {
+          method: "POST",
+          headers: { "paddle-signature": d.signature },
+          body: d.rawBody,
+        }),
+        { ...env, EVENTS: { send: async () => {} } },
+        ctx,
+      );
+      await waitOnExecutionContext(ctx);
+      statuses.push(response.status);
+    }
+    // The first is recorded; the second, the same event, is answered as already received.
+    expect(statuses).toEqual([200, 200]);
+    expect(await receipts(s.connectionId)).toBe(1);
   });
 });

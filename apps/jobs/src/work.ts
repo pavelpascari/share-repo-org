@@ -6,6 +6,7 @@ import {
   decodePaddleConnectionKey,
   decodeReconcileKey,
   decodeRefreshKey,
+  decodeRewrapKey,
   type EntitlementSourcePort,
   PaddleUnavailableError,
   paddleEntitlementSource,
@@ -15,6 +16,7 @@ import {
   reconcileResource,
   refreshSubscription,
   resyncConnection,
+  rewrapCredentials,
   type ServiceContext,
   sendClaimEmail,
   sweepPaddleSubscriptions,
@@ -173,10 +175,16 @@ export async function runJob(
       const swept = await sweepPaddleSubscriptions(ctx, key, commerceOf(deps));
       return swept?.truncated === true ? JobOutcome.Partial : JobOutcome.Done;
     }
+    case OutboxKind.RewrapCredentials: {
+      // System-wide: every workspace's envelopes under a retired master key. Needs the commerce
+      // secrets (the keyring); without them it waits, like a Paddle job.
+      const generation = decoded(decodeRewrapKey(job.subjectId));
+      await rewrapCredentials(ctx, generation, commerceOf(deps));
+      return JobOutcome.Done;
+    }
     case OutboxKind.PruneData:
     case OutboxKind.PurgeWorkspace:
-    case OutboxKind.RewrapCredentials:
-      // Placeholders until their handlers land (Phase 6 plan, T4 and T5). Nothing enqueues these
+      // Placeholders until their handlers land (Phase 6 plan, T4). Nothing enqueues these
       // kinds before then. Not retryable: the row is marked failed with this rejection's code.
       throw new JobRejectedError(JobRejection.NotImplemented);
   }

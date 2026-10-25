@@ -30,6 +30,14 @@ export {
 } from "./claims.ts";
 export { asAuditActor, type ServiceContext, type UserActor } from "./context.ts";
 export {
+  decodeRewrapKey,
+  encodeRewrapKey,
+  queueCredentialRewrap,
+  REWRAP_BATCH,
+  type RewrapRunSummary,
+  rewrapCredentials,
+} from "./credentials.ts";
+export {
   type CheckoutClaimSupport,
   type ClaimRequestRef,
   type CustomerLink,
@@ -136,7 +144,9 @@ export {
   processPaddleEvent,
   queuePaddleSweeps,
   type ReconnectPaddleResult,
+  type RotatePaddleWebhookSecretResult,
   reconnectPaddle,
+  rotatePaddleWebhookSecret,
   type SyncPaddleCatalogResult,
   sweepPaddleSubscriptions,
   syncPaddleCatalog,

@@ -88,7 +88,7 @@ export function commerceDeps(
   return {
     paddle: ({ apiKey }) => accounts.resolve(apiKey),
     credentialKeys: KEYRING,
-    claimSigningKey: CLAIM_KEY,
+    claimSigningKeys: { current: "c1", keys: { c1: CLAIM_KEY } },
     baseUrl: "https://sharerepo.test/",
     deployment: "development",
     ...overrides,

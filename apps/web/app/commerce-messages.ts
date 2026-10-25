@@ -18,6 +18,16 @@ type ReconnectError = Extract<ReconnectPaddleResult, { ok: false }>["error"]["re
 export const PADDLE_NOT_CONFIGURED = "Paddle is not configured in this ShareRepo environment.";
 export const PADDLE_UNREACHABLE = "Paddle didn't respond. Try again in a moment.";
 
+/** Why rotating the webhook secret was refused (Phase 6, secret rotation). */
+export const WEBHOOK_ROTATION_ERRORS = {
+  not_connected: "Paddle isn't connected.",
+  not_active: "Reconnect Paddle with a working API key before rotating the webhook secret.",
+  destination_limit:
+    "Your Paddle account already has 10 active notification destinations, so ShareRepo can't add the new one. Delete a destination you no longer use in Paddle, then rotate again.",
+} as const;
+export const WEBHOOK_ROTATED =
+  "The webhook secret is rotated. Paddle now signs events for ShareRepo with the new secret only.";
+
 /** Why connecting or reconnecting Paddle was refused. `missing` lists missing permissions. */
 export function paddleKeyErrorMessage(
   reason: ConnectError | ReconnectError,
