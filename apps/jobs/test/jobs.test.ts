@@ -121,26 +121,6 @@ describe("queue()", () => {
     },
   );
 
-  // Phase 6 T1 placeholder: T3 records dead-lettered rows as failures (decision 0014).
-  it("acknowledges dead-lettered messages without running them", async () => {
-    const github = createFakeGitHubApp();
-    const before = await snapshotTables(env.DB);
-    const result = await deliver(
-      jobsWorker(github),
-      [{ kind: "resync_connection", subjectId: "c-dead", outboxId: "o-dead" }],
-      { queue: "sharerepo-events-dlq-dev" },
-    );
-    expect(result.explicitAcks).toHaveLength(1);
-    expect(result.retryMessages).toEqual([]);
-    expect(changedTables(before, await snapshotTables(env.DB))).toEqual([]);
-    expect(github.calls).toEqual([]);
-    const lines = logged().filter(
-      (line) => line.msg === "dead-lettered message acknowledged, not yet handled",
-    );
-    expect(lines).toHaveLength(1);
-    expect(JSON.stringify(lines)).not.toContain("c-dead");
-  });
-
   it("drops a poison message without retrying it", async () => {
     const result = await deliver(jobsWorker(createFakeGitHubApp()), [
       { kind: "delete_everything", subjectId: "x", outboxId: "y" },

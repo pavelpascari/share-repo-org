@@ -1,9 +1,26 @@
 import type { Db } from "@sharerepo/db";
-import type { AUDIT_ACTIONS, AuditAction, AuditContext, AuditEvent } from "@sharerepo/domain";
+import type {
+  AlertName,
+  AUDIT_ACTIONS,
+  AuditAction,
+  AuditContext,
+  AuditEvent,
+} from "@sharerepo/domain";
+import { type AlertIds, alert, type Logger } from "@sharerepo/platform";
 
 /** What every service call needs: storage, time, IDs, and the request's correlation ID. */
 export interface ServiceContext extends AuditContext {
   readonly db: Db;
+  /**
+   * Where services raise alert lines (decision 0014), carrying the correlation ID. The Workers
+   * always pass their request or job logger; a context without one (tests, scripts) raises none.
+   */
+  readonly logger?: Logger;
+}
+
+/** Raises an alert line through the context's logger, if it has one (decision 0014). */
+export function raiseAlert(ctx: ServiceContext, name: AlertName, ids: AlertIds): void {
+  if (ctx.logger !== undefined) alert(ctx.logger, name, ids);
 }
 
 /** The signed-in user a service acts for. Resolved from the session by the caller. */

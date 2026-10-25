@@ -101,7 +101,20 @@ export async function listAccess(
   slug: string,
 ): Promise<AccessView> {
   const { scope, workspace } = await openWorkspace(context, actor, slug, "workspace.read");
-  const { workspaceId } = scope;
+  // As `openWorkspace` decides for "workspace.manage".
+  const canManage = workspace.status === "active" && roleAllows(workspace.role, "workspace.manage");
+  return accessViewOf(context, scope.workspaceId, canManage);
+}
+
+/**
+ * The access view of one workspace, already authorized by the caller: a member through
+ * `listAccess`, or an operator's read-only view (`canManage` false).
+ */
+export async function accessViewOf(
+  context: ServiceContext,
+  workspaceId: string,
+  canManage: boolean,
+): Promise<AccessView> {
   const { db } = context;
   const now = context.clock.now();
   const endedSince = now - ENDED_ACCESS_VISIBLE_MS;
@@ -181,8 +194,6 @@ export async function listAccess(
       endedAt: entitlement.endedAt,
     });
   }
-  // As `openWorkspace` decides for "workspace.manage".
-  const canManage = workspace.status === "active" && roleAllows(workspace.role, "workspace.manage");
   return { rows: [...rows.values()], canManage };
 }
 

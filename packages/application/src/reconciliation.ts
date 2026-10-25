@@ -1,6 +1,7 @@
 import * as repo from "@sharerepo/db";
 import {
   type AccessLevel,
+  AlertName,
   type AuditDetails,
   type AuditEvent,
   type AuditEventInput,
@@ -31,11 +32,13 @@ import { ConflictError, NotFoundError } from "@sharerepo/platform";
 import {
   asAuditActor,
   atOneInstant,
+  raiseAlert,
   type ServiceContext,
   type UserActor,
   type WorkspaceAuditAction,
 } from "./context.ts";
 import { encodeReconcileKey, type ReconcileRef } from "./entitlement-source.ts";
+import { RECONCILE_FAILING_THRESHOLD } from "./failures.ts";
 import { capabilitiesOf } from "./offers.ts";
 import { openWorkspace } from "./workspaces.ts";
 
@@ -867,13 +870,27 @@ async function release(
  * changes queue the next run, and a suspended connection then blocks.
  */
 async function observationFailed(run: Run, error: GitHubApiError): Promise<ReconcileOutcome> {
+  const failures = run.resource.reconcileFailures + 1;
   const outcome = classifyObservationFailure({
     failure: providerFailure(error),
-    failures: run.resource.reconcileFailures + 1,
+    failures,
     now: run.now,
   });
   if (outcome.resync) await queueResync(run);
-  return release(run, outcome.nextReconcileAt, { ok: false, errorCode: outcome.errorCode });
+  const released = await release(run, outcome.nextReconcileAt, {
+    ok: false,
+    errorCode: outcome.errorCode,
+  });
+  // Raised once, when the run that holds the lease records the third failure in a row.
+  if (released === "done" && failures === RECONCILE_FAILING_THRESHOLD) {
+    raiseAlert(run.ctx, AlertName.ReconcileFailing, {
+      workspaceId: run.lease.workspaceId,
+      resourceId: run.lease.resourceId,
+      failures,
+      errorCode: outcome.errorCode,
+    });
+  }
+  return released;
 }
 
 /**

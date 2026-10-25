@@ -5,6 +5,7 @@ import {
   queueDueEvaluations,
   queueDueReconciles,
   queuePaddleSweeps,
+  recordJobFailure,
   type ServiceContext,
 } from "@sharerepo/application";
 import {
@@ -13,7 +14,6 @@ import {
   type Db,
   enqueueOutbox,
   listActiveConnectionIds,
-  markOutboxFailed,
   markOutboxSent,
   type OutboxRow,
   pendingOutboxSince,
@@ -136,24 +136,31 @@ function logOutcome(logger: Logger, outcome: JobOutcome, fields: Record<string, 
   if (outcome === JobOutcome.Partial) logger.warn("job covered only part of its subject", fields);
 }
 
-/** A classified code for a failed outbox row, never a message. */
 /**
  * The dead-letter queue of the events queue (`sharerepo-events-dlq-<env>`, decision 0014): it
  * receives messages that used up their queue retries, and this Worker consumes it too.
  */
 export const DEAD_LETTER_QUEUE_PREFIX = "sharerepo-events-dlq-";
+/** The error code of a row whose message reached the dead-letter queue. */
+export const DEAD_LETTERED = "dead_lettered";
 
+/** A classified code for a failed outbox row, never a message. */
 const errorCode = (error: unknown): string =>
   isProviderError(error) ? error.kind : error instanceof AppError ? error.code : "internal_error";
 
 export function createJobsWorker(deps: JobsWorkerDeps) {
   const logOptions = { now: () => deps.clock.now() };
-  const services = (db: Db): ServiceContext => ({
-    db,
-    clock: deps.clock,
-    ids: deps.ids,
-    correlationId: deps.ids.next(),
-  });
+  /** A job's service context, with its own correlation ID and a logger for its alert lines. */
+  const services = (db: Db): ServiceContext => {
+    const correlationId = deps.ids.next();
+    return {
+      db,
+      clock: deps.clock,
+      ids: deps.ids,
+      correlationId,
+      logger: createLogger({ correlationId, worker: "jobs" }, logOptions),
+    };
+  };
 
   /** Paddle and claims from validated configuration; null without the commerce secrets. */
   function commerceDeps(config: JobsConfig): CommerceDeps | null {
@@ -248,16 +255,18 @@ export function createJobsWorker(deps: JobsWorkerDeps) {
     logger: Logger,
     now: number,
   ): Promise<boolean> {
+    const ctx = services(db);
     try {
-      const outcome = await runJob(services(db), row, jobs);
+      const outcome = await runJob(ctx, row, jobs);
       await markOutboxSent(db, [row.id], now);
       logOutcome(logger, outcome, { outboxId: row.id, kind: row.kind });
       return true;
     } catch (error) {
       const final = !isRetryable(error) || row.attempts >= OUTBOX_MAX_ATTEMPTS;
       if (final) {
-        // Will not succeed by waiting: record it once instead of retrying every minute.
-        await markOutboxFailed(db, { id: row.id, now, errorCode: errorCode(error) });
+        // Will not succeed by waiting: record it once (row, `job.failed`, alert line) instead of
+        // retrying every minute.
+        await recordJobFailure(ctx, { outboxId: row.id, errorCode: errorCode(error) });
       }
       // Otherwise left leased: the row becomes due again when the lease expires.
       logger.warn("outbox job failed", {
@@ -331,6 +340,46 @@ export function createJobsWorker(deps: JobsWorkerDeps) {
     }
   }
 
+  /**
+   * The dead-letter queue (decision 0014): messages that used up their queue retries. Each is
+   * validated like a job message and never run. Its outbox row is marked failed with
+   * `dead_lettered` (with `job.failed` and an alert line) only if the row matches the message's
+   * kind and subject and is neither sent nor failed, so a replay, a stale message or a forged
+   * one changes nothing (threat O14). Every message is acknowledged once handled; a storage
+   * error retries it.
+   */
+  async function deadLettered(batch: MessageBatch<unknown>, db: Db, logger: Logger) {
+    for (const message of batch.messages) {
+      const parsed = jobMessageSchema.safeParse(message.body);
+      if (!parsed.success) {
+        logger.warn("invalid dead-lettered message dropped", { messageId: message.id });
+        message.ack();
+        continue;
+      }
+      const { kind, subjectId, outboxId } = parsed.data;
+      try {
+        const recorded = await recordJobFailure(services(db), {
+          outboxId,
+          errorCode: DEAD_LETTERED,
+          message: { kind, subjectId },
+        });
+        if (!recorded) {
+          logger.warn("dead-lettered message matched no open job", {
+            messageId: message.id,
+            outboxId,
+          });
+        }
+        message.ack();
+      } catch (error) {
+        logger.error("dead-lettered message not recorded; retrying", {
+          messageId: message.id,
+          ...classify(error),
+        });
+        message.retry();
+      }
+    }
+  }
+
   return {
     /** Liveness only: answers without reading configuration or touching D1. */
     async fetch(request: Request): Promise<Response> {
@@ -400,19 +449,12 @@ export function createJobsWorker(deps: JobsWorkerDeps) {
         { correlationId: deps.ids.next(), worker: "jobs", queue: batch.queue },
         logOptions,
       );
-      if (batch.queue.startsWith(DEAD_LETTER_QUEUE_PREFIX)) {
-        // Placeholder until the dead-letter handling lands (Phase 6 plan, T3): acknowledged and
-        // logged by message ID only, so the dead-letter queue does not grow meanwhile.
-        for (const message of batch.messages) {
-          batchLogger.warn("dead-lettered message acknowledged, not yet handled", {
-            messageId: message.id,
-          });
-          message.ack();
-        }
-        return;
-      }
       const config = configFrom(env, batchLogger);
       const db = createDb(config.db);
+      if (batch.queue.startsWith(DEAD_LETTER_QUEUE_PREFIX)) {
+        await deadLettered(batch, db, batchLogger);
+        return;
+      }
       const jobs = config.github === null ? null : jobDeps(config, config.github);
 
       for (const message of batch.messages) {
@@ -451,11 +493,12 @@ export function createJobsWorker(deps: JobsWorkerDeps) {
             });
             message.retry({ delaySeconds });
           } else {
-            // Final: record it on the outbox row too, so the drain does not pick it up again.
-            await markOutboxFailed(db, {
-              id: job.outboxId,
-              now: deps.clock.now(),
+            // Final: record it on the outbox row too, so the drain does not pick it up again,
+            // with `job.failed` and an alert line.
+            await recordJobFailure(ctx, {
+              outboxId: job.outboxId,
               errorCode: errorCode(error),
+              message: { kind: job.kind, subjectId: job.subjectId },
             });
             logger.error("job failed", { outboxId: job.outboxId, ...classify(error) });
             message.ack();

@@ -13,6 +13,10 @@ export default [
     route("c/:slug/claim", "routes/c.$slug.claim.tsx"),
     route("claim/:token", "routes/claim.$token.tsx"),
   ]),
+  // Operators only (decision 0014). Outside the signed-in layout, which redirects signed-out
+  // visitors: here everyone who is not an operator gets the same 404.
+  route("ops", "routes/ops.tsx"),
+  route("ops/w/:slug", "routes/ops.w.$slug.tsx"),
   layout("routes/signed-in-layout.tsx", [
     route("workspaces/new", "routes/workspaces.new.tsx"),
     route("github/setup", "routes/github.setup.ts"),

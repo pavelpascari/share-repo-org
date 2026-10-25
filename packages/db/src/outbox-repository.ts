@@ -216,7 +216,7 @@ export async function claimOutbox(
         isNull(outbox.sentAt),
         isNull(outbox.failedAt),
         lte(outbox.availableAt, input.now),
-        // Rows that used every attempt are never claimed again; markOutboxFailed records them.
+        // Rows that used every attempt are never claimed again; failOutboxRow records them.
         lt(outbox.attempts, input.maxAttempts),
       ),
     )
@@ -236,18 +236,4 @@ export async function markOutboxSent(db: Db, ids: readonly string[], now: Instan
     .update(outbox)
     .set({ sentAt: now })
     .where(and(inArray(outbox.id, [...ids]), isNull(outbox.sentAt)));
-}
-
-/**
- * Marks a row as failed for good (a non-retryable error, or out of attempts) with a classified
- * error code, never a message. It is never claimed again and stays for the operator to inspect.
- */
-export async function markOutboxFailed(
-  db: Db,
-  input: { id: string; now: Instant; errorCode: string },
-): Promise<void> {
-  await db
-    .update(outbox)
-    .set({ failedAt: input.now, lastErrorCode: input.errorCode })
-    .where(and(eq(outbox.id, input.id), isNull(outbox.sentAt)));
 }

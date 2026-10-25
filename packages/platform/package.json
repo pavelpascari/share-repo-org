@@ -10,6 +10,7 @@
     "typecheck": "tsc -p . && tsc -p test"
   },
   "dependencies": {
+    "@sharerepo/domain": "workspace:*",
     "zod": "4.6.7"
   },
   "devDependencies": {

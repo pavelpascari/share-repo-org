@@ -217,17 +217,20 @@ describe("refresh_subscription and recompute_offer in the outbox drain", () => {
       sent_at: null,
       last_error_code: "key_invalid",
     });
-    expect(logged().find((line) => line.outboxId === outboxId)).toMatchObject({
-      msg: "outbox job failed",
-      kind: "refresh_subscription",
-      final: true,
-      errorCode: "key_invalid",
-    });
+    const lines = () =>
+      logged().filter((line) => line.outboxId === outboxId && line.msg === "outbox job failed");
+    expect(lines()).toEqual([
+      expect.objectContaining({
+        kind: "refresh_subscription",
+        final: true,
+        errorCode: "key_invalid",
+      }),
+    ]);
     expect(logs.text()).not.toContain(subjectId);
     // Never claimed again.
     clock.advance(10 * 60_000);
     await runCron(jobsWorker(github), CRONS.drainOutbox);
-    expect(logged().filter((line) => line.outboxId === outboxId)).toHaveLength(1);
+    expect(lines()).toHaveLength(1);
   });
 
   it("leaves a stale refresh leased for a later attempt", async () => {

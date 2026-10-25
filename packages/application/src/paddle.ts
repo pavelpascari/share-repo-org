@@ -1,5 +1,6 @@
 import * as repo from "@sharerepo/db";
 import {
+  AlertName,
   type AuditEvent,
   auditEvent,
   ConnectionCallOutcome,
@@ -34,7 +35,13 @@ import {
   ServiceUnavailableError,
   sealSecret,
 } from "@sharerepo/platform";
-import { asAuditActor, atOneInstant, type ServiceContext, type UserActor } from "./context.ts";
+import {
+  asAuditActor,
+  atOneInstant,
+  raiseAlert,
+  type ServiceContext,
+  type UserActor,
+} from "./context.ts";
 import {
   type EntitlementSourcePort,
   encodePaddleConnectionKey,
@@ -203,7 +210,7 @@ async function changeStatus(
   const previousStatus = connection.status as LiveStatus;
   if (previousStatus === status) return;
   const { workspaceId, id: connectionId } = connection;
-  await repo.updatePaddleConnectionStatus(
+  const changed = await repo.updatePaddleConnectionStatus(
     ctx.db,
     {
       workspaceId,
@@ -227,6 +234,15 @@ async function changeStatus(
       ),
     ],
   );
+  // Paddle refused the key: subscriptions can no longer be read (decision 0014).
+  if (changed.ok && status === "unauthorized") {
+    raiseAlert(ctx, AlertName.ConnectionLost, {
+      workspaceId,
+      connectionId,
+      provider: "paddle",
+      status,
+    });
+  }
 }
 
 /**

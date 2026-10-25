@@ -61,6 +61,25 @@ export {
   type RecordExternalEventResult,
   recordExternalEvent,
 } from "./event-repository.ts";
+export {
+  type AccessNames,
+  dismissOutboxFailure,
+  type FailingResource,
+  failOutboxRow,
+  getFailedOutboxRow,
+  getOutboxRow,
+  listFailingResources,
+  listOpenOutboxFailures,
+  listUnhealthyConnections,
+  type OpenOutboxFailure,
+  offerAccessNames,
+  readSweepHealth,
+  retryOutboxFailure,
+  SWEEP_HEARTBEAT_KEY,
+  type SweepHealth,
+  subscriptionAccessNames,
+  type UnhealthyConnection,
+} from "./failure-repository.ts";
 export { type Grant, getGrant, listGrantsForWorkspace } from "./grant-repository.ts";
 export {
   type ExternalIdentity,
@@ -104,7 +123,6 @@ export {
   enqueueOutbox,
   enqueueOutboxOnce,
   enqueueOutboxRows,
-  markOutboxFailed,
   markOutboxSent,
   type NewOutboxRow,
   type OutboxRow,

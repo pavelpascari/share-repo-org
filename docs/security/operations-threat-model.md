@@ -59,3 +59,16 @@ Phase 6 adds the first surfaces that cross workspaces on purpose (operators), mo
 4. `outbox_dismissed_only_failed` and `outbox_dismissal_complete`: only a failure can be dismissed, and a dismissal names who dismissed it and why.
 5. `paddle_connections_next_secret_has_destination`, and `paddle_connections_disconnected_erased` extended to the next secret.
 6. `OPERATOR_GITHUB_IDS` parses to numeric IDs or fails closed. Empty or unset means no operators.
+
+## Status after Phase 6 T3
+
+| # | Status | Where |
+|---|---|---|
+| O1 | Mitigated | `authorizeOperator` compares the linked identity's immutable GitHub ID with the parsed list; no role in the database. Tests: `operator/non-operator-gets-404` (service and routes). |
+| O2 | Mitigated | `requireOperator` answers 404 before any query for signed-out users and non-operators, on `/ops`, its action and `/ops/w/:slug`. The routes sit outside the signed-in layout, whose redirect would reveal them. No page links to them. |
+| O3 | Mitigated | Retry and dismiss take an explicit workspace ID (null for system-wide) and the outbox ID together; every query filters by both. Affected access is resolved only within the row's own workspace. The read-only view reuses the owner's scoped reads with controls off. Tests: `operator/actions-audited`, "names nothing it cannot resolve within the failure's own workspace". |
+| O4 | Mitigated | `job.retried`, `job.dismissed` (reason required) and `operator.viewed_workspace` carry actor type `operator`, the operator's user ID and the request's correlation ID. Test: `operator/actions-audited`. |
+| O5 | Mitigated | Owner lists and retries filter by `outbox.workspace_id`; another workspace's or a system-wide failure is not found; owners cannot dismiss. Test: `failure/owner-sees-only-own-failures` (service and route). |
+| O14 | Mitigated | No producer binding for the DLQ. The consumer validates with the job schema, never runs the job, and marks a row failed only when kind and subject match and the row is unsent and unfailed. Test: `failure/dead-letter-marks-row-failed` and the mismatch, replay and invalid-message cases. |
+| O18 | Partly mitigated | One `alert(logger, name, ids)` helper with the closed `AlertName` vocabulary; T3's alert lines carry IDs and codes only. The log scan with canaries is T6's. |
+| O19 | Partly mitigated | Every terminal job failure is a failed row, a `job.failed` event and a `job_failed` alert line (`failure/exhausted-job-is-recorded-and-alerted`). The heartbeat and lag alert are T2's. |

@@ -1,5 +1,6 @@
 import * as repo from "@sharerepo/db";
 import {
+  AlertName,
   type AuditDetails,
   type AuditEvent,
   type AuditEventInput,
@@ -27,6 +28,7 @@ import { ConflictError } from "@sharerepo/platform";
 import {
   asAuditActor,
   atOneInstant,
+  raiseAlert,
   type ServiceContext,
   type UserActor,
   type WorkspaceAuditAction,
@@ -619,7 +621,17 @@ async function attemptResync(
     },
     audit as [AuditEvent, ...AuditEvent[]],
   );
-  return result.ok ? summary : "stale";
+  if (!result.ok) return "stale";
+  // The installation stopped working: its repositories' access can no longer be changed.
+  if (status !== stored.status && status !== "active") {
+    raiseAlert(ctx, AlertName.ConnectionLost, {
+      workspaceId,
+      connectionId: connection.id,
+      provider: "github",
+      status,
+    });
+  }
+  return summary;
 }
 
 /** Where each planned change is stored on the resource row. */

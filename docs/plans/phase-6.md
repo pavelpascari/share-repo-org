@@ -302,6 +302,27 @@ Where the build differs from, or adds to, the design above.
   - **T4:** set `purging` only from `deleting`, in the purge's first batch. Delete the outbox rows of the workspace before the `workspaces` row (foreign key). Started provider mutations can only be deleted while purging. The purged tombstone and `data.pruned` are account-scoped.
   - **T5:** `claim_requests.email_hash` and the claim rate-limit buckets are HMACs under the claim signing key. Rotating the key changes them, so lookups by email hash must try every key, or the rotation must wait out the claim windows. The e2e environment still uses the plain-text key format.
 
+### T3
+
+- **One terminal-failure path.** `recordJobFailure` (`packages/application/src/failures.ts`) is the only way a job fails for good: the drain's last attempt or a non-retryable error, the queue consumer's non-retryable error, and the dead-letter queue. It marks the outbox row failed and writes `job.failed` in one batch (`failOutboxRow`), in the row's workspace or account-scoped when it has none, then logs the `job_failed` alert line. Only an unsent, unfailed row changes. `markOutboxFailed`, which wrote no audit event, is removed.
+- **Message matching.** A failure that comes from a queue message (the consumer's non-retryable path and the dead-letter queue) changes the row only if its kind and subject match the message (threat O14). The queue path used to trust the message's outbox ID alone.
+- **Dead-letter queue.** The consumer validates each message with the job schema and never runs it. A valid, matching message marks the row failed with `dead_lettered`. An invalid one is logged by message ID; one that matches no open row (sent, failed, unknown or mismatched) is logged by message and outbox ID. Both are acknowledged. A storage error retries the message.
+- **`job.failed` attempts** are the row's `attempts`. The queue consumer does not count attempts on the row, so a failure on the queue path records 0.
+- **Alerts.** `alert(logger, name, ids)` is in `packages/platform/src/alert.ts`, logged at `warn` with `alert` written last so an ID field cannot rename it. `@sharerepo/platform` now depends on `@sharerepo/domain` for the `AlertName` type. Services raise alerts through an optional `ServiceContext.logger` (`raiseAlert`); both Workers pass their logger, and a context without one (tests, scripts) raises none.
+  - `reconcile_failing`: once, by the run that holds the lease when it records the third failure in a row (`RECONCILE_FAILING_THRESHOLD`).
+  - `connection_lost`: a resync that moves a GitHub connection to `suspended` or `deleted`, or a guarded status change that moves a Paddle connection to `unauthorized`. A connection that is already in that state raises nothing.
+- **Operator principal.** `authorizeOperator` compares the user's linked GitHub identity (`external_identities.external_user_id`) with `OPERATOR_GITHUB_IDS` and returns a branded `OperatorPrincipal`. `requireOperator` (`apps/web/app/operators.server.ts`) answers 404 to everyone else, and does not read the session at all while the list is empty.
+- **Routes.** `/ops` and `/ops/w/:slug` are outside the signed-in layout, whose loader redirects signed-out visitors to `/` and would reveal that the page exists. Both forms (retry, dismiss) are same-origin POSTs validated with Zod. The operator check runs before the same-origin check, so a cross-site request from a non-operator also gets 404. A stale retry or dismissal is a notice, not an error page.
+- **Read-only view.** `viewWorkspaceAsOperator` writes `operator.viewed_workspace` on each load, then reads the owner's access view (`accessViewOf`, split out of `listAccess`) and failures with every control off. The page reuses the Access page's table row, repository list and failures section, which the route module now exports.
+- **Affected access** is resolved from the outbox kind and subject, reading only within the row's own workspace. A key whose workspace differs from the row's resolves nothing. A system-wide row resolves only its webhook's provider and event type, which are not tenant data. A claim email and the system jobs name nothing beyond their kind.
+- **Owners.** Any member sees the workspace's failures on the Access page; Retry needs `workspace.manage` in an active workspace. Retrying clears `failed_at`, the error code and the dismissal columns, resets `attempts` and makes the row due now; the page then hands it to the queue. Owners cannot dismiss.
+- **Dismissal reasons** are trimmed, required, and at most 500 characters.
+- **Lists** are capped at 200 rows each (`FAILURE_LIST_LIMIT`). Failing repositories are selected repositories only.
+- **Sweep health** reads the oldest due `next_evaluation_at`, `next_reconcile_at` and pending outbox `available_at`, and the `updated_at` of the `system_state` row `sweep.heartbeat`. `/ops` shows "Unknown" until T2 stores that key.
+- **For T7 and the review:**
+  - `/ops` lists deleted GitHub connections indefinitely, as decision 0014 says. If that becomes noise, limit it to connections that still have selected repositories.
+  - `/ops` and the owner's Retry are tested at the route level. The E2E journeys (owner retry, operator resolve, non-operator 404) are T7's.
+
 ## Risks and open points
 
 - **Monitors is a beta.** Alerting has a manual fallback, a daily `/ops` review, until it is stable.

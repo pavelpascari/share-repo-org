@@ -1,13 +1,17 @@
 import {
   type AccessRow,
   listAccess,
+  listOpenFailures,
   type ReconcileRequest,
   requestReconcileNow,
+  retryFailure,
   retryGrant,
+  type WorkspaceFailures,
 } from "@sharerepo/application";
 import { OutboxKind } from "@sharerepo/domain";
 import { data, Form, Link, useNavigation } from "react-router";
 import { servicesFor } from "../auth/server.ts";
+import { FailedJobsTable, FailingRepositoriesList } from "../components/failure-list.tsx";
 import { cloudflareContext } from "../context.ts";
 import {
   accessReasonText,
@@ -29,14 +33,16 @@ export function meta(_: Route.MetaArgs) {
 export async function loader({ request, params, context }: Route.LoaderArgs) {
   const { user } = await loadWorkspace(request, context, params.slug, "workspace.read");
   const services = servicesFor(context);
-  const { rows, canManage } = await listAccess(services, user, params.slug).catch(
-    (error: unknown) => {
-      throw asResponse(error);
-    },
-  );
+  const [{ rows, canManage }, failures] = await Promise.all([
+    listAccess(services, user, params.slug),
+    listOpenFailures(services, user, params.slug),
+  ]).catch((error: unknown) => {
+    throw asResponse(error);
+  });
   return {
     rows,
     canManage,
+    failures,
     // "Checked 5 min ago" is relative to this instant, so the server and browser render alike.
     now: services.clock.now(),
     slug: params.slug,
@@ -51,6 +57,8 @@ type ActionData =
 /**
  * "Check now" (`intent=check`, `resourceId`) and "Retry" (`intent=retry`, `grantId`), for owners:
  * the service queues the repository's reconciliation, and the row is handed to the queue at once.
+ * "Retry" on a failed job (`intent=retry-job`, `outboxId`) makes one of the workspace's own failed
+ * jobs due again (decision 0014), and hands it to the queue too.
  */
 export async function action({ request, params, context }: Route.ActionArgs) {
   assertSameOrigin(request, context.get(cloudflareContext).env.auth.baseURL);
@@ -59,6 +67,13 @@ export async function action({ request, params, context }: Route.ActionArgs) {
   const form = await request.formData();
   const intent = String(form.get("intent") ?? "");
 
+  if (intent === "retry-job") {
+    const outboxId = String(form.get("outboxId") ?? "");
+    const retried = await attempt(() => retryFailure(services, user, params.slug, outboxId));
+    if (!retried.ok) return { ok: false, notice: null, error: retried.error } satisfies ActionData;
+    enqueueJob(context, retried.value);
+    return { ok: true, notice: "Retry queued.", error: null } satisfies ActionData;
+  }
   const run = (): Promise<ReconcileRequest> => {
     if (intent === "check") {
       return requestReconcileNow(services, user, params.slug, String(form.get("resourceId") ?? ""));
@@ -84,7 +99,7 @@ export async function action({ request, params, context }: Route.ActionArgs) {
 }
 
 /** The repositories in the rows, in first-seen order, with when each was and will be checked. */
-function repositoriesOf(rows: readonly AccessRow[]) {
+export function repositoriesOf(rows: readonly AccessRow[]) {
   const repositories = new Map<
     string,
     { id: string; name: string; lastReconciledAt: number | null; nextReconcileAt: number | null }
@@ -102,7 +117,7 @@ function repositoriesOf(rows: readonly AccessRow[]) {
 }
 
 export default function Access({ loaderData, actionData }: Route.ComponentProps) {
-  const { rows, slug, canManage, now } = loaderData;
+  const { rows, slug, canManage, now, failures } = loaderData;
   return (
     <>
       <h1 className="text-2xl font-semibold">Access</h1>
@@ -110,6 +125,7 @@ export default function Access({ loaderData, actionData }: Route.ComponentProps)
         Who should have access to which repository, what GitHub shows, and what ShareRepo will do
         next.
       </p>
+      <FailuresSection failures={failures} />
       {actionData?.ok && (
         <p role="status" className="mt-4 text-green-800">
           {actionData.notice}
@@ -197,10 +213,55 @@ export default function Access({ loaderData, actionData }: Route.ComponentProps)
   );
 }
 
+/**
+ * Failures that need a person (decision 0014): failed jobs about this workspace's access, and
+ * repositories whose checks keep failing. Owners can retry a failed job; dismissing one is for
+ * ShareRepo support.
+ */
+export function FailuresSection({ failures }: { failures: WorkspaceFailures }) {
+  if (failures.jobs.length === 0 && failures.repositories.length === 0) return null;
+  return (
+    <section aria-labelledby="needs-attention" className="mt-6 rounded border border-red-200 p-4">
+      <h2 id="needs-attention" className="text-lg font-semibold">
+        Needs attention
+      </h2>
+      {failures.jobs.length > 0 && (
+        <>
+          <p className="mt-2 text-sm text-gray-700">
+            These jobs stopped retrying. Retry one once its cause is fixed, or contact support.
+          </p>
+          <div className="mt-2">
+            <FailedJobsTable
+              jobs={failures.jobs}
+              {...(failures.canRetry
+                ? {
+                    actions: (job) => (
+                      <ControlForm intent="retry-job" field="outboxId" value={job.id}>
+                        Retry
+                      </ControlForm>
+                    ),
+                  }
+                : {})}
+            />
+          </div>
+        </>
+      )}
+      {failures.repositories.length > 0 && (
+        <>
+          <h3 className="mt-4 font-medium">Repositories that keep failing to check</h3>
+          <div className="mt-2">
+            <FailingRepositoriesList repositories={failures.repositories} />
+          </div>
+        </>
+      )}
+    </section>
+  );
+}
+
 /** A one-button POST form for an owner control. */
 function ControlForm(props: {
-  intent: "check" | "retry";
-  field: "resourceId" | "grantId";
+  intent: "check" | "retry" | "retry-job";
+  field: "resourceId" | "grantId" | "outboxId";
   value: string;
   children: string;
 }) {
@@ -220,7 +281,7 @@ function ControlForm(props: {
   );
 }
 
-function AccessTableRow({
+export function AccessTableRow({
   row,
   now,
   canManage,

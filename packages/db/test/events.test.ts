@@ -4,16 +4,17 @@ import {
   claimOutbox,
   enqueueOutbox,
   enqueueOutboxRows,
+  failOutboxRow,
   getExternalEvent,
   listExternalEventsByState,
   markExternalEvent,
-  markOutboxFailed,
   markOutboxSent,
   type NewExternalEvent,
   type NewOutboxRow,
   outboxInsert,
   recordExternalEvent,
 } from "../src/index.ts";
+import { accountEvent } from "./support/audit.ts";
 import { count, db } from "./support/connections.ts";
 import { seedPaddleConnection } from "./support/paddle.ts";
 import { insertWorkspaceRow, T0, uniqueId } from "./support/rows.ts";
@@ -257,7 +258,7 @@ describe("outbox", () => {
     const at = T0 + 4_000_000;
     const row = work("failed", { availableAt: at });
     await enqueueOutbox(db, row);
-    await markOutboxFailed(db, { id: row.id, now: at, errorCode: "rejected" });
+    await failOutboxRow(db, { id: row.id, now: at, errorCode: "rejected" }, [accountEvent()]);
     const claimed = await claimOutbox(db, {
       now: at + 1,
       limit: 1000,
@@ -275,7 +276,7 @@ describe("outbox", () => {
     const sent = work("sent", { availableAt: at });
     await enqueueOutbox(db, sent);
     await markOutboxSent(db, [sent.id], at);
-    await markOutboxFailed(db, { id: sent.id, now: at, errorCode: "late" });
+    await failOutboxRow(db, { id: sent.id, now: at, errorCode: "late" }, [accountEvent()]);
     expect(
       await env.DB.prepare("SELECT failed_at FROM outbox WHERE id = ?").bind(sent.id).first(),
     ).toEqual({ failed_at: null });
