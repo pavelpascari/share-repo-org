@@ -605,6 +605,18 @@ export const AUDIT_ACTIONS = {
       })
       .refine((d) => d.previousDestinationId !== d.destinationId, { path: ["destinationId"] }),
   },
+  // ShareRepo deletes notification destinations it created for the workspace in the seller's Paddle
+  // account that no stored row names (Phase 6 risk fixes): `orphaned` ones (a lost create response,
+  // a crash before storing, a rotation racing a disconnect), or every one of the workspace's when
+  // it disconnects. Written before the deletions, with the destinations' IDs only.
+  "paddle.destinations_swept": {
+    scope: "workspace",
+    targetType: "workspace",
+    details: z.strictObject({
+      reason: z.enum(["orphaned", "disconnected"]),
+      destinationIds: z.array(text).min(1),
+    }),
+  },
   // One per rewrap run over every workspace's envelopes (secret rotation): envelopes moved to the
   // current master key, those that could not be opened, and those still under another listed key.
   "credentials.rewrapped": {

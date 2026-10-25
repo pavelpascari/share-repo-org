@@ -50,9 +50,8 @@ export const PADDLE_PAGE_LIMIT = 30;
 export const PADDLE_PAGE_SIZE = 200;
 const DEFAULT_RETRY_AFTER_MS = 60_000;
 
-/** The destination's fixed settings (decision 0011). */
+/** The destination's fixed settings (decision 0011); the caller gives its description. */
 const DESTINATION_SETTINGS = {
-  description: "ShareRepo",
   type: "url",
   api_version: 1,
   include_sensitive_fields: false,
@@ -213,13 +212,13 @@ export function createPaddleClient(options: PaddleClientOptions): PaddlePort {
       return { id: body.data.id, checkoutUrl: body.data.checkout?.url ?? null };
     },
 
-    async createNotificationSetting({ destination, events }) {
+    async createNotificationSetting({ description, destination, events }) {
       const body = await read(
         "create notification setting",
         single(createdNotificationSettingSchema),
         "POST",
         "/notification-settings",
-        { ...DESTINATION_SETTINGS, destination, subscribed_events: events },
+        { ...DESTINATION_SETTINGS, description, destination, subscribed_events: events },
       );
       return { id: body.data.id, secret: body.data.endpoint_secret_key };
     },
@@ -233,6 +232,17 @@ export function createPaddleClient(options: PaddleClientOptions): PaddlePort {
         path,
       );
       return toNotificationSetting(body.data);
+    },
+
+    async listNotificationSettings() {
+      // Every setting, active or not (Paddle's default for this list). The secret each carries
+      // is dropped by the schema, never kept.
+      const { items } = await paginate(
+        "list notification settings",
+        `/notification-settings?per_page=${PADDLE_PAGE_SIZE}`,
+        notificationSettingSchema,
+      );
+      return items.map(toNotificationSetting);
     },
 
     async deleteNotificationSetting(settingId) {

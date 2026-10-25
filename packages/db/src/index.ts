@@ -184,6 +184,7 @@ export {
   getPaddleConnection,
   getPaddleConnectionForWebhook,
   listActivePaddleConnections,
+  listPaddleConnectionIds,
   listPaddlePrices,
   markPaddleEventReceived,
   type PaddleConnection,

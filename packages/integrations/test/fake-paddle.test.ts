@@ -94,6 +94,7 @@ describe("fake Paddle key and permissions", () => {
     fake.setPermissions(["notification_setting.write"]);
     await expect(fake.listPrices()).rejects.toMatchObject({ kind: "unauthorized" });
     const { id } = await fake.createNotificationSetting({
+      description: "ShareRepo",
       destination: "https://a.test/",
       events: [],
     });
@@ -332,10 +333,22 @@ describe("fake Paddle notification settings", () => {
   it("enforces the fake's 10-destination limit, counting other apps' destinations", async () => {
     const { fake } = world();
     fake.addForeignDestinations(8);
-    const first = await fake.createNotificationSetting({ destination: destination(1), events: [] });
-    await fake.createNotificationSetting({ destination: destination(2), events: [] });
+    const first = await fake.createNotificationSetting({
+      description: "ShareRepo",
+      destination: destination(1),
+      events: [],
+    });
+    await fake.createNotificationSetting({
+      description: "ShareRepo",
+      destination: destination(2),
+      events: [],
+    });
     const error = await failure(
-      fake.createNotificationSetting({ destination: destination(3), events: [] }),
+      fake.createNotificationSetting({
+        description: "ShareRepo",
+        destination: destination(3),
+        events: [],
+      }),
     );
     expect(error).toMatchObject({
       kind: "rejected",
@@ -345,7 +358,11 @@ describe("fake Paddle notification settings", () => {
     expect(isDestinationLimitError(error)).toBe(true);
     fake.deactivateNotificationSetting(first.id);
     await expect(
-      fake.createNotificationSetting({ destination: destination(3), events: [] }),
+      fake.createNotificationSetting({
+        description: "ShareRepo",
+        destination: destination(3),
+        events: [],
+      }),
     ).resolves.toMatchObject({ id: expect.any(String) });
     expect(fake.notificationSettings().map((setting) => setting.active)).toEqual([
       false,
@@ -356,9 +373,19 @@ describe("fake Paddle notification settings", () => {
 
   it("refuses a duplicate destination", async () => {
     const { fake } = world();
-    await fake.createNotificationSetting({ destination: destination(1), events: [] });
+    await fake.createNotificationSetting({
+      description: "ShareRepo",
+      destination: destination(1),
+      events: [],
+    });
     expect(
-      await failure(fake.createNotificationSetting({ destination: destination(1), events: [] })),
+      await failure(
+        fake.createNotificationSetting({
+          description: "ShareRepo",
+          destination: destination(1),
+          events: [],
+        }),
+      ),
     ).toMatchObject({ paddleCode: "notification_setting_cannot_be_duplicate" });
   });
 
@@ -373,6 +400,7 @@ describe("fake Paddle signed events", () => {
   async function connected() {
     const w = world();
     const setting = await w.fake.createNotificationSetting({
+      description: "ShareRepo",
       destination: "https://sharerepo.test/webhooks/paddle/c1",
       events: ["subscription.updated"],
     });
@@ -446,10 +474,12 @@ describe("fake Paddle signed events", () => {
   it("delivers one event to every active destination, each signed with its own secret", async () => {
     const c = await connected();
     const second = await c.fake.createNotificationSetting({
+      description: "ShareRepo",
       destination: "https://sharerepo.test/webhooks/paddle/c1?v=2",
       events: ["subscription.updated"],
     });
     const inactive = await c.fake.createNotificationSetting({
+      description: "ShareRepo",
       destination: "https://sharerepo.test/webhooks/paddle/c1?v=3",
       events: [],
     });
@@ -514,7 +544,13 @@ describe("fake Paddle fault injection", () => {
       await failure(fake.createTransaction({ priceId: price.id, customData: { a: "b" } })),
     ).toMatchObject({ kind: "transient" });
     fake.loseNextResponse("createNotificationSetting");
-    await failure(fake.createNotificationSetting({ destination: "https://a.test/", events: [] }));
+    await failure(
+      fake.createNotificationSetting({
+        description: "ShareRepo",
+        destination: "https://a.test/",
+        events: [],
+      }),
+    );
     const [setting] = fake.notificationSettings();
     expect(setting).toBeDefined();
     fake.loseNextResponse("deleteNotificationSetting");

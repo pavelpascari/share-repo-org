@@ -284,15 +284,22 @@ describe("rotatePaddleWebhookSecret", () => {
     expect(await rotate(s)).toMatchObject({ ok: true });
   });
 
-  it("stores nothing when the second destination's response is lost; a rerun creates another", async () => {
+  it("stores nothing when the second destination's response is lost, deletes it, and a rerun creates another", async () => {
     const s = await paddleShop();
     const before = await connectionOf(s);
     s.paddle.loseNextResponse("createNotificationSetting");
     expect(await failure(rotate(s))).toBeInstanceOf(PaddleApiError);
     expect(await connectionOf(s)).toEqual(before);
-    // The lost destination exists in Paddle, unknown to ShareRepo: its deliveries are refused.
-    expect(s.paddle.notificationSettings()).toHaveLength(2);
-    expect(await statusesOf(s, await deliveries(s))).toEqual(["accepted", "invalid_signature"]);
+    // The destination Paddle created at that attempt's unique URL is found and deleted at once.
+    expect(s.paddle.notificationSettings().map((setting) => setting.id)).toEqual([
+      before.destinationId,
+    ]);
+    expect(await auditOf(s.workspaceId, "paddle.destinations_swept")).toEqual([
+      expect.objectContaining({
+        details: { reason: "orphaned", destinationIds: [expect.any(String)] },
+      }),
+    ]);
+    expect(await statusesOf(s, await deliveries(s))).toEqual(["accepted"]);
     expect(await rotate(s)).toMatchObject({ ok: true });
   });
 
@@ -701,7 +708,21 @@ describe("rewrap_credentials", () => {
       .bind(good)
       .first<{ email_envelope: string }>();
     expect(JSON.parse(moved?.email_envelope as string).kid).toBe(keyring.newId);
-    expect(new Set(await kidsOf(s))).toEqual(new Set([keyring.newId]));
+    // The Paddle envelopes moved too; only the bad emails stay under the old key.
+    const connection = await connectionOf(s);
+    expect(
+      [
+        connection.apiKeyEnvelope,
+        connection.webhookSecretEnvelope,
+        connection.webhookSecretNextEnvelope,
+      ].map((envelope) => JSON.parse(envelope as string).kid),
+    ).toEqual([keyring.newId, keyring.newId, keyring.newId]);
+    const old = await env.DB.prepare(
+      "SELECT count(*) AS n FROM claim_requests WHERE workspace_id = ? AND json_extract(email_envelope, '$.kid') = ?",
+    )
+      .bind(s.workspaceId, keyring.oldId)
+      .first<{ n: number }>();
+    expect(old?.n).toBe(REWRAP_BATCH);
     // The pass ended: its cursor is gone, so the next pass starts at the beginning again.
     const cursor = await env.DB.prepare("SELECT value FROM system_state WHERE key = ?")
       .bind("rewrap.cursor")

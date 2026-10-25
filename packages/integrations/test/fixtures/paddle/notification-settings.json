@@ -1,0 +1,63 @@
+{
+  "data": [
+    {
+      "id": "ntfset_01jsharerepo00000000000001",
+      "description": "ShareRepo",
+      "type": "url",
+      "destination": "https://sharerepo.test/webhooks/paddle/pcon_1",
+      "active": true,
+      "api_version": 1,
+      "include_sensitive_fields": false,
+      "subscribed_events": [
+        {
+          "name": "subscription.created",
+          "description": "…",
+          "group": "Subscription",
+          "available_versions": [1]
+        },
+        {
+          "name": "subscription.updated",
+          "description": "…",
+          "group": "Subscription",
+          "available_versions": [1]
+        },
+        {
+          "name": "api_key.revoked",
+          "description": "…",
+          "group": "Api_key",
+          "available_versions": [1]
+        }
+      ],
+      "endpoint_secret_key": "pdl_ntfset_01jsecretfixture0000000000_abcdefghijklmnopqrstuvwxyzABCDEF",
+      "traffic_source": "platform"
+    },
+    {
+      "id": "ntfset_01janotherapp0000000000001",
+      "description": "Fulfilment service",
+      "type": "url",
+      "destination": "https://fulfilment.example/paddle",
+      "active": false,
+      "api_version": 1,
+      "include_sensitive_fields": true,
+      "subscribed_events": [
+        {
+          "name": "transaction.completed",
+          "description": "…",
+          "group": "Transaction",
+          "available_versions": [1]
+        }
+      ],
+      "endpoint_secret_key": "pdl_ntfset_01jsecretfixture0000000002_abcdefghijklmnopqrstuvwxyzABCDEF",
+      "traffic_source": "all"
+    }
+  ],
+  "meta": {
+    "request_id": "8d3c4f1e-2a5b-4c6d-8e9f-0a1b2c3d4e5f",
+    "pagination": {
+      "per_page": 200,
+      "next": "https://sandbox-api.paddle.com/notification-settings?after=ntfset_01janotherapp0000000000001&per_page=200",
+      "has_more": false,
+      "estimated_total": 2
+    }
+  }
+}

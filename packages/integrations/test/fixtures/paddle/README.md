@@ -22,6 +22,7 @@ builds the same state in `FakePaddle`, so these values and the fake must agree.
 | `customer.json` | `GET /customers/{id}` |
 | `transaction-created.json` | `POST /transactions` → 201, `checkout.url` on the default payment link |
 | `notification-setting-created.json` | `POST /notification-settings` → 201 (also served for `GET /notification-settings/{id}`), with a fictional `endpoint_secret_key` |
+| `notification-settings.json` | `GET /notification-settings?per_page=200`: ShareRepo's destination and another app's inactive one, each with its `endpoint_secret_key` (never kept) |
 | `webhook-subscription-updated.json` | a `subscription.updated` delivery body (webhooks/subscriptions/subscription-updated) |
 | `error-forbidden.json` | 403 `forbidden` (errors/shared/forbidden) |
 | `error-invalid-token.json` | 401/403 `invalid_token` (errors/shared/invalid_token) |

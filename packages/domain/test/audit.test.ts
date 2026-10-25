@@ -161,6 +161,7 @@ const VALID_DETAILS = {
     destinationId: "ntfset_2",
   },
   "credentials.rewrapped": { rewrapped: 3, failed: 0, remaining: 0 },
+  "paddle.destinations_swept": { reason: "orphaned", destinationIds: ["ntfset_1", "ntfset_2"] },
 } as const satisfies { [A in AuditAction]: AuditDetails<A> };
 
 const ACTIONS = Object.keys(VALID_DETAILS) as AuditAction[];
@@ -234,6 +235,7 @@ describe("audit action catalog", () => {
     ["user.deleted", "account", "user"],
     ["paddle.webhook_secret_rotated", "workspace", "paddle_connection"],
     ["credentials.rewrapped", "account", "rewrap_run"],
+    ["paddle.destinations_swept", "workspace", "workspace"],
   ] as const)("%s is %s-scoped and targets a %s", (action, scope, targetType) => {
     expect(AUDIT_ACTIONS[action].scope).toBe(scope);
     expect(AUDIT_ACTIONS[action].targetType).toBe(targetType);
@@ -419,6 +421,14 @@ describe("audit action catalog", () => {
     ["credentials.rewrapped", "rewrapped", -1],
     ["credentials.rewrapped", "failed", -1],
     ["credentials.rewrapped", "remaining", 1.5],
+    ["operator.viewed_failures", "jobs", -1],
+    ["operator.viewed_failures", "repositories", 1.5],
+    ["operator.viewed_failures", "connections", "0"],
+    ["operator.viewed_failures", "purgesBlocked", -1],
+    ["paddle.destinations_swept", "reason", "lost"],
+    ["paddle.destinations_swept", "destinationIds", []],
+    ["paddle.destinations_swept", "destinationIds", [""]],
+    ["paddle.destinations_swept", "destinationIds", "ntfset_1"],
   ] as const)("%s rejects %s %j", (action, key, value) => {
     const details = { ...VALID_DETAILS[action], [key]: value };
     expect(AUDIT_ACTIONS[action].details.safeParse(details).success).toBe(false);

@@ -184,6 +184,7 @@ export const transactionSchema = z.object({
 
 export const notificationSettingSchema = z.object({
   id: id("ntfset"),
+  description: z.string(),
   destination: z.string().min(1),
   active: z.boolean(),
   subscribed_events: z.array(z.object({ name: z.string().min(1) })),
@@ -194,6 +195,7 @@ export function toNotificationSetting(
 ): PaddleNotificationSetting {
   return {
     id: setting.id,
+    description: setting.description,
     destination: setting.destination,
     active: setting.active,
     events: setting.subscribed_events.map((event) => event.name),

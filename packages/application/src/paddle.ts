@@ -15,15 +15,19 @@ import {
 } from "@sharerepo/domain";
 import {
   type CreatedNotificationSetting,
+  destinationDescription,
   isDestinationLimitError,
+  LEGACY_DESTINATION_DESCRIPTION,
   normalizePaddleSubscription,
   PaddleApiError,
   type PaddleApiKey,
   type PaddleApiKeyError,
   type PaddleApiRoot,
   type PaddleEnvelope,
+  type PaddleNotificationSetting,
   type PaddlePort,
   type PaddleSubscription,
+  parseDestinationDescription,
   parsePaddleApiKey,
   parsePaddleEnvelope,
   payloadDigest,
@@ -159,8 +163,11 @@ const expectedEnvironment = (deps: CommerceDeps): PaddleEnvironment =>
  * (`?v=<marker>`): Paddle refuses two destinations with the same URL, and the webhook route reads
  * the connection from the path only, so both destinations reach the same connection.
  */
+const webhookPrefix = (deps: Pick<CommerceDeps, "baseUrl">) =>
+  `${deps.baseUrl.replace(/\/+$/, "")}/webhooks/paddle/`;
+
 const webhookUrl = (deps: CommerceDeps, connectionId: string, marker?: string) =>
-  `${deps.baseUrl.replace(/\/+$/, "")}/webhooks/paddle/${connectionId}${
+  `${webhookPrefix(deps)}${connectionId}${
     marker === undefined ? "" : `?v=${encodeURIComponent(marker)}`
   }`;
 
@@ -363,21 +370,196 @@ async function deleteDestination(client: PaddlePort, destinationId: string): Pro
   }
 }
 
-/** A new destination for the connection's URL, or null when the seller has 10 already. */
+// Orphaned destinations -------------------------------------------------------------------------
+//
+// Every destination ShareRepo creates is described with its workspace and creation instant
+// (`destinationDescription`), and delivers to `/webhooks/paddle/<connectionId>`. A sweep lists the
+// seller's destinations and deletes the workspace's own ones that its stored connection does not
+// name: those a lost create response, a Worker stopped between creating and storing, or a rotation
+// racing a disconnect left behind. It never deletes another app's destination or another
+// workspace's (one seller may connect several), and spares one younger than the grace period,
+// which a connect, reconnect or rotation may still be about to store. Each sweep is audited
+// before it deletes (`paddle.destinations_swept`), so a crash part-way leaves a record and a
+// re-run finishes the deletions; deleting one already gone counts as done.
+
+/**
+ * How old an unnamed destination must be before a sweep deletes it (except when disconnecting):
+ * far longer than any request takes between creating a destination and storing it.
+ */
+export const ORPHANED_DESTINATION_GRACE_MS = 60 * 60 * 1000;
+
+/**
+ * When ShareRepo created this destination for the workspace (null: before destinations were
+ * tagged, so it is old), or undefined when ShareRepo did not create it for this workspace.
+ */
+function ownDestinationCreatedAt(
+  deps: Pick<CommerceDeps, "baseUrl">,
+  workspaceId: string,
+  connectionIds: ReadonlySet<string>,
+  setting: PaddleNotificationSetting,
+): number | null | undefined {
+  const prefix = webhookPrefix(deps);
+  if (!setting.destination.startsWith(prefix)) return undefined;
+  const tag = parseDestinationDescription(setting.description);
+  if (tag !== null) return tag.workspaceId === workspaceId ? tag.createdAt : undefined;
+  // Untagged: the Phase 5 description, delivering to one of this workspace's connections.
+  const connectionId = setting.destination.slice(prefix.length).split("?")[0] as string;
+  return setting.description === LEGACY_DESTINATION_DESCRIPTION && connectionIds.has(connectionId)
+    ? null
+    : undefined;
+}
+
+/**
+ * Audits, then deletes, destinations of the workspace (`paddle.destinations_swept`). A Paddle
+ * failure propagates: the caller retries or leaves it to the daily sweep.
+ */
+async function deleteSweptDestinations(
+  ctx: ServiceContext,
+  client: PaddlePort,
+  input: {
+    readonly workspaceId: string;
+    readonly actor: AuditEvent["actor"];
+    readonly reason: "orphaned" | "disconnected";
+    readonly destinationIds: readonly string[];
+  },
+): Promise<readonly string[]> {
+  const { workspaceId, actor, reason } = input;
+  const destinationIds = [...input.destinationIds].sort();
+  if (destinationIds.length === 0) return [];
+  await repo.appendAuditEvents(ctx.db, [
+    auditEvent(
+      "paddle.destinations_swept",
+      { workspaceId, actor, targetId: workspaceId, details: { reason, destinationIds } },
+      ctx,
+    ),
+  ]);
+  for (const id of destinationIds) await client.deleteNotificationSetting(id);
+  return destinationIds;
+}
+
+/**
+ * Deletes the workspace's ShareRepo destinations that its live connection does not name and that
+ * are older than {@link ORPHANED_DESTINATION_GRACE_MS} (`orphaned`), or every one of them
+ * (`disconnected`, while disconnecting). Returns the IDs deleted. Idempotent.
+ */
+async function sweepDestinations(
+  ctx: ServiceContext,
+  deps: Pick<CommerceDeps, "baseUrl">,
+  client: PaddlePort,
+  input: {
+    readonly workspaceId: string;
+    readonly actor: AuditEvent["actor"];
+    readonly reason: "orphaned" | "disconnected";
+  },
+): Promise<readonly string[]> {
+  const { workspaceId, reason } = input;
+  const settings = await client.listNotificationSettings();
+  // Read after listing: a destination stored meanwhile is named here, and one created meanwhile
+  // but not yet stored is younger than the grace period.
+  const connection = await repo.getPaddleConnection(ctx.db, { workspaceId });
+  const named = new Set(
+    reason === "disconnected" || connection === null
+      ? []
+      : [connection.destinationId, connection.destinationNextId],
+  );
+  const connectionIds = new Set(await repo.listPaddleConnectionIds(ctx.db, { workspaceId }));
+  const now = ctx.clock.now();
+  const orphans = settings.filter((setting) => {
+    if (named.has(setting.id)) return false;
+    const createdAt = ownDestinationCreatedAt(deps, workspaceId, connectionIds, setting);
+    if (createdAt === undefined) return false;
+    return (
+      reason === "disconnected" ||
+      createdAt === null ||
+      now - createdAt >= ORPHANED_DESTINATION_GRACE_MS
+    );
+  });
+  return deleteSweptDestinations(ctx, client, {
+    ...input,
+    destinationIds: orphans.map((setting) => setting.id),
+  });
+}
+
+/** {@link sweepDestinations}, best effort: a failure leaves the rest to the daily sweep. */
+async function sweepDestinationsQuietly(
+  ctx: ServiceContext,
+  deps: Pick<CommerceDeps, "baseUrl">,
+  client: PaddlePort,
+  input: { readonly workspaceId: string; readonly actor: AuditEvent["actor"] },
+): Promise<readonly string[]> {
+  try {
+    return await sweepDestinations(ctx, deps, client, { ...input, reason: "orphaned" });
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * A new destination for the connection's URL, tagged for the workspace, or null when the seller
+ * has 10 active already and none of them is an orphan of this workspace that can be swept to
+ * make room. A response lost after Paddle created it (`transient`) deletes what was created at
+ * this attempt's URL, which is unique (a new connection ID, or a fresh `?v=` marker), best effort,
+ * then fails as it would have.
+ */
 async function createDestination(
+  ctx: ServiceContext,
   deps: CommerceDeps,
   client: PaddlePort,
-  connectionId: string,
-  marker?: string,
+  input: {
+    readonly workspaceId: string;
+    readonly connectionId: string;
+    readonly actor: AuditEvent["actor"];
+    readonly marker?: string;
+  },
 ): Promise<CreatedNotificationSetting | null> {
-  try {
-    return await client.createNotificationSetting({
-      destination: webhookUrl(deps, connectionId, marker),
+  const { workspaceId, connectionId, actor, marker } = input;
+  const destination = webhookUrl(deps, connectionId, marker);
+  const create = () =>
+    client.createNotificationSetting({
+      description: destinationDescription({ workspaceId, createdAt: ctx.clock.now() }),
+      destination,
       events: PADDLE_WEBHOOK_EVENTS,
     });
+  try {
+    try {
+      return await create();
+    } catch (error) {
+      if (!isDestinationLimitError(error)) throw error;
+      const swept = await sweepDestinationsQuietly(ctx, deps, client, { workspaceId, actor });
+      if (swept.length === 0) return null;
+      return await create();
+    }
   } catch (error) {
     if (isDestinationLimitError(error)) return null;
+    if (error instanceof PaddleApiError && error.kind === "transient") {
+      await deleteLostDestination(ctx, client, { workspaceId, actor, destination });
+    }
     throw error;
+  }
+}
+
+/** Deletes what Paddle holds at a URL whose create response was lost; best effort. */
+async function deleteLostDestination(
+  ctx: ServiceContext,
+  client: PaddlePort,
+  input: {
+    readonly workspaceId: string;
+    readonly actor: AuditEvent["actor"];
+    readonly destination: string;
+  },
+): Promise<void> {
+  try {
+    const lost = (await client.listNotificationSettings()).filter(
+      (setting) => setting.destination === input.destination,
+    );
+    await deleteSweptDestinations(ctx, client, {
+      workspaceId: input.workspaceId,
+      actor: input.actor,
+      reason: "orphaned",
+      destinationIds: lost.map((setting) => setting.id),
+    });
+  } catch {
+    // Paddle is still unreachable: the daily sweep deletes it once it is older than the grace.
   }
 }
 
@@ -445,7 +627,12 @@ export async function connectPaddle(
   const { key, client, root } = checked;
 
   const connectionId = ctx.ids.next();
-  const destination = await createDestination(deps, client, connectionId);
+  const by = asAuditActor(actor);
+  const destination = await createDestination(ctx, deps, client, {
+    workspaceId,
+    connectionId,
+    actor: by,
+  });
   if (destination === null) return refused({ reason: "destination_limit" });
   const now = ctx.clock.now();
   const ids = { workspaceId, connectionId };
@@ -497,6 +684,8 @@ export async function connectPaddle(
     await deleteDestination(client, destination.id);
     return refused({ reason: "already_connected" });
   }
+  // Destinations earlier attempts left behind (a lost response, a crash before storing).
+  await sweepDestinationsQuietly(ctx, deps, client, { workspaceId, actor: by });
   let catalog: CatalogSyncSummary | null;
   try {
     catalog = await importCatalog(ctx, deps, row, asAuditActor(actor));
@@ -551,7 +740,13 @@ export async function reconnectPaddle(
     await client.getNotificationSetting(previousDestination);
   } catch (error) {
     if (!(error instanceof PaddleApiError && error.kind === "not_found")) throw error;
-    destination = await createDestination(deps, client, connection.id);
+    // A fresh marker: an orphan of an earlier attempt may still hold the plain URL.
+    destination = await createDestination(ctx, deps, client, {
+      workspaceId,
+      connectionId: connection.id,
+      actor: asAuditActor(actor),
+      marker: ctx.ids.next(),
+    });
     if (destination === null) return refused({ reason: "destination_limit" });
   }
   const result = await repo.replacePaddleCredentials(
@@ -594,6 +789,7 @@ export async function reconnectPaddle(
     if (destination !== null) await deleteDestination(client, destination.id);
     return refused({ reason: "not_connected" });
   }
+  await sweepDestinationsQuietly(ctx, deps, client, { workspaceId, actor: asAuditActor(actor) });
   return { ok: true, destinationRecreated: destination !== null };
 }
 
@@ -640,11 +836,44 @@ export async function disconnectWorkspacePaddle(
   workspaceId: string,
   deps: CommerceDeps | null,
 ): Promise<DisconnectPaddleResult> {
-  const connection = await repo.getPaddleConnection(ctx.db, { workspaceId });
-  if (connection === null) return { ok: false, reason: "not_connected" };
+  for (let attempt = 1; ; attempt += 1) {
+    const connection = await repo.getPaddleConnection(ctx.db, { workspaceId });
+    if (connection === null) return { ok: false, reason: "not_connected" };
+    const result = await disconnectOnce(ctx, actor, connection, deps);
+    if (result !== null) return result;
+    // A rotation stored a second destination (or a reconnect replaced one) meanwhile: read the
+    // connection again, so that destination is deleted too. Twice is a persistent conflict.
+    if (attempt === DISCONNECT_ATTEMPTS) {
+      throw new ConflictError("the Paddle connection changed concurrently; retry");
+    }
+  }
+}
+
+/** How often a disconnect re-reads a connection that changed under it before giving up. */
+const DISCONNECT_ATTEMPTS = 2;
+
+/**
+ * One disconnect of the connection as read: every ShareRepo destination of the workspace is
+ * deleted (best effort; the stored ones by ID if Paddle cannot be listed), then the guarded write.
+ * Null when the connection's destinations changed after it was read.
+ */
+async function disconnectOnce(
+  ctx: ServiceContext,
+  actor: UserActor,
+  connection: repo.PaddleConnection,
+  deps: CommerceDeps | null,
+): Promise<DisconnectPaddleResult | null> {
+  const { workspaceId } = connection;
   const destinationId = connection.destinationId as string;
   const nextId = connection.destinationNextId;
   const client = deps === null ? null : await clientFor(ctx, deps, connection).catch(() => null);
+  if (client !== null) {
+    await sweepDestinations(ctx, deps as CommerceDeps, client, {
+      workspaceId,
+      actor: asAuditActor(actor),
+      reason: "disconnected",
+    }).catch(() => []);
+  }
   const deleted = async (id: string) => client !== null && deleteDestination(client, id);
   const currentDeleted = await deleted(destinationId);
   const nextDeleted = nextId === null || (await deleted(nextId));
@@ -658,6 +887,7 @@ export async function disconnectWorkspacePaddle(
     {
       workspaceId,
       connectionId: connection.id,
+      expected: { destinationId, destinationNextId: nextId },
       destinationId: currentDeleted ? null : destinationId,
       destinationNextId: nextDeleted ? null : nextId,
       now: ctx.clock.now(),
@@ -675,7 +905,7 @@ export async function disconnectWorkspacePaddle(
       ),
     ],
   );
-  if (!result.ok) return { ok: false, reason: "not_connected" };
+  if (!result.ok) return null;
   return { ok: true, destinationDeleted, destinationId, orphanedDestinationIds };
 }
 
@@ -768,7 +998,12 @@ export async function rotatePaddleWebhookSecret(
   }
   if (next === null) {
     const created = await paddle((client) =>
-      createDestination(deps, client, connectionId, ctx.ids.next()),
+      createDestination(ctx, deps, client, {
+        workspaceId,
+        connectionId,
+        actor: by,
+        marker: ctx.ids.next(),
+      }),
     );
     if (created === null) return { ok: false, reason: "destination_limit" };
     const discard = () => paddle((client) => deleteDestination(client, created.id));
@@ -818,6 +1053,8 @@ export async function rotatePaddleWebhookSecret(
     [rotated("completed", next.id)],
   );
   if (!completed.ok) throw new ConflictError("the Paddle connection changed concurrently; retry");
+  // A second destination an interrupted earlier attempt created but never stored.
+  await paddle((client) => sweepDestinationsQuietly(ctx, deps, client, { workspaceId, actor: by }));
   return { ok: true, destinationId: next.id };
 }
 
@@ -1240,20 +1477,28 @@ export function paddleEntitlementSource(
 // Repair ---------------------------------------------------------------------------------------
 
 /**
- * The daily repair for one connection (Phase 5 plan): lists the seller's subscriptions and queues
- * a deduplicated refresh for each one ShareRepo does not store, or stores with an older
+ * The daily repair for one connection (Phase 5 plan): first deletes the workspace's orphaned
+ * destinations (`sweepDestinations`), then lists the seller's subscriptions and queues a
+ * deduplicated refresh for each one ShareRepo does not store, or stores with an older
  * `updated_at`, so events lost after Paddle's retries are recovered. Null when the connection is
- * not active.
+ * not active. A Paddle failure (a rate limit, an outage) propagates, so the job is retried.
  */
 export async function sweepPaddleSubscriptions(
   context: ServiceContext,
   ref: PaddleConnectionRef,
   deps: CommerceDeps,
-): Promise<{ readonly queued: number; readonly truncated: boolean } | null> {
+): Promise<{
+  readonly queued: number;
+  readonly truncated: boolean;
+  readonly destinationsDeleted: number;
+} | null> {
   const ctx = atOneInstant(context);
   const connection = await namedConnection(ctx, ref);
   if (connection?.status !== "active") return null;
   const { workspaceId } = ref;
+  const swept = await withPaddle(ctx, deps, connection, (client) =>
+    sweepDestinations(ctx, deps, client, { workspaceId, actor: SYSTEM, reason: "orphaned" }),
+  );
   const list = await withPaddle(ctx, deps, connection, (client) => client.listSubscriptions());
   const stored = await repo.listSubscriptionSourceVersions(ctx.db, {
     workspaceId,
@@ -1270,7 +1515,7 @@ export async function sweepPaddleSubscriptions(
     });
     if (await repo.enqueueOutboxOnce(ctx.db, row)) queued += 1;
   }
-  return { queued, truncated: list.truncated };
+  return { queued, truncated: list.truncated, destinationsDeleted: swept.length };
 }
 
 /**

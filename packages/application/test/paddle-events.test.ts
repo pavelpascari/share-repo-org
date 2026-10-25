@@ -449,11 +449,13 @@ describe("sweepPaddleSubscriptions and queuePaddleSweeps", () => {
     expect(await sweepPaddleSubscriptions(serviceContext(), ref, s.deps)).toEqual({
       queued: 1,
       truncated: false,
+      destinationsDeleted: 0,
     });
     expect(await pendingOf("refresh_subscription", refreshKey(s, unknown.id))).toBe(1);
     expect(await sweepPaddleSubscriptions(serviceContext(), ref, s.deps)).toEqual({
       queued: 0,
       truncated: false,
+      destinationsDeleted: 0,
     });
     await drainPaddle(s);
     clock.advance(1_000);
@@ -461,6 +463,7 @@ describe("sweepPaddleSubscriptions and queuePaddleSweeps", () => {
     expect(await sweepPaddleSubscriptions(serviceContext(), ref, s.deps)).toEqual({
       queued: 1,
       truncated: false,
+      destinationsDeleted: 0,
     });
     expect(await pendingOf("refresh_subscription", refreshKey(s, known.id))).toBe(1);
   });
