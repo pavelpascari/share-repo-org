@@ -1704,6 +1704,22 @@ describe("claim/owner-unlink-removes-access", () => {
     ).resolves.toEqual({ ok: true, outcome: "already_unlinked" });
   });
 
+  it("says the link's path is unknown when the audit trail does not name it", async () => {
+    const s = await paddleShop();
+    const user = await signedUp();
+    const { customer } = await purchase(s, user);
+    const linked = (await customerRow(s, customer.id)) as { subjectId: string };
+    const { customer: other } = await unclaimed(s);
+    // Linked outside every service (as before the trail existed): no event says how.
+    await env.DB.prepare(
+      "UPDATE customers SET subject_id = ? WHERE workspace_id = ? AND external_customer_id = ?",
+    )
+      .bind(linked.subjectId, s.workspaceId, other.id)
+      .run();
+    const listed = await listCustomers(serviceContext(), s, s.slug);
+    expect(listed.find((c) => c.externalCustomerId === other.id)?.linked?.via).toBeNull();
+  });
+
   it("requires a reason and the owner role, within the workspace", async () => {
     const s = await paddleShop();
     const other = await paddleShop();

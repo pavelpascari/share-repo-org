@@ -7,6 +7,7 @@ import {
   cancelWorkspaceDeletion,
   getCustomer,
   getManualAccess,
+  getSubject,
   listCustomerLinkPaths,
   listDueManualAccesses,
   listLiveEntitlementsForManualAccess,
@@ -751,6 +752,17 @@ describe("manual access reads", () => {
         liveEntitlements: 1,
       },
     ]);
+  });
+
+  it("isolation/cross-workspace-read-denied: reads a subject by ID in its workspace only", async () => {
+    const ws = await grantableWorkspace();
+    const other = await grantableWorkspace();
+    await expect(
+      getSubject(db, { workspaceId: ws.workspaceId, subjectId: ws.subject.id }),
+    ).resolves.toEqual(ws.subject);
+    await expect(
+      getSubject(db, { workspaceId: ws.workspaceId, subjectId: other.subject.id }),
+    ).resolves.toBeNull();
   });
 
   it("isolation/cross-workspace-read-denied: finds no access of another workspace", async () => {

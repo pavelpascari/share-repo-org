@@ -123,7 +123,7 @@ interface Decision {
   /** The actor of the entitlement events: the owner for their own change, else the system. */
   readonly actor: AuditEvent["actor"];
   /** Events that explain the change itself, before the entitlement events. */
-  readonly events: (plan: EntitlementPlan) => AuditEvent[];
+  readonly events: (written: repo.ManualAccess) => AuditEvent[];
   /** True when nothing needs writing unless the plan or timer changes. */
   readonly onlyIfChanged: boolean;
   /**
@@ -210,7 +210,7 @@ async function decide(
   );
   const previous = new Map(live.map((row) => [row.id, row]));
   const audit: AuditEvent[] = [
-    ...decision.events(plan),
+    ...decision.events(access),
     ...created.map((row) =>
       event("entitlement.created")(row.id, {
         subjectId: row.subjectId,
@@ -348,7 +348,8 @@ export async function grantManualAccess(
     createdAt: now,
     updatedAt: now,
   };
-  const result = await decide(ctx, {
+  // A new access is never `unchanged`: only an existing one can be.
+  const result = (await decide(ctx, {
     workspaceId,
     stored: null,
     next: access,
@@ -374,8 +375,7 @@ export async function grantManualAccess(
         ctx,
       ),
     ],
-  });
-  if (result === "unchanged") throw new Error("a new manual access always writes");
+  })) as repo.ManualAccessWriteResult;
   if (!result.ok) {
     if (result.reason === "already_open") return fail("already_granted");
     if (result.reason === "limit_reached") return fail("limit_reached");
@@ -560,7 +560,7 @@ export async function evaluateManualAccess(
       next: stored,
       actor: SYSTEM,
       onlyIfChanged: true,
-      events: (plan) => [
+      events: (written) => [
         auditEvent(
           "manual_access.evaluated",
           {
@@ -568,7 +568,7 @@ export async function evaluateManualAccess(
             actor: SYSTEM,
             targetId: stored.id,
             details: {
-              nextEvaluationAt: stored.revokedAt === null ? plan.nextEvaluationAt : null,
+              nextEvaluationAt: written.nextEvaluationAt,
             },
           },
           ctx,
