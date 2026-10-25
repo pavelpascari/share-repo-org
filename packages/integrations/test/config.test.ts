@@ -47,6 +47,17 @@ describe("parseGitHubAppConfig", () => {
     expect(config).not.toHaveProperty("webhookSecret");
   });
 
+  it("accepts the previous webhook secret while it is rotated", () => {
+    expect(
+      parseGitHubAppConfig(env({ GITHUB_WEBHOOK_SECRET_PREVIOUS: "whsec-old" }), all),
+    ).toMatchObject({ webhookSecret: "whsec", webhookSecretPrevious: "whsec-old" });
+  });
+
+  it.each([undefined, ""])("has no previous webhook secret when it is %j", (previous) => {
+    const config = parseGitHubAppConfig(env({ GITHUB_WEBHOOK_SECRET_PREVIOUS: previous }), all);
+    expect(config).not.toHaveProperty("webhookSecretPrevious");
+  });
+
   it.each([undefined, ""])("disables GitHub in development when the App ID is %j", (id) => {
     expect(parseGitHubAppConfig({ ENVIRONMENT: "development", GITHUB_APP_ID: id }, all)).toBeNull();
   });

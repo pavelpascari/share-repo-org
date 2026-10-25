@@ -8,3 +8,7 @@ GITHUB_CLIENT_SECRET=replace-me
 # Set the same values in apps/jobs/.dev.vars. Generate the key with: openssl rand -base64 32
 # CREDENTIAL_KEYS={"current":"k1","keys":{"k1":"replace-with-base64-of-32-random-bytes"}}
 # CLAIM_SIGNING_KEY=replace-with-at-least-32-random-characters
+# or, while rotating it, a keyring of base64 keys of at least 32 bytes, signing with "current":
+# CLAIM_SIGNING_KEY={"current":"c2","keys":{"c1":"<base64>","c2":"<base64>"}}
+# Optional: only while rotating the GitHub webhook secret, the old value (still accepted).
+# GITHUB_WEBHOOK_SECRET_PREVIOUS=

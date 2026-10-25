@@ -4,7 +4,9 @@
   "main": "./workers/app.ts",
   "compatibility_date": "2026-10-01",
   "compatibility_flags": ["nodejs_compat"],
-  "observability": { "enabled": true },
+  // Workers Issues groups errors and emails the operator about new ones (decision 0014). Repeated
+  // in each environment below.
+  "observability": { "enabled": true, "issues": { "enabled": true } },
   "upload_source_maps": true,
   // Top level is local development and the deployed dev environment.
   // Local overrides (your own GitHub OAuth App) go in .dev.vars; see .dev.vars.example.
@@ -15,8 +17,13 @@
     // The GitHub App (Phase 2; docs/runbooks/github-app-setup.md). Empty disables connecting
     // GitHub in local development; production requires it.
     "GITHUB_APP_ID": "",
-    "GITHUB_APP_SLUG": ""
+    "GITHUB_APP_SLUG": "",
+    // Operators (decision 0014): comma-separated GitHub account IDs, never logins. Empty means
+    // no operators, and /ops answers 404 to everyone.
+    "OPERATOR_GITHUB_IDS": ""
   },
+  // GITHUB_WEBHOOK_SECRET_PREVIOUS is an optional secret, set only while the webhook secret is
+  // rotated (docs/runbooks/secret-rotation.md), so it is not listed as required.
   // Set with `wrangler secret put`; locally in .dev.vars (decision 0006).
   "secrets": {
     "required": [
@@ -44,12 +51,14 @@
   "env": {
     "production": {
       "name": "sharerepo-web-production",
+      "observability": { "enabled": true, "issues": { "enabled": true } },
       "vars": {
         "ENVIRONMENT": "production",
         "BETTER_AUTH_URL": "https://REPLACE-WITH-PRODUCTION-HOST.invalid",
         "GITHUB_CLIENT_ID": "REPLACE_WITH_PRODUCTION_OAUTH_APP_CLIENT_ID",
         "GITHUB_APP_ID": "REPLACE_WITH_PRODUCTION_APP_ID",
-        "GITHUB_APP_SLUG": "REPLACE_WITH_PRODUCTION_APP_SLUG"
+        "GITHUB_APP_SLUG": "REPLACE_WITH_PRODUCTION_APP_SLUG",
+        "OPERATOR_GITHUB_IDS": ""
       },
       "secrets": {
         "required": [
@@ -77,6 +86,7 @@
     // ENVIRONMENT is "e2e" (decision 0006). The fake Paddle (port 5191) arrives in Phase 5 T8.
     "e2e": {
       "name": "sharerepo-web-e2e",
+      "observability": { "enabled": true, "issues": { "enabled": true } },
       "vars": {
         "ENVIRONMENT": "e2e",
         "BETTER_AUTH_URL": "http://localhost:5180",
@@ -86,7 +96,8 @@
         "GITHUB_APP_ID": "1000",
         "GITHUB_APP_SLUG": "sharerepo-e2e",
         "PADDLE_API_BASE_URL": "http://localhost:5191/api",
-        "MAIL_CAPTURE_URL": "http://localhost:5191/mail"
+        "MAIL_CAPTURE_URL": "http://localhost:5191/mail",
+        "OPERATOR_GITHUB_IDS": ""
       },
       "secrets": {
         "required": [

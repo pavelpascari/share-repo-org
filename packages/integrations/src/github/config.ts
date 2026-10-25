@@ -10,6 +10,11 @@ export interface GitHubAppConfig {
   /** PKCS#8 PEM with real newlines. */
   readonly privateKeyPem: string;
   readonly webhookSecret?: string;
+  /**
+   * `GITHUB_WEBHOOK_SECRET_PREVIOUS`, set only while the webhook secret is rotated: signatures
+   * made with it are still accepted (secret rotation, Phase 6).
+   */
+  readonly webhookSecretPrevious?: string;
   readonly apiBaseUrl: string;
   /** github.com's web base, for the App install URL. */
   readonly webBaseUrl: string;
@@ -45,6 +50,8 @@ function requiredSchema(options: GitHubAppConfigOptions) {
     GITHUB_APP_PRIVATE_KEY: present,
     GITHUB_APP_SLUG: options.requireSlug ? present : present.optional(),
     GITHUB_WEBHOOK_SECRET: options.requireWebhookSecret ? present : present.optional(),
+    // Optional everywhere; an empty value counts as unset.
+    GITHUB_WEBHOOK_SECRET_PREVIOUS: z.string().optional(),
   });
 }
 
@@ -70,6 +77,9 @@ export function parseGitHubAppConfig(
     ...(required.GITHUB_WEBHOOK_SECRET === undefined
       ? {}
       : { webhookSecret: required.GITHUB_WEBHOOK_SECRET }),
+    ...(required.GITHUB_WEBHOOK_SECRET_PREVIOUS
+      ? { webhookSecretPrevious: required.GITHUB_WEBHOOK_SECRET_PREVIOUS }
+      : {}),
     apiBaseUrl: trimSlash(base.GITHUB_API_BASE_URL ?? GITHUB_API_BASE_URL),
     webBaseUrl: trimSlash(base.GITHUB_OAUTH_BASE_URL ?? GITHUB_WEB_BASE_URL),
   };

@@ -40,7 +40,12 @@ export {
 } from "./errors.ts";
 export type { LogContext, LogFields, Logger, LoggerOptions, LogLevel, LogSink } from "./logger.ts";
 export { createLogger } from "./logger.ts";
+export { parseOperatorGitHubIds } from "./operators.ts";
 export type { RedactOptions } from "./redact.ts";
 export { isSensitiveKey, REDACTED, redact, redactString } from "./redact.ts";
-export type { CommerceSecrets, CredentialKeyring } from "./secrets.ts";
-export { CLAIM_SIGNING_KEY_MIN_BYTES, parseCommerceSecrets } from "./secrets.ts";
+export type { ClaimSigningKeyring, CommerceSecrets, CredentialKeyring } from "./secrets.ts";
+export {
+  CLAIM_SIGNING_KEY_MIN_BYTES,
+  parseCommerceSecrets,
+  SINGLE_CLAIM_SIGNING_KEY_ID,
+} from "./secrets.ts";
