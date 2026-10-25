@@ -98,7 +98,9 @@ describe("retention/prune-keeps-referenced-rows", () => {
     const recentEvent = await externalEvent(NOW - DAY);
     const readEvent = await externalEvent(OLD, "failed");
     const reading = outboxRow("process_external_event", readEvent);
-    await db.insert(schema.outbox).values({ ...reading, attempts: 3, failedAt: OLD, lastErrorCode: "x" });
+    await db
+      .insert(schema.outbox)
+      .values({ ...reading, attempts: 3, failedAt: OLD, lastErrorCode: "x" });
 
     // Outbox: sent over 7 days ago, or dismissed over 90 days ago, goes.
     const sentOld = outboxRow("resync_connection", "c1");
@@ -330,9 +332,11 @@ describe("workspace deletion storage", () => {
   it("purges in bounded batches only while purging, and counts what each deleted", async () => {
     const ws = await subscribedWorkspace();
     const id = ws.workspaceId;
-    await db.insert(schema.outbox).values(
-      [1, 2, 3].map((i) => ({ ...outboxRow("resync_connection", `p-${i}`, id), attempts: 0 })),
-    );
+    await db
+      .insert(schema.outbox)
+      .values(
+        [1, 2, 3].map((i) => ({ ...outboxRow("resync_connection", `p-${i}`, id), attempts: 0 })),
+      );
     // Not being deleted: nothing is deleted, even when asked to start.
     expect(
       await purgeBatch(db, { workspaceId: id, table: "outbox", limit: 2, now: NOW, start: true }),
@@ -348,7 +352,11 @@ describe("workspace deletion storage", () => {
     expect(
       await purgeBatch(db, { workspaceId: id, table: "outbox", limit: 2, now: NOW, start: true }),
     ).toEqual({ deleted: 0, purging: false });
-    await run("UPDATE entitlements SET state = 'revoked', ended_at = ? WHERE workspace_id = ?", NOW, id);
+    await run(
+      "UPDATE entitlements SET state = 'revoked', ended_at = ? WHERE workspace_id = ?",
+      NOW,
+      id,
+    );
     // So does a managed grant.
     const grant = await seedGrant(
       grantRow(
@@ -397,7 +405,10 @@ describe("workspace deletion storage", () => {
     expect(isForeignKeyViolation(error)).toBe(true);
 
     for (const table of PURGE_ORDER) {
-      while ((await purgeBatch(db, { workspaceId: id, table, limit: 500, now: NOW, start: false })).deleted > 0) {
+      while (
+        (await purgeBatch(db, { workspaceId: id, table, limit: 500, now: NOW, start: false }))
+          .deleted > 0
+      ) {
         // Until the table is empty.
       }
     }
@@ -435,7 +446,9 @@ describe("workspace deletion storage", () => {
   it("classifies only foreign key failures as such", () => {
     expect(isForeignKeyViolation(new Error("FOREIGN KEY constraint failed"))).toBe(true);
     expect(
-      isForeignKeyViolation(new Error("wrapped", { cause: new Error("FOREIGN KEY constraint failed") })),
+      isForeignKeyViolation(
+        new Error("wrapped", { cause: new Error("FOREIGN KEY constraint failed") }),
+      ),
     ).toBe(true);
     expect(isForeignKeyViolation(new Error("UNIQUE constraint failed: a.b"))).toBe(false);
     expect(isForeignKeyViolation("FOREIGN KEY constraint failed")).toBe(false);

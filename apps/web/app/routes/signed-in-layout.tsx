@@ -17,6 +17,9 @@ export default function SignedInLayout({ loaderData }: Route.ComponentProps) {
           <Link to="/me/access" className="text-sm underline">
             My access
           </Link>
+          <Link to="/me" className="text-sm underline">
+            Account
+          </Link>
           <span className="text-sm text-gray-600">{loaderData.user.name}</span>
           <button type="submit" className="text-sm underline">
             Sign out
