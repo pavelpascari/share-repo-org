@@ -72,8 +72,10 @@ async function expectExpiryPending(
   input: { slug: string; repository: string; login: string; buyerId: string; effectiveAt: number },
 ) {
   const { slug, repository, login, buyerId, effectiveAt } = input;
+  // Wait out the end date first: under a loaded suite, a page load takes seconds, and polling
+  // from before the boundary left too little of the poll's own timeout after it.
+  await page.waitForTimeout(Math.max(0, effectiveAt - Date.now()) + 1_000);
   await expectAccess(page, slug, login, ["Ending: confirming with Paddle"]);
-  expect(Date.now()).toBeGreaterThan(effectiveAt);
   const nextCheck = `next check ${minuteUtc(effectiveAt + CONFIRMATION_WINDOW_MS)}`;
   await expect
     .poll(
