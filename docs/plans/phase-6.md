@@ -265,6 +265,43 @@ From `implementation-plan.md`, with how each is met:
 | Backup/restore and migration procedures are tested for D1 | `db:drill`, the upgrade test, and the runbooks (`migration/*`). |
 | Security review finds no secrets in logs, audit details, or stored raw payloads | Scans and review (`security/no-secrets-in-stored-rows-or-logs`). |
 
+## Implementation notes
+
+Where the build differs from, or adds to, the design above.
+
+### T1
+
+- **Migration 0009** (`0009_operational_hardening.sql`) is as planned, with these differences:
+  - **Rebuilds.** Changing the `workspaces` status CHECK and adding CHECKs to `outbox` and `paddle_connections` rebuilds those three tables. `workspaces` and `paddle_connections` are referenced by other tables, and D1 runs a migration in a transaction where drizzle-kit's `PRAGMA foreign_keys=OFF` does nothing, so the DROP failed on a populated database. The migration uses D1's `PRAGMA defer_foreign_keys` instead. drizzle-kit also selected the new columns from the old tables; the copies select `NULL` for them. `hardening-migration.test.ts` upgrades a populated 0008 database: rows, references (`PRAGMA foreign_key_check`), indexes and triggers all survive. Earlier rebuild tests now expect the outbox's new columns.
+  - **Names.** The GitHub table is `connections`, so the column is `connections.rate_limited_until`. The Paddle columns are `destination_next_id` and `webhook_secret_next_envelope`, after the existing `destination_id` and `webhook_secret_envelope`, rather than `notification_setting_next_id` and `webhook_secret_next`.
+  - **Paddle CHECKs.** The next secret must be a JSON object and needs its destination (`paddle_connections_next_secret_has_destination`). Disconnecting erases it too (`paddle_connections_disconnected_erased`).
+  - **Deletion columns.** `delete_after` and `deletion_requested_by` are set exactly while the workspace is `deleting` or `purging` (two CHECKs). `deletion_requested_by` is a user ID without a foreign key, like an audit actor: the requester may delete their account during the 30 days.
+  - **Outbox columns.** `outbox.workspace_id` is a plain foreign key to `workspaces(id)`, not a composite one: a row's subject differs by kind, so no single table can be referenced. The outbox is exempt from the tenant-key conformance check, like `audit_events`. `dismissed_by` has no foreign key, for the same reason as the requester. A dismissal needs `failed_at`, `dismissed_by` and a non-empty `dismiss_reason` (CHECKs).
+  - **Triggers beyond the plan** ([decision 0015 amendment](../decisions/0015-data-lifecycle.md#amendment--the-other-append-only-tables-and-the-way-into-purging-phase-6-t1)):
+    - `offer_versions_no_delete` gets the same `purging` exception as the audit trigger.
+    - `provider_mutations_no_delete` also lets settled rows be pruned.
+    - `workspaces_purging_one_way` and `workspaces_created_live` make `purging` reachable only from `deleting`, and final.
+  - **Retention indexes.** `outbox(sent_at)` is not added: `outbox_pending_idx (sent_at, available_at)` already leads with it. `provider_mutations` has `finished_at`, not `settled_at`, so the index is `provider_mutations_finished_idx`. `claim_requests_created_idx` is added for pruning claim requests. The Better Auth `auth_sessions` and `auth_verifications` tables still have no `expires_at` index; T4 adds them if pruning needs them.
+- **Outbox rows carry their workspace.** `NewOutboxRow` requires `workspaceId` (string or null), so every insert path states it, not only `dedupedOutboxInsert`. Every caller passes its key's workspace. Received GitHub webhooks pass null, because their workspace is known only once they are processed. Received Paddle webhooks pass their connection's workspace.
+- **Vocabularies** (`packages/domain`):
+  - `WORKSPACE_STATUSES` gains `deleting` and `purging`. Existing code tests `status !== "active"`, so both statuses already refuse writes, checkout and claims like `suspended`. No switch over workspace status exists. T4 makes the remaining behaviour explicit (pages, the cancel path).
+  - `OutboxKind` gains `PruneData`, `PurgeWorkspace` and `RewrapCredentials`.
+  - `ACCESS_DECISION_REASONS` gains `workspace_deleted` and `account_deleted`. Both are revocations (`revoked`), with Access-page texts.
+  - `ALERT_NAMES` and `AlertName` are in `alert.ts`.
+  - The audit actions have minimal, strict details (IDs, counts and codes). The owning tasks refine them. `job.failed`, `job.retried` and `job.dismissed` use a new catalog scope, `either`: the caller passes the workspace ID, or an explicit null for system-wide work, which makes the event account-scoped. `job.dismissed` requires a reason. `data.pruned`, `workspace.purged`, `user.deleted` and `credentials.rewrapped` are account-scoped, with per-table counts keyed by table name.
+- **Jobs.** The three new kinds fail for good with `not_implemented` (`JobRejection.NotImplemented`) until T4 and T5 add them. The jobs Worker consumes `sharerepo-events-dlq-<env>`. For now it acknowledges each dead-lettered message and logs its message ID only (`DEAD_LETTER_QUEUE_PREFIX`). T3 replaces this.
+- **Configuration:**
+  - `OPERATOR_GITHUB_IDS` is a var on the web Worker only, empty in every environment. `parseOperatorGitHubIds` (`packages/platform`) fails closed on anything but comma-separated numeric IDs. `WebEnv.operatorGitHubIds` exposes the result. Production sets it by editing `apps/web/wrangler.jsonc`: the IDs are not secret. The jobs Worker has no use for it.
+  - Workers Issues is on in every environment of both Workers.
+  - `GITHUB_WEBHOOK_SECRET_PREVIOUS` is an optional secret. It is parsed into `GitHubAppConfig.webhookSecretPrevious` and is not used yet (T5).
+  - `CLAIM_SIGNING_KEY` accepts the Phase 5 plain-text key or a JSON keyring `{"current","keys"}` of base64 keys of at least 32 bytes. `CommerceSecrets.claimSigningKeys` holds the keyring. `claimSigningKey` is still the current key, so signing is unchanged. A plain-text key becomes key ID `single`.
+- **Threat model.** [operations-threat-model.md](../security/operations-threat-model.md) has threats O1–O19. Three new scenarios come from it: `deletion/purging-is-one-way` (done in T1), and `deletion/purge-touches-only-its-workspace` and `deletion/cross-site-request-refused` (T4).
+- **For T2–T5:**
+  - **T2:** use `entitlements_state_valid_until_idx` and `outbox_pending_subject_idx` for the repair queries. Store the lag alert's last time under a `system_state` key. `system_state` is listed as unaudited bookkeeping.
+  - **T3:** `job.failed` takes the outbox row's `workspace_id`. Dismissal must set all three dismissal columns. Retrying a dismissed row must clear them (CHECK). Owner queries filter by `outbox.workspace_id`. Rows queued before 0009 have a null workspace and show only on `/ops`.
+  - **T4:** set `purging` only from `deleting`, in the purge's first batch. Delete the outbox rows of the workspace before the `workspaces` row (foreign key). Started provider mutations can only be deleted while purging. The purged tombstone and `data.pruned` are account-scoped.
+  - **T5:** `claim_requests.email_hash` and the claim rate-limit buckets are HMACs under the claim signing key. Rotating the key changes them, so lookups by email hash must try every key, or the rotation must wait out the claim windows. The e2e environment still uses the plain-text key format.
+
 ## Risks and open points
 
 - **Monitors is a beta.** Alerting has a manual fallback, a daily `/ops` review, until it is stable.

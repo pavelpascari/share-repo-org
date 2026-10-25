@@ -74,7 +74,7 @@ Each scenario has a stable name used as the test title so coverage of the matrix
 | `webhook/out-of-order-does-not-regress` | Matrix: out-of-order events; AGENTS: out-of-order webhooks | Service, property | 3, 5 |
 | `webhook/invalid-signature-rejected-before-persist` | Integrations: signature verification | Contract | 2, 5 |
 | `queue/redelivery-is-idempotent` | Matrix: repeated queue delivery; AGENTS: repeated queue delivery | Service, entry point | 4 |
-| `workflow/replay-is-idempotent` | Matrix: workflow replay; AGENTS: workflow retries | Entry point | 6 |
+| `timing/sweep-replay-is-idempotent` | Matrix: workflow replay; AGENTS: workflow retries; renamed from `workflow/replay-is-idempotent` by [decision 0013](decisions/0013-database-timers-and-expiry-confirmation.md) | Entry point | 6 |
 | `provider/mutation-succeeds-response-lost` | Matrix: provider success with lost response | Service | 4 |
 | `crash/between-event-commit-and-enqueue` | Matrix: partial transaction and crash recovery | Service | 3–4 |
 | `crash/between-mutation-and-observation` | Same | Service | 4 |
@@ -95,6 +95,28 @@ Each scenario has a stable name used as the test title so coverage of the matrix
 | `timing/past-due-within-grace-keeps-access` | AGENTS: grace periods | Domain, service | 3, 5 |
 | `timing/grace-expiry-revokes` | Same | Domain, service | 3, 6 |
 | `timing/stale-workflow-cannot-revoke-renewed` | Implementation plan, Phase 6 | Entry point | 6 |
+| `timing/expiry-confirmed-before-revoke` | Decision 0013 | Domain, service | 6 |
+| `timing/expiry-revokes-after-confirmation-window` | Decision 0013 | Domain, entry point | 6 |
+| `timing/sweep-lag-alerts` | Decision 0014 | Entry point | 6 |
+| `failure/exhausted-job-is-recorded-and-alerted` | Decision 0014 | Entry point | 6 |
+| `failure/dead-letter-marks-row-failed` | Decision 0014; [operations threat model](security/operations-threat-model.md) O14 | Entry point | 6 |
+| `failure/owner-sees-only-own-failures` | Decision 0014; isolation | Service, E2E | 6 |
+| `operator/non-operator-gets-404` | Decision 0014; operations threat model O1, O2 | Entry point | 6 |
+| `operator/actions-audited` | Decision 0014; operations threat model O4 | Service | 6 |
+| `crash/every-batch-boundary-converges` | Matrix: partial transaction and crash recovery | Service | 6 |
+| `provider/timeout-is-retryable` | Matrix: provider outage | Contract, service | 6 |
+| `retention/prune-keeps-referenced-rows` | Decision 0015 | DB, service | 6 |
+| `deletion/workspace-revokes-before-purge` | Decision 0015 | Service, E2E | 6 |
+| `deletion/audit-delete-only-while-purging` | Decision 0015 | DB | 6 |
+| `deletion/purging-is-one-way` | Operations threat model O10 | DB | 6 |
+| `deletion/purge-touches-only-its-workspace` | Operations threat model O11 | Service | 6 |
+| `deletion/cross-site-request-refused` | Operations threat model O7, O8, O12 | Entry point | 6 |
+| `deletion/account-revokes-and-removes-identity` | Decision 0015 | Service | 6 |
+| `export/contains-no-secrets` | Decision 0015; AGENTS: secret leakage | Service | 6 |
+| `rotation/old-and-new-secret-both-accepted` | Phase 6: credential rotation | Service, entry point | 6 |
+| `partition/one-installation-cannot-starve-others` | Phase 6: partitioned reconciliation | Service | 6 |
+| `migration/upgrade-from-each-release-keeps-data` | Phase 6: migration procedures | DB | 6 |
+| `security/no-secrets-in-stored-rows-or-logs` | Phase 6 acceptance | Service, entry point | 6 |
 | `resource/selection-removed-blocks-new-provisioning` | Matrix: resource removal | Service | 2, 4 |
 | `resource/rename-transfer-keeps-identity` | Integrations: GitHub risks | Contract, service | 2 |
 | `connection/suspended-installation-surfaces-error` | Matrix: connection suspension | Service | 2, 4 |
