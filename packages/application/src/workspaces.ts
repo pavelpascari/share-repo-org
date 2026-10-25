@@ -93,13 +93,15 @@ export async function listMyWorkspaces(
  * Resolves a workspace for the actor and authorizes the permission. A workspace the actor is not
  * a member of is indistinguishable from one that does not exist (NotFound), so slugs cannot be
  * discovered. A member without the permission, or any change to a suspended workspace, is
- * Forbidden.
+ * Forbidden. `writableIn` names other statuses a change is allowed in, such as cancelling a
+ * deletion while the workspace is `deleting` (decision 0015).
  */
 export async function openWorkspace(
   context: ServiceContext,
   actor: UserActor,
   slug: string,
   permission: WorkspacePermission,
+  options: { readonly writableIn?: readonly WorkspaceStatus[] } = {},
 ): Promise<{ scope: WorkspaceScope; workspace: WorkspaceSummary }> {
   const ctx = atOneInstant(context);
   const parsed = parseWorkspaceSlug(slug);
@@ -108,7 +110,7 @@ export async function openWorkspace(
     : null;
   if (found === null) throw new NotFoundError("workspace not found for actor");
   const changes = permission !== "workspace.read";
-  if (changes && found.workspace.status !== "active") {
+  if (changes && !(options.writableIn ?? ["active"]).includes(found.workspace.status)) {
     throw new ForbiddenError("workspace is not active");
   }
   const scope = authorizeMembership(

@@ -113,6 +113,23 @@ export {
 } from "./identity.ts";
 export type { IdGenerator } from "./ids.ts";
 export { randomIds } from "./ids.ts";
+export type { AccessWithdrawal, PruneCutoffs } from "./lifecycle.ts";
+export {
+  accountDeletionConfirmed,
+  dailyOffsetMs,
+  isBeingDeleted,
+  LIFECYCLE_BATCH_SIZE,
+  PurgeBlock,
+  pruneCutoffs,
+  purgeBlock,
+  purgeDue,
+  RETENTION_MS,
+  WORKSPACE_DELETION_DELAY_MS,
+  WORKSPACE_EXPORT_FORMAT_VERSION,
+  workspaceDeletionConfirmed,
+  workspacesBlockingAccountDeletion,
+  workspaceWithdrawal,
+} from "./lifecycle.ts";
 export type {
   CommercialSource,
   OfferAccess,
@@ -204,6 +221,8 @@ export {
   CLAIM_RATE_LIMITS,
   checkoutRateLimitBuckets,
   claimRateLimitBuckets,
+  EXPORT_RATE_LIMIT,
+  exportRateLimitBuckets,
   rateLimitDecision,
   rateLimitWindowStart,
 } from "./rate-limit.ts";

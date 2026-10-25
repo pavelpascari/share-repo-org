@@ -79,6 +79,14 @@ export function checkoutRateLimitBuckets(keys: {
   }));
 }
 
+/** The limit on workspace exports (decision 0015): 5 an hour per workspace, for all its owners. */
+export const EXPORT_RATE_LIMIT = { windowMs: HOUR_MS, limit: 5 } as const;
+
+/** The bucket one workspace export counts against: `export:<workspaceId>:h`. */
+export function exportRateLimitBuckets(workspaceId: string): readonly RateLimitBucket[] {
+  return [{ bucket: `export:${workspaceId}:h`, ...EXPORT_RATE_LIMIT }];
+}
+
 /** The start of the window containing `now`. */
 export function rateLimitWindowStart(windowMs: number, now: Instant): Instant {
   return now - (now % windowMs);

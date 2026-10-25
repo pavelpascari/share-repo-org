@@ -96,8 +96,8 @@ describe("queue()", () => {
     expect(logged().map((line) => line.msg)).toContain("job has no workspace scope");
   });
 
-  // Phase 6 T1 placeholders: the kinds exist in the vocabulary; T4 and T5 add their handlers.
-  it.each(["prune_data", "purge_workspace", "rewrap_credentials"] as const)(
+  // Phase 6 T1 placeholder: the kind exists in the vocabulary; T5 adds its handler.
+  it.each(["rewrap_credentials"] as const)(
     "fails %s for good until its handler lands",
     async (kind) => {
       const outboxId = `row-${crypto.randomUUID()}`;

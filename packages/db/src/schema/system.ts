@@ -4,7 +4,9 @@ import { check, integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
 
 /**
  * Small system-wide bookkeeping values by key, such as when the sweep last raised a lag alert
- * (decision 0014). Not tenant data: never a workspace's state, a secret or personal data.
+ * (decision 0014). Never a secret or personal data. A workspace purge (decision 0015) keeps its
+ * progress here (`purge_progress:<workspaceId>`, rows deleted per table) and why a due purge
+ * waits (`purge_blocked:<workspaceId>`); both go when the purge finishes.
  */
 export const systemState = sqliteTable(
   "system_state",

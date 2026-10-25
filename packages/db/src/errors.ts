@@ -15,6 +15,16 @@ export function uniqueViolationColumns(error: unknown): readonly string[] | null
   return null;
 }
 
+/** True when a FOREIGN KEY constraint failed, anywhere in the cause chain. */
+export function isForeignKeyViolation(error: unknown): boolean {
+  const seen = new Set<unknown>();
+  for (let link = error; link instanceof Error && !seen.has(link); link = link.cause) {
+    seen.add(link);
+    if (link.message.includes("FOREIGN KEY constraint failed")) return true;
+  }
+  return false;
+}
+
 /** True when the error is a UNIQUE failure on exactly these `table.column` names, in order. */
 export function isUniqueViolation(error: unknown, columns: readonly string[]): boolean {
   return uniqueViolationColumns(error)?.join(",") === columns.join(",");

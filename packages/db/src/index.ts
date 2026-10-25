@@ -51,7 +51,7 @@ export {
   getCustomer,
   listCustomersWithLinks,
 } from "./customer-repository.ts";
-export { isUniqueViolation, uniqueViolationColumns } from "./errors.ts";
+export { isForeignKeyViolation, isUniqueViolation, uniqueViolationColumns } from "./errors.ts";
 export {
   type ExternalEvent,
   getExternalEvent,
@@ -61,6 +61,7 @@ export {
   type RecordExternalEventResult,
   recordExternalEvent,
 } from "./event-repository.ts";
+export { readWorkspaceExport, type WorkspaceExportRows } from "./export-repository.ts";
 export { type Grant, getGrant, listGrantsForWorkspace } from "./grant-repository.ts";
 export {
   type ExternalIdentity,
@@ -72,6 +73,32 @@ export {
   type UpdateExternalIdentitySnapshotResult,
   updateExternalIdentitySnapshot,
 } from "./identity-repository.ts";
+export {
+  cancelWorkspaceDeletion,
+  countRemainingAccess,
+  type DeletedRows,
+  deleteAccountRows,
+  finishPurge,
+  getWorkspaceDeletionState,
+  type LinkedSubject,
+  listDuePurges,
+  listSubjectsLinkedToIdentity,
+  PRUNABLE,
+  PURGE_ORDER,
+  pruneExpiredData,
+  purgeBatch,
+  purgeBlockedKey,
+  purgeProgress,
+  purgeProgressKey,
+  purgeTableHasRows,
+  queueWorkspaceRefreshes,
+  readSubjectAccess,
+  recordPurgeBlocked,
+  type SubjectAccess,
+  scheduleWorkspaceDeletion,
+  unlinkSubjectsFromIdentity,
+  type WorkspaceDeletionState,
+} from "./lifecycle-repository.ts";
 export {
   listMyAccess,
   type MyAccessEntitlement,

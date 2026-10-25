@@ -11,6 +11,8 @@ import {
   paddleEntitlementSource,
   processExternalEvent,
   processPaddleEvent,
+  pruneData,
+  purgeWorkspace,
   recomputeOffer,
   reconcileResource,
   refreshSubscription,
@@ -37,6 +39,11 @@ export const JobOutcome = {
    * The next daily sweep runs again; webhooks still cover the rest.
    */
   Partial: "partial",
+  /**
+   * The work cannot start yet and changed nothing but its record of why: a workspace purge waits
+   * until the access ShareRepo granted is revoked (decision 0015). The daily cron tries again.
+   */
+  Waiting: "waiting",
 } as const;
 export type JobOutcome = (typeof JobOutcome)[keyof typeof JobOutcome];
 
@@ -173,11 +180,21 @@ export async function runJob(
       const swept = await sweepPaddleSubscriptions(ctx, key, commerceOf(deps));
       return swept?.truncated === true ? JobOutcome.Partial : JobOutcome.Done;
     }
-    case OutboxKind.PruneData:
-    case OutboxKind.PurgeWorkspace:
+    case OutboxKind.PruneData: {
+      // System-wide retention: the subject names no workspace.
+      await pruneData(ctx);
+      return JobOutcome.Done;
+    }
+    case OutboxKind.PurgeWorkspace: {
+      // The subject is the workspace ID; the purge re-reads the workspace and acts only while it
+      // is being deleted and due. A purge that waits for access to be revoked is done for today:
+      // the reason is recorded, and the daily cron queues it again.
+      const outcome = await purgeWorkspace(ctx, job.subjectId);
+      return outcome === "waiting" ? JobOutcome.Waiting : JobOutcome.Done;
+    }
     case OutboxKind.RewrapCredentials:
-      // Placeholders until their handlers land (Phase 6 plan, T4 and T5). Nothing enqueues these
-      // kinds before then. Not retryable: the row is marked failed with this rejection's code.
+      // Placeholder until its handler lands (Phase 6 plan, T5). Nothing enqueues this kind before
+      // then. Not retryable: the row is marked failed with this rejection's code.
       throw new JobRejectedError(JobRejection.NotImplemented);
   }
 }

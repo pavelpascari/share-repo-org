@@ -37,7 +37,11 @@ export const authSessions = sqliteTable(
     createdAt: ts("created_at").notNull(),
     updatedAt: ts("updated_at").notNull(),
   },
-  (t) => [index("auth_sessions_user_id_idx").on(t.userId)],
+  (t) => [
+    index("auth_sessions_user_id_idx").on(t.userId),
+    // Pruning expired sessions (decision 0015).
+    index("auth_sessions_expires_idx").on(t.expiresAt),
+  ],
 );
 
 export const authAccounts = sqliteTable(
@@ -81,7 +85,11 @@ export const authVerifications = sqliteTable(
     createdAt: ts("created_at").notNull(),
     updatedAt: ts("updated_at").notNull(),
   },
-  (t) => [index("auth_verifications_identifier_idx").on(t.identifier)],
+  (t) => [
+    index("auth_verifications_identifier_idx").on(t.identifier),
+    // Pruning expired verifications (decision 0015).
+    index("auth_verifications_expires_idx").on(t.expiresAt),
+  ],
 );
 
 /** Better Auth's rate-limit counters (`storage: "database"`); isolate memory is not shared. */
