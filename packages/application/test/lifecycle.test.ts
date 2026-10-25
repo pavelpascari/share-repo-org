@@ -778,6 +778,34 @@ describe("deletion/account-revokes-and-removes-identity", { timeout: 60_000 }, (
     expect(live(await entitlementsOf(s.workspaceId, sub.id))).toEqual([]);
   });
 
+  it("writes nothing when a cancelled deletion makes the user an owner again meanwhile", async () => {
+    const s = await shop();
+    await requestDeletion(s);
+    const login = (await getAccountView(serviceContext(), s)).login as string;
+    // In another tab, the owner cancels the deletion after the check but before the last batch.
+    const racing = beforeBatch(/delete from "auth_users"/i, () =>
+      cancelWorkspaceDeletion(serviceContext(), s, s.slug),
+    );
+    expect(await deleteAccount(racing, s, { confirmation: login })).toEqual({
+      ok: false,
+      reason: "owns_workspaces",
+      workspaces: [{ slug: s.slug, name: "Shop", status: "active" }],
+    });
+    expect(await getWorkspace(db, s.workspaceId)).toMatchObject({ status: "active" });
+    expect(
+      await count("SELECT count(*) AS n FROM workspace_memberships WHERE user_id = ?", s.userId),
+    ).toBe(1);
+    expect(
+      await count("SELECT count(*) AS n FROM external_identities WHERE user_id = ?", s.userId),
+    ).toBe(1);
+    expect(
+      await count(
+        "SELECT count(*) AS n FROM audit_events WHERE action = 'user.deleted' AND target_id = ?",
+        s.userId,
+      ),
+    ).toBe(0);
+  });
+
   it("is refused while the user owns a workspace that is not being deleted", async () => {
     const s = await shop();
     const view = await getAccountView(serviceContext(), s);

@@ -1,8 +1,9 @@
 import { viewWorkspaceAsOperator } from "@sharerepo/application";
-import { Link } from "react-router";
+import { Link, redirect } from "react-router";
 import { servicesFor } from "../auth/server.ts";
 import { checkedText, formatInstant } from "../entitlement-messages.ts";
 import { requireOperator } from "../operators.server.ts";
+import { isCrossSiteRequest } from "../security/same-origin.ts";
 import { asResponse } from "../workspaces.server.ts";
 import type { Route } from "./+types/ops.w.$slug";
 import { AccessTableRow, FailuresSection, repositoriesOf } from "./w.$slug.access.tsx";
@@ -19,6 +20,8 @@ export function meta(_: Route.MetaArgs) {
 
 export async function loader({ request, params, context }: Route.LoaderArgs) {
   const operator = await requireOperator(request, context);
+  // Opening the view writes `operator.viewed_workspace`: another site's link must not write it.
+  if (isCrossSiteRequest(request)) throw redirect("/ops");
   const services = servicesFor(context);
   const view = await viewWorkspaceAsOperator(services, operator, params.slug).catch(
     (error: unknown) => {

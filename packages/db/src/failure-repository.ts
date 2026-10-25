@@ -74,11 +74,17 @@ export async function getFailedOutboxRow(
 /**
  * Makes a failed row of the workspace due again now, with its attempts reset and its error and any
  * dismissal cleared, with its `job.retried` audit event, in one batch. Returns false, writing
- * nothing, when the row is not a failure of that workspace (any more).
+ * nothing, when the row is not a failure of that workspace (any more), or is dismissed and
+ * `dismissed` is `refused` (an owner's retry: only an operator undoes a dismissal).
  */
 export async function retryOutboxFailure(
   db: Db,
-  input: { id: string; workspaceId: string | null; now: Instant },
+  input: {
+    id: string;
+    workspaceId: string | null;
+    now: Instant;
+    dismissed: "allowed" | "refused";
+  },
   audit: AuditEvents,
 ): Promise<boolean> {
   const [changed] = await runBatch(db, [
@@ -99,6 +105,7 @@ export async function retryOutboxFailure(
           inWorkspace(input.workspaceId),
           isNotNull(outbox.failedAt),
           isNull(outbox.sentAt),
+          input.dismissed === "refused" ? isNull(outbox.dismissedAt) : undefined,
         ),
       ),
     ...conditionalAuditInserts(db, audit, sql`changes() = 1`),
@@ -154,6 +161,8 @@ export async function listOpenOutboxFailures(
       and(
         isNotNull(outbox.failedAt),
         isNull(outbox.dismissedAt),
+        // A row the drain delivered after the dead-letter queue failed it succeeded after all.
+        isNull(outbox.sentAt),
         "workspaceId" in input ? eq(outbox.workspaceId, input.workspaceId) : undefined,
       ),
     )

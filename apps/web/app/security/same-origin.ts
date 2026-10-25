@@ -17,3 +17,14 @@ export function assertSameOrigin(request: Request, baseURL: string): void {
     throw data({ message: "Cross-origin request refused." }, { status: 403 });
   }
 }
+
+/**
+ * Whether the browser says another site started this request (`Sec-Fetch-Site` is `cross-site` or
+ * `same-site`). A GET whose loader writes, such as an operator's audited workspace view, refuses
+ * such a request, so another site cannot make an operator's browser write that record. A typed
+ * URL (`none`), our own links (`same-origin`) and clients that send no header are not refused.
+ */
+export function isCrossSiteRequest(request: Request): boolean {
+  const site = request.headers.get("sec-fetch-site");
+  return site === "cross-site" || site === "same-site";
+}

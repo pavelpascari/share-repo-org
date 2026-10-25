@@ -690,12 +690,16 @@ const userStillReferenced = (userId: string) => sql`(
  * checkout claims, claim requests and consumed claim tokens, connection intents, memberships,
  * Better Auth sessions, accounts and profile, external identities, and the `users` row unless a
  * connection or offer version still names it (it holds only the ID; pruning removes it once
- * nothing does). Subjects must already be unlinked from the identity. Returns the counts.
+ * nothing does). Subjects must already be unlinked from the identity.
+ *
+ * The batch writes nothing while the user owns a workspace that is not being deleted, checked in
+ * the batch itself: a deletion cancelled concurrently, after the caller's check, must not leave
+ * an active workspace without its owner. Returns the counts, or null when it wrote nothing.
  */
 export async function deleteAccountRows(
   db: Db,
   input: { userId: string; audit: (deleted: DeletedRows) => AuditEvents },
-): Promise<DeletedRows> {
+): Promise<DeletedRows | null> {
   const { userId } = input;
   const deleted: Record<string, number> = {};
   for (const [table, column] of ACCOUNT_ROWS) {
@@ -708,12 +712,23 @@ export async function deleteAccountRows(
     sql`SELECT (EXISTS (SELECT 1 FROM users WHERE id = ${userId}) AND NOT ${userStillReferenced(userId)}) AS deletable`,
   );
   deleted.users = Number(user?.deletable);
-  await runBatch(db, [
+  const audit = input.audit(deleted);
+  const ownsNoLiveWorkspace = sql`NOT EXISTS (SELECT 1 FROM workspace_memberships m
+    JOIN workspaces w ON w.id = m.workspace_id
+    WHERE m.user_id = ${userId} AND m.role = 'owner' AND w.status NOT IN ('deleting', 'purging'))`;
+  // The audit event goes first, on the ownership check; every delete follows only if it was
+  // written (the check would pass trivially once the memberships are gone).
+  const written = sql`EXISTS (SELECT 1 FROM audit_events WHERE id = ${audit[0].id})`;
+  const [first] = await runBatch(db, [
+    ...conditionalAuditInserts(db, audit, ownsNoLiveWorkspace),
     ...ACCOUNT_ROWS.map(([table, column]) =>
-      deleteFrom(db, table, sql`${ident(column)} = ${userId}`),
+      deleteFrom(db, table, sql`${ident(column)} = ${userId} AND ${written}`),
     ),
-    deleteFrom(db, "users", sql`id = ${userId} AND NOT ${userStillReferenced(userId)}`),
-    ...auditInserts(db, input.audit(deleted)),
+    deleteFrom(
+      db,
+      "users",
+      sql`id = ${userId} AND NOT ${userStillReferenced(userId)} AND ${written}`,
+    ),
   ]);
-  return deleted;
+  return first === 1 ? deleted : null;
 }

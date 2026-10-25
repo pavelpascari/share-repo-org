@@ -466,7 +466,13 @@ describe("operators", () => {
       }),
     ).rejects.toBeInstanceOf(NotFoundError);
 
-    // Retrying the dismissed failure clears its failure and dismissal.
+    // The owner cannot undo the dismissal: their retry does not find it, and changes nothing.
+    await expect(retryFailure(serviceContext(), s, s.slug, workspaceJob)).rejects.toBeInstanceOf(
+      NotFoundError,
+    );
+    expect(await row(workspaceJob)).toMatchObject({ dismissed_by: operator.userId });
+
+    // The operator retrying the dismissed failure clears its failure and dismissal.
     const retrying = serviceContext();
     const retried = await expectAuditedChange(
       env.DB,

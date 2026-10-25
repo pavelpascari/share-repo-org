@@ -127,11 +127,13 @@ describe("dismissOutboxFailure and retryOutboxFailure", () => {
     // Already dismissed.
     expect(await dismiss(workspaceId)).toBe(false);
 
-    const retry = (key: string | null) =>
-      retryOutboxFailure(db, { id: row.id, workspaceId: key, now: T0 + 40 }, [
+    const retry = (key: string | null, dismissed: "allowed" | "refused" = "allowed") =>
+      retryOutboxFailure(db, { id: row.id, workspaceId: key, now: T0 + 40, dismissed }, [
         workspaceEvent(workspaceId),
       ]);
     expect(await retry(other.workspaceId)).toBe(false);
+    // An owner's retry does not undo a dismissal; an operator's does.
+    expect(await retry(workspaceId, "refused")).toBe(false);
     expect(await retry(workspaceId)).toBe(true);
     expect(await stored(row.id)).toEqual({
       failed_at: null,
@@ -161,6 +163,10 @@ describe("listOpenOutboxFailures", () => {
       { id: dismissed.row.id, workspaceId, now: T0, by: userId, reason: "noise" },
       [workspaceEvent(workspaceId)],
     );
+
+    // Failed by the dead-letter queue, then delivered by the drain after all: not open.
+    const delivered = await failedRow(workspaceId, T0 + 110);
+    await markOutboxSent(db, [delivered.row.id], T0 + 111);
 
     const own = await listOpenOutboxFailures(db, { workspaceId, limit: 10 });
     expect(own.map((row) => row.id)).toEqual([older.row.id, newer.row.id]);

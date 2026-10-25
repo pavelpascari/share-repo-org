@@ -555,5 +555,13 @@ export async function deleteAccount(
       ),
     ],
   });
+  if (deleted === null) {
+    // A deletion of one of their workspaces was cancelled meanwhile: they own it again.
+    return {
+      ok: false,
+      reason: "owns_workspaces",
+      workspaces: await blockingWorkspaces(ctx, userId),
+    };
+  }
   return { ok: true, unlinkedSubjects: subjects.length, deleted };
 }

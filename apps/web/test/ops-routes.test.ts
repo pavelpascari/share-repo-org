@@ -203,6 +203,45 @@ describe("/ops/w/:slug", () => {
   });
 });
 
+describe("/ops/w/:slug from another site", () => {
+  it("redirects a cross-site or same-site navigation to /ops, writing no audit event", async () => {
+    const s = await shop();
+    const operator = await signedIn();
+    for (const site of ["cross-site", "same-site"]) {
+      const h = asOperator(operator);
+      const request = get(`/ops/w/${s.slug}`, operator);
+      request.headers.set("sec-fetch-site", site);
+      const thrown = await opsWorkspace.loader(args(request, h.context, s.slug)).then(
+        () => null,
+        (e: unknown) => e,
+      );
+      expect(thrown).toBeInstanceOf(Response);
+      expect((thrown as Response).status).toBe(302);
+      expect((thrown as Response).headers.get("location")).toBe("/ops");
+      const correlationId = h.context.get(cloudflareContext).correlationId;
+      expect(await listAuditEventsByCorrelationId(db, correlationId)).toEqual([]);
+    }
+    // A typed URL or our own link opens it.
+    for (const site of ["none", "same-origin"]) {
+      const request = get(`/ops/w/${s.slug}`, operator);
+      request.headers.set("sec-fetch-site", site);
+      const loaded = await opsWorkspace.loader(args(request, asOperator(operator).context, s.slug));
+      expect(loaded.workspace.id).toBe(s.workspaceId);
+    }
+  });
+
+  it("still answers 404 to a non-operator first", async () => {
+    const s = await shop();
+    const operator = await signedIn();
+    const someone = await signedIn();
+    const request = get(`/ops/w/${s.slug}`, someone);
+    request.headers.set("sec-fetch-site", "cross-site");
+    expect(
+      await thrownStatus(opsWorkspace.loader(args(request, asOperator(operator).context, s.slug))),
+    ).toBe(404);
+  });
+});
+
 describe("owner failures on the Access page", () => {
   it("failure/owner-sees-only-own-failures: lists and retries the owner's own failures only", async () => {
     const mine = await shop();

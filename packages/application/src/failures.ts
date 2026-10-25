@@ -296,15 +296,18 @@ async function retry(
   ctx: ServiceContext,
   key: { readonly outboxId: string; readonly workspaceId: string | null },
   actor: AuditEvent["actor"],
+  dismissed: "allowed" | "refused",
 ): Promise<RetriedFailure> {
   const row = await repo.getFailedOutboxRow(ctx.db, {
     id: key.outboxId,
     workspaceId: key.workspaceId,
   });
-  if (row === null) throw new NotFoundError("no such failure in the workspace");
+  if (row === null || (dismissed === "refused" && row.dismissedAt !== null)) {
+    throw new NotFoundError("no such failure in the workspace");
+  }
   const retried = await repo.retryOutboxFailure(
     ctx.db,
-    { id: row.id, workspaceId: key.workspaceId, now: ctx.clock.now() },
+    { id: row.id, workspaceId: key.workspaceId, now: ctx.clock.now(), dismissed },
     [
       auditEvent(
         "job.retried",
@@ -325,7 +328,8 @@ async function retry(
 
 /**
  * An owner retries one of their workspace's failed jobs: it is due again now, with its attempts
- * reset. A failure of another workspace, or a system-wide one, is not found (decision 0014).
+ * reset. A failure of another workspace, a system-wide one, or one an operator dismissed is not
+ * found (decision 0014: owners cannot undo a dismissal; they ask support).
  */
 export async function retryFailure(
   context: ServiceContext,
@@ -335,7 +339,7 @@ export async function retryFailure(
 ): Promise<RetriedFailure> {
   const ctx = atOneInstant(context);
   const { scope } = await openWorkspace(ctx, actor, slug, "workspace.manage");
-  return retry(ctx, { outboxId, workspaceId: scope.workspaceId }, asAuditActor(actor));
+  return retry(ctx, { outboxId, workspaceId: scope.workspaceId }, asAuditActor(actor), "refused");
 }
 
 /** An operator retries a failed job of the named workspace (null: a system-wide one). */
@@ -344,7 +348,7 @@ export async function retryFailureAsOperator(
   operator: OperatorPrincipal,
   key: { readonly workspaceId: string | null; readonly outboxId: string },
 ): Promise<RetriedFailure> {
-  return retry(atOneInstant(context), key, operatorActor(operator));
+  return retry(atOneInstant(context), key, operatorActor(operator), "allowed");
 }
 
 export type DismissFailureResult =
