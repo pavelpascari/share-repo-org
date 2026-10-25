@@ -8,8 +8,11 @@ import type { Instant } from "./time.ts";
 export const ENTITLEMENT_STATES = ["active", "expired", "revoked"] as const;
 export type EntitlementState = (typeof ENTITLEMENT_STATES)[number];
 
-/** What an entitlement derives from. v1: subscriptions only. */
-export const ENTITLEMENT_SOURCE_TYPES = ["subscription"] as const;
+/**
+ * What an entitlement derives from: a subscription (commercial state from Paddle or the
+ * simulator), or a workspace owner's manual access grant (decision 0016).
+ */
+export const ENTITLEMENT_SOURCE_TYPES = ["subscription", "manual"] as const;
 export type EntitlementSourceType = (typeof ENTITLEMENT_SOURCE_TYPES)[number];
 
 /** Version of the access policy in code; stored on every entitlement it decides. */

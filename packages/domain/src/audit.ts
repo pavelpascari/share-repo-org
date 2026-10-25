@@ -11,6 +11,7 @@ import { OUTBOX_KINDS } from "./external-event.ts";
 import { GRANT_STATES, MUTATION_OPERATIONS, RETRY_CLASSES } from "./grant.ts";
 import { IDENTITY_PROVIDERS } from "./identity.ts";
 import type { IdGenerator } from "./ids.ts";
+import { MANUAL_ACCESS_REVOKE_CAUSES } from "./manual-access.ts";
 import { COMMERCIAL_SOURCES, GRACE_PERIOD_DAYS_MAX, GRACE_PERIOD_DAYS_MIN } from "./offer.ts";
 import { PADDLE_ENVIRONMENTS, PaddleConnectionStatus } from "./paddle.ts";
 import { ACCESS_DECISION_REASONS } from "./policy.ts";
@@ -292,20 +293,26 @@ export const AUDIT_ACTIONS = {
       sourceUpdatedAt: instant,
     }),
   },
+  // The source is named by exactly one of `subscriptionId` and `manualAccessId` (decision 0016).
   "entitlement.created": {
     scope: "workspace",
     targetType: "entitlement",
-    details: z.strictObject({
-      subjectId: text,
-      resourceId: text,
-      accessLevel: z.enum(ACCESS_LEVELS),
-      subscriptionId: text,
-      offerId: text,
-      offerVersion: positive,
-      policyVersion: positive,
-      validUntil: instant.nullable(),
-      reason: decisionReason,
-    }),
+    details: z
+      .strictObject({
+        subjectId: text,
+        resourceId: text,
+        accessLevel: z.enum(ACCESS_LEVELS),
+        subscriptionId: text.optional(),
+        manualAccessId: text.optional(),
+        offerId: text,
+        offerVersion: positive,
+        policyVersion: positive,
+        validUntil: instant.nullable(),
+        reason: decisionReason,
+      })
+      .refine((d) => (d.subscriptionId === undefined) !== (d.manualAccessId === undefined), {
+        path: ["manualAccessId"],
+      }),
   },
   "entitlement.updated": {
     scope: "workspace",
@@ -509,6 +516,52 @@ export const AUDIT_ACTIONS = {
     details: z
       .strictObject({ previousSubjectId: text.nullable(), subjectId: text })
       .refine((d) => d.previousSubjectId !== d.subjectId, { path: ["subjectId"] }),
+  },
+  // An owner removed a customer's link by hand (decision 0016): its subscriptions stop granting
+  // access. The checkout claim the customer used cannot link it again; an emailed claim (path 2)
+  // or a manual link (path 3) can. The owner's reason is the event's `reason`, which is required.
+  "customer.unlinked_manually": {
+    scope: "workspace",
+    targetType: "customer",
+    requiresReason: true,
+    details: z.strictObject({ previousSubjectId: text }),
+  },
+  // Manual access (decision 0016): an owner grants an offer's repositories to a GitHub account
+  // with no subscription. The actor is the owner; `externalSubjectId` is the account's immutable
+  // GitHub ID, never its login. An owner's note is the event's `reason`, when given.
+  "access.granted_manually": {
+    scope: "workspace",
+    targetType: "manual_access",
+    details: z.strictObject({
+      offerId: text,
+      subjectId: text,
+      externalSubjectId: text,
+      endsAt: instant.nullable(),
+    }),
+  },
+  "access.updated_manually": {
+    scope: "workspace",
+    targetType: "manual_access",
+    details: z
+      .strictObject({
+        offerId: text,
+        subjectId: text,
+        externalSubjectId: text,
+        endsAt: z.strictObject({ from: instant.nullable(), to: instant.nullable() }),
+      })
+      .refine((d) => d.endsAt.from !== d.endsAt.to, { path: ["endsAt"] }),
+  },
+  // `cause`: an owner revoked it, or the person it was granted to deleted their account (the
+  // actor is then that user).
+  "access.revoked_manually": {
+    scope: "workspace",
+    targetType: "manual_access",
+    details: z.strictObject({
+      offerId: text,
+      subjectId: text,
+      externalSubjectId: text,
+      cause: z.enum(MANUAL_ACCESS_REVOKE_CAUSES),
+    }),
   },
   // Failures, operators and the data lifecycle (Phase 6, decisions 0014 and 0015). Minimal shapes
   // from Phase 6 T1, refined by the tasks that write them. IDs, counts and codes only: never a

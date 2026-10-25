@@ -134,6 +134,27 @@ export {
   workspaceWithdrawal,
 } from "./lifecycle.ts";
 export type {
+  ManualAccessNoteError,
+  ManualAccessTerms,
+  ManualPlanInput,
+  PlanManualAccess,
+  PlanManualOffer,
+} from "./manual-access.ts";
+export {
+  decideManualAccess,
+  MANUAL_ACCESS_NOTE_MAX_LENGTH,
+  MANUAL_ACCESS_OPEN_LIMIT,
+  MANUAL_ACCESS_RATE_LIMIT,
+  MANUAL_ACCESS_REVOKE_CAUSES,
+  ManualAccessRevokeCause,
+  ManualAccessStatus,
+  manualAccessRateLimitBuckets,
+  manualAccessStatus,
+  parseManualAccessEnd,
+  parseManualAccessNote,
+  planManualEntitlements,
+} from "./manual-access.ts";
+export type {
   CommercialSource,
   OfferAccess,
   OfferAccessError,

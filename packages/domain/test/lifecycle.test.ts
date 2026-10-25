@@ -125,8 +125,8 @@ describe("account deletion", () => {
 });
 
 describe("workspace export", () => {
-  it("is format version 1, limited to 5 an hour per workspace", () => {
-    expect(WORKSPACE_EXPORT_FORMAT_VERSION).toBe(1);
+  it("is format version 2, limited to 5 an hour per workspace", () => {
+    expect(WORKSPACE_EXPORT_FORMAT_VERSION).toBe(2);
     expect(EXPORT_RATE_LIMIT).toEqual({ windowMs: HOUR, limit: 5 });
     expect(exportRateLimitBuckets("w1")).toEqual([
       { bucket: "export:w1:h", windowMs: HOUR, limit: 5, retired: [] },

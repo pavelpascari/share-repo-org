@@ -14,6 +14,9 @@ import type { Instant } from "./time.ts";
  * `offer_access_removed`, `offer_access_changed`, `item_removed`, `customer_unlinked`,
  * `subscription_missing`. From the data lifecycle (decision 0015): `workspace_deleted`,
  * `account_deleted`.
+ *
+ * From a manual access grant (decision 0016): `manual` (granted, until any end date),
+ * `manual_ended` (its end date passed) and `manual_revoked` (the owner revoked it).
  */
 export const ACCESS_DECISION_REASONS = [
   "active",
@@ -34,6 +37,9 @@ export const ACCESS_DECISION_REASONS = [
   "subscription_missing",
   "workspace_deleted",
   "account_deleted",
+  "manual",
+  "manual_ended",
+  "manual_revoked",
 ] as const;
 export type AccessDecisionReason = (typeof ACCESS_DECISION_REASONS)[number];
 
