@@ -42,6 +42,13 @@ export {
   updateConnection,
 } from "./connection-repository.ts";
 export {
+  countEnvelopesUnderKeys,
+  listEnvelopesUnderKeys,
+  rewrapClaimRequestEmail,
+  type StoredEnvelope,
+  type StoredEnvelopeField,
+} from "./credential-repository.ts";
+export {
   type ApplyCustomerLinkResult,
   applyCustomerLink,
   type Customer,
@@ -116,6 +123,7 @@ export {
 } from "./outbox-repository.ts";
 export {
   type CreatePaddleConnectionResult,
+  completePaddleWebhookRotation,
   createPaddleConnection,
   disconnectPaddleConnection,
   type GuardedWriteResult,
@@ -132,6 +140,7 @@ export {
   recordPaddleConnectionChecked,
   replacePaddleCredentials,
   rewrapPaddleEnvelope,
+  startPaddleWebhookRotation,
   updatePaddleConnectionStatus,
   upsertPaddlePrices,
 } from "./paddle-repository.ts";

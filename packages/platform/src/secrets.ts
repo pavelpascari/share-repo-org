@@ -36,6 +36,21 @@ export interface CommerceSecrets {
 }
 
 export const CLAIM_SIGNING_KEY_MIN_BYTES = 32;
+
+/**
+ * The keyring's current key, which signs and hashes, and the other listed keys, which still
+ * verify references and count rate limits while a rotation is under way (Phase 6, secret
+ * rotation). Removing a key from `CLAIM_SIGNING_KEY` ends both.
+ */
+export function claimSigningKeysOf(keyring: ClaimSigningKeyring): {
+  readonly current: Uint8Array;
+  readonly retired: readonly Uint8Array[];
+} {
+  const retired = Object.entries(keyring.keys)
+    .filter(([id]) => id !== keyring.current)
+    .map(([, key]) => key);
+  return { current: keyring.keys[keyring.current] as Uint8Array, retired };
+}
 /** The key ID of a `CLAIM_SIGNING_KEY` given as one plain-text key. */
 export const SINGLE_CLAIM_SIGNING_KEY_ID = "single";
 

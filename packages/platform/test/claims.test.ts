@@ -45,12 +45,12 @@ describe("claim references", () => {
   it("verify for exactly their binding", async () => {
     const reference = await signClaimReference({ key: KEY, ...binding });
     const verify = (overrides: Partial<Parameters<typeof verifyClaimReference>[0]>) =>
-      verifyClaimReference({ key: KEY, reference, ...binding, ...overrides });
+      verifyClaimReference({ keys: [KEY], reference, ...binding, ...overrides });
     expect(await verify({})).toBe(true);
     expect(await verify({ workspaceId: "ws_2" })).toBe(false);
     expect(await verify({ userId: "usr_2" })).toBe(false);
     expect(await verify({ offerId: "off_2" })).toBe(false);
-    expect(await verify({ key: OTHER_KEY })).toBe(false);
+    expect(await verify({ keys: [OTHER_KEY] })).toBe(false);
   });
 
   it("claim/checkout-reference-tamper-rejected: a forged or edited reference fails", async () => {
@@ -66,7 +66,7 @@ describe("claim references", () => {
       `v1.${id}.${mac.slice(0, -1)}${String.fromCharCode((mac.at(-1) as string).charCodeAt(0) + 1)}`,
     ];
     for (const candidate of forged) {
-      expect(await verifyClaimReference({ key: KEY, reference: candidate, ...binding })).toBe(
+      expect(await verifyClaimReference({ keys: [KEY], reference: candidate, ...binding })).toBe(
         false,
       );
     }
@@ -89,7 +89,7 @@ describe("claim references", () => {
     ["over 256 characters", `v1.${"c".repeat(128)}.${"A".repeat(43)}${" ".repeat(90)}`],
   ])("parse rejects %s", async (_, reference) => {
     expect(parseClaimReference(reference)).toEqual({ ok: false });
-    expect(await verifyClaimReference({ key: KEY, reference, ...binding })).toBe(false);
+    expect(await verifyClaimReference({ keys: [KEY], reference, ...binding })).toBe(false);
   });
 
   it("refuses to sign parts that could contain the separator", async () => {
@@ -103,9 +103,26 @@ describe("claim references", () => {
 
   it("does not verify against parts that could contain the separator", async () => {
     const reference = await signClaimReference({ key: KEY, ...binding });
-    expect(await verifyClaimReference({ key: KEY, reference, ...binding, offerId: "off|1" })).toBe(
-      false,
-    );
+    expect(
+      await verifyClaimReference({ keys: [KEY], reference, ...binding, offerId: "off|1" }),
+    ).toBe(false);
+  });
+});
+
+describe("rotation/old-and-new-secret-both-accepted: claim signing keys", () => {
+  it("verifies a reference signed under any listed key, and none once its key is removed", async () => {
+    const old = await signClaimReference({ key: OTHER_KEY, ...binding });
+    const fresh = await signClaimReference({ key: KEY, ...binding });
+    const verify = (reference: string, keys: Uint8Array[]) =>
+      verifyClaimReference({ keys, reference, ...binding });
+    // During the rotation both keys are listed: references signed under either verify.
+    expect(await verify(old, [KEY, OTHER_KEY])).toBe(true);
+    expect(await verify(fresh, [KEY, OTHER_KEY])).toBe(true);
+    expect(await verify(old, [OTHER_KEY, KEY])).toBe(true);
+    // Once the old key is removed, its references no longer verify.
+    expect(await verify(old, [KEY])).toBe(false);
+    expect(await verify(fresh, [KEY])).toBe(true);
+    expect(await verify(fresh, [])).toBe(false);
   });
 });
 

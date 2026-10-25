@@ -198,7 +198,12 @@ export {
   RETRY_BACKOFF_MS,
   retryBackoff,
 } from "./provisioning.ts";
-export type { RateLimitBucket, RateLimitCounter, RateLimitDecision } from "./rate-limit.ts";
+export type {
+  KeyedHash,
+  RateLimitBucket,
+  RateLimitCounter,
+  RateLimitDecision,
+} from "./rate-limit.ts";
 export {
   CHECKOUT_RATE_LIMITS,
   CLAIM_RATE_LIMITS,

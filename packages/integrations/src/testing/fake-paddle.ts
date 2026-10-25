@@ -210,6 +210,12 @@ export interface FakePaddle extends PaddlePort {
   secretOf(settingId: string): string;
   /** A signed delivery of any event to one of ShareRepo's destinations. */
   emit(input: FakeEventInput): Promise<FakePaddleDelivery>;
+  /**
+   * One event delivered to every active destination, as Paddle does: one notification per
+   * destination, sharing the event ID, each signed with its destination's secret (two during a
+   * webhook secret rotation).
+   */
+  emitToAll(input: Omit<FakeEventInput, "settingId">): Promise<FakePaddleDelivery[]>;
   /** A `subscription.*` event carrying the subscription as it is now. */
   emitSubscriptionEvent(
     settingId: string,
@@ -784,6 +790,17 @@ export function createFakePaddle(options: FakePaddleOptions = {}): FakePaddle {
     emit({ settingId, eventType, data, occurredAt, signedAt }) {
       const now = clock.now();
       return deliver(settingId, nextId("evt"), eventType, occurredAt ?? now, data, signedAt ?? now);
+    },
+
+    emitToAll({ eventType, data, occurredAt, signedAt }) {
+      const now = clock.now();
+      const eventId = nextId("evt");
+      const active = [...settings.values()].filter(({ setting }) => setting.active);
+      return Promise.all(
+        active.map(({ setting }) =>
+          deliver(setting.id, eventId, eventType, occurredAt ?? now, data, signedAt ?? now),
+        ),
+      );
     },
 
     emitSubscriptionEvent(settingId, eventType, subscriptionId) {

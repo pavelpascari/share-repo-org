@@ -5,6 +5,8 @@ import {
   MANUAL_LINK_ERRORS,
   PADDLE_NOT_CONFIGURED,
   PADDLE_UNREACHABLE,
+  WEBHOOK_ROTATED,
+  WEBHOOK_ROTATION_ERRORS,
 } from "../app/commerce-messages.ts";
 import * as billing from "../app/routes/w.$slug.billing.tsx";
 import * as customers from "../app/routes/w.$slug.customers.tsx";
@@ -118,7 +120,7 @@ describe("billing route", () => {
     expect(result).toEqual({
       ok: true,
       notice: "Paddle is connected and the catalog is imported.",
-      orphanedDestinationId: null,
+      orphanedDestinationIds: [],
       errors: {},
     });
     // The key is never echoed back.
@@ -250,7 +252,7 @@ describe("billing route", () => {
     const result = await billing.action(
       args(post(path, s.owner, { intent: "disconnect" }), s, context),
     );
-    expect(result).toMatchObject({ ok: true, orphanedDestinationId: destinationId });
+    expect(result).toMatchObject({ ok: true, orphanedDestinationIds: [destinationId] });
     expect(
       await billing.action(args(post(path, s.owner, { intent: "disconnect" }), s, context)),
     ).toMatchObject({ ok: false, errors: { form: "Paddle isn't connected." } });
@@ -269,7 +271,45 @@ describe("billing route", () => {
     const result = await billing.action(
       args(post(`/w/${s.slug}/billing`, s.owner, { intent: "disconnect" }), s, context),
     );
-    expect(result).toMatchObject({ ok: true, orphanedDestinationId: null });
+    expect(result).toMatchObject({ ok: true, orphanedDestinationIds: [] });
+  });
+
+  it("rotates the webhook secret, resuming a rotation Paddle interrupted", async () => {
+    const s = await shop();
+    const accounts = new PaddleAccounts();
+    const connected = await connect(s, accounts);
+    const { context } = paddleHarness(accounts);
+    const path = `/w/${s.slug}/billing`;
+    const rotate = () =>
+      billing.action(args(post(path, s.owner, { intent: "rotate_webhook" }), s, context));
+    connected.paddle.failNext("deleteNotificationSetting", "transient");
+    expect(await rotate()).toMatchObject({ ok: false, errors: { form: PADDLE_UNREACHABLE } });
+    const during = await billing.loader(args(get(path, s.owner), s, context));
+    expect(during.view?.connection?.rotationInProgress).toBe(true);
+    expect(await rotate()).toMatchObject({ ok: true, notice: WEBHOOK_ROTATED });
+    const after = await billing.loader(args(get(path, s.owner), s, context));
+    expect(after.view?.connection).toMatchObject({ rotationInProgress: false });
+    expect(after.view?.connection?.destinationId).not.toBe(during.view?.connection?.destinationId);
+  });
+
+  it("names why the webhook secret could not be rotated", async () => {
+    const s = await shop();
+    const accounts = new PaddleAccounts();
+    const connected = await connect(s, accounts);
+    const { context } = paddleHarness(accounts);
+    const path = `/w/${s.slug}/billing`;
+    const rotate = () =>
+      billing.action(args(post(path, s.owner, { intent: "rotate_webhook" }), s, context));
+    connected.paddle.addForeignDestinations(9);
+    expect(await rotate()).toMatchObject({
+      ok: false,
+      errors: { form: WEBHOOK_ROTATION_ERRORS.destination_limit },
+    });
+    await billing.action(args(post(path, s.owner, { intent: "disconnect" }), s, context));
+    expect(await rotate()).toMatchObject({
+      ok: false,
+      errors: { form: WEBHOOK_ROTATION_ERRORS.not_connected },
+    });
   });
 
   it("answers an unknown intent with 400", async () => {

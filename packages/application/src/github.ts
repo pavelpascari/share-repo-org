@@ -287,15 +287,24 @@ export type WebhookIngestResult =
  * Receives a GitHub webhook. The signature is verified on the raw body before anything is parsed
  * or stored. The receipt (metadata and a digest, never the payload) and its processing intent are
  * recorded in one batch; a redelivery records nothing.
+ *
+ * `secrets` are every secret accepted now: `GITHUB_WEBHOOK_SECRET`, and while it is set during a
+ * rotation, `GITHUB_WEBHOOK_SECRET_PREVIOUS` (Phase 6). A delivery signed under any of them is
+ * accepted; each is tried, in constant time.
  */
 export async function ingestGitHubWebhook(
   context: ServiceContext,
-  input: { readonly secret: string; readonly rawBody: ArrayBuffer; readonly headers: Headers },
+  input: {
+    readonly secrets: readonly string[];
+    readonly rawBody: ArrayBuffer;
+    readonly headers: Headers;
+  },
 ): Promise<WebhookIngestResult> {
   const signature = input.headers.get("x-hub-signature-256");
-  if (!(await verifyWebhookSignature(input.secret, input.rawBody, signature))) {
-    return { status: "rejected" };
-  }
+  const verified = await Promise.all(
+    input.secrets.map((secret) => verifyWebhookSignature(secret, input.rawBody, signature)),
+  );
+  if (!verified.includes(true)) return { status: "rejected" };
   let envelope: ReturnType<typeof parseWebhookEnvelope>;
   try {
     envelope = parseWebhookEnvelope(

@@ -17,23 +17,25 @@ const DAY = 24 * HOUR;
 const DAY_START = 1_699_920_000_000;
 const NOW = DAY_START + 5 * HOUR + 30 * 60_000;
 
+const EMAIL_HASH = "e".repeat(64);
+const IP_HASH = "i".repeat(64);
 const KEYS = {
   workspaceId: "w1",
-  emailHash: "e".repeat(64),
+  emailHash: { current: EMAIL_HASH, retired: [] },
   userId: "u1",
-  ipHash: "i".repeat(64),
+  ipHash: { current: IP_HASH, retired: [] },
 };
 // The claim buckets for KEYS, written out rather than built: a top-level call to
 // claimRateLimitBuckets would run at module load, where a failure fails no test.
-const EMAIL_H = `email:w1:${KEYS.emailHash}:h`;
-const EMAIL_D = `email:w1:${KEYS.emailHash}:d`;
+const EMAIL_H = `email:w1:${EMAIL_HASH}:h`;
+const EMAIL_D = `email:w1:${EMAIL_HASH}:d`;
 const USER_H = "user:u1:h";
-const IP_H = `ip:${KEYS.ipHash}:h`;
+const IP_H = `ip:${IP_HASH}:h`;
 const BUCKETS: readonly RateLimitBucket[] = [
-  { bucket: EMAIL_H, windowMs: HOUR, limit: 3 },
-  { bucket: EMAIL_D, windowMs: DAY, limit: 10 },
-  { bucket: USER_H, windowMs: HOUR, limit: 5 },
-  { bucket: IP_H, windowMs: HOUR, limit: 20 },
+  { bucket: EMAIL_H, windowMs: HOUR, limit: 3, retired: [] },
+  { bucket: EMAIL_D, windowMs: DAY, limit: 10, retired: [] },
+  { bucket: USER_H, windowMs: HOUR, limit: 5, retired: [] },
+  { bucket: IP_H, windowMs: HOUR, limit: 20, retired: [] },
 ];
 
 describe("claim rate limits (decision 0012, threat T5)", () => {
@@ -54,11 +56,20 @@ describe("claim rate limits (decision 0012, threat T5)", () => {
   // another (review F1). The user and IP limits stay global.
   it("scope the email's buckets to the workspace, and only those", () => {
     const other = claimRateLimitBuckets({ ...KEYS, workspaceId: "w2" }).map((b) => b.bucket);
-    expect(other).toEqual([
-      `email:w2:${KEYS.emailHash}:h`,
-      `email:w2:${KEYS.emailHash}:d`,
-      USER_H,
-      IP_H,
+    expect(other).toEqual([`email:w2:${EMAIL_HASH}:h`, `email:w2:${EMAIL_HASH}:d`, USER_H, IP_H]);
+  });
+
+  it("rotation/old-and-new-secret-both-accepted: name the retired keys' buckets of each limit", () => {
+    const buckets = claimRateLimitBuckets({
+      ...KEYS,
+      emailHash: { current: EMAIL_HASH, retired: ["o1", "o2"] },
+      ipHash: { current: IP_HASH, retired: ["p1"] },
+    });
+    expect(buckets).toEqual([
+      { ...BUCKETS[0], retired: ["email:w1:o1:h", "email:w1:o2:h"] },
+      { ...BUCKETS[1], retired: ["email:w1:o1:d", "email:w1:o2:d"] },
+      { ...BUCKETS[2], retired: [] },
+      { ...BUCKETS[3], retired: ["ip:p1:h"] },
     ]);
   });
 });
@@ -74,11 +85,19 @@ describe("checkout rate limits (review F2)", () => {
   it("name their own buckets, apart from the claim request's", () => {
     const buckets = checkoutRateLimitBuckets({ userId: "u1", ipHash: KEYS.ipHash });
     expect(buckets).toEqual([
-      { bucket: "checkout:user:u1:h", windowMs: HOUR, limit: 10 },
-      { bucket: `checkout:ip:${KEYS.ipHash}:h`, windowMs: HOUR, limit: 30 },
+      { bucket: "checkout:user:u1:h", windowMs: HOUR, limit: 10, retired: [] },
+      { bucket: `checkout:ip:${IP_HASH}:h`, windowMs: HOUR, limit: 30, retired: [] },
     ]);
     const claimBuckets = new Set(BUCKETS.map((b) => b.bucket));
     expect(buckets.some((b) => claimBuckets.has(b.bucket))).toBe(false);
+  });
+
+  it("name the retired keys' IP buckets", () => {
+    const buckets = checkoutRateLimitBuckets({
+      userId: "u1",
+      ipHash: { current: IP_HASH, retired: ["p1"] },
+    });
+    expect(buckets.map((b) => b.retired)).toEqual([[], ["checkout:ip:p1:h"]]);
   });
 });
 
@@ -156,6 +175,38 @@ describe("rateLimitDecision", () => {
     });
   });
 
+  it("rotation/old-and-new-secret-both-accepted: adds retired keys' counts of the window", () => {
+    const bucket: RateLimitBucket = {
+      bucket: "cur",
+      windowMs: HOUR,
+      limit: 5,
+      retired: ["old1", "old2"],
+    };
+    const at = (old1: number, old2: number, cur: number, stale = 0) =>
+      rateLimitDecision(
+        [bucket],
+        [
+          counter("old1", old1),
+          counter("old2", old2),
+          counter("cur", cur),
+          counter("old1", stale, hour - HOUR),
+        ],
+        NOW,
+      );
+    // 1 + 2 + 1 = 4 < 5: allowed, and only the current bucket is counted.
+    expect(at(1, 2, 1)).toEqual({ allowed: true, counters: [counter("cur", 2)] });
+    // 2 + 2 + 1 = 5: refused, though the current bucket alone is under its limit.
+    expect(at(2, 2, 1)).toEqual({ allowed: false, retryAt: hour + HOUR });
+    expect(at(5, 0, 0)).toEqual({ allowed: false, retryAt: hour + HOUR });
+    // Retired counters from an earlier window do not count.
+    expect(at(0, 0, 0, 9)).toEqual({ allowed: true, counters: [counter("cur", 1)] });
+    // A bucket without retired names counts alone.
+    const plain = { bucket: "cur", windowMs: HOUR, limit: 1, retired: [] };
+    expect(rateLimitDecision([plain], [counter("old1", 3)], NOW)).toMatchObject({
+      allowed: true,
+    });
+  });
+
   it("refuses at the IP limit", () => {
     expect(rateLimitDecision(BUCKETS, [counter(IP_H, 20)], NOW)).toEqual({
       allowed: false,
@@ -168,6 +219,7 @@ describe("rateLimitDecision", () => {
       bucket: fc.constantFrom("a", "b"),
       windowMs: fc.constantFrom(1_000, 60_000, HOUR),
       limit: fc.integer({ min: 1, max: 5 }),
+      retired: fc.constant([]),
     });
     const buckets = fc.uniqueArray(bucket, {
       minLength: 1,

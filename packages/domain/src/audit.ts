@@ -413,11 +413,14 @@ export const AUDIT_ACTIONS = {
       .refine((d) => d.previousStatus !== d.status, { path: ["status"] }),
   },
   // An envelope sealed under a retired master key was re-sealed under the current one (decision
-  // 0011, rotation). The secret itself is unchanged; `field` names which envelope.
+  // 0011, rotation). The secret itself is unchanged; `field` names which envelope:
+  // `webhook_secret_next` is the secret of a webhook rotation in progress.
   "paddle.credentials_rewrapped": {
     scope: "workspace",
     targetType: "paddle_connection",
-    details: z.strictObject({ field: z.enum(["api_key", "webhook_secret"]) }),
+    details: z.strictObject({
+      field: z.enum(["api_key", "webhook_secret", "webhook_secret_next"]),
+    }),
   },
   "paddle.catalog_synced": {
     scope: "workspace",
@@ -564,18 +567,26 @@ export const AUDIT_ACTIONS = {
     targetType: "user",
     details: z.strictObject({ unlinkedSubjects: count, deleted: deletedRows }),
   },
+  // A webhook secret rotation (Phase 6): `started` once the second destination and its secret are
+  // stored and both secrets are accepted; `completed` once the old destination is deleted and the
+  // new one promoted. `destinationId` is the new destination in both.
   "paddle.webhook_secret_rotated": {
     scope: "workspace",
     targetType: "paddle_connection",
     details: z
-      .strictObject({ previousDestinationId: text, destinationId: text })
+      .strictObject({
+        stage: z.enum(["started", "completed"]),
+        previousDestinationId: text,
+        destinationId: text,
+      })
       .refine((d) => d.previousDestinationId !== d.destinationId, { path: ["destinationId"] }),
   },
-  // One per rewrap run over every workspace's envelopes (secret rotation).
+  // One per rewrap run over every workspace's envelopes (secret rotation): envelopes moved to the
+  // current master key, those that could not be opened, and those still under another listed key.
   "credentials.rewrapped": {
     scope: "account",
     targetType: "rewrap_run",
-    details: z.strictObject({ rewrapped: count, remaining: count }),
+    details: z.strictObject({ rewrapped: count, failed: count, remaining: count }),
   },
 } as const satisfies Record<string, AuditActionDefinition>;
 

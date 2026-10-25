@@ -76,7 +76,7 @@ export function commerceDeps(accounts: PaddleAccounts): CommerceDeps {
   return {
     paddle: ({ apiKey: key }) => accounts.resolve(key),
     credentialKeys: secrets.credentialKeys,
-    claimSigningKey: secrets.claimSigningKey,
+    claimSigningKeys: secrets.claimSigningKeys,
     baseUrl: env.PUBLIC_BASE_URL,
     deployment: "development",
   };

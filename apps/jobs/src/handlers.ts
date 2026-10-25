@@ -2,6 +2,7 @@ import {
   type CommerceDeps,
   type EntitlementSourcePort,
   PaddleUnavailableError,
+  queueCredentialRewrap,
   queueDueEvaluations,
   queueDueReconciles,
   queuePaddleSweeps,
@@ -163,7 +164,7 @@ export function createJobsWorker(deps: JobsWorkerDeps) {
       paddle: ({ apiKey, environment }) =>
         deps.paddle({ apiKey, apiBaseUrl: apiBaseUrls[environment] }),
       credentialKeys: config.commerce.credentialKeys,
-      claimSigningKey: config.commerce.claimSigningKey,
+      claimSigningKeys: config.commerce.claimSigningKeys,
       baseUrl: config.publicBaseUrl,
       deployment: config.environment,
     };
@@ -331,6 +332,21 @@ export function createJobsWorker(deps: JobsWorkerDeps) {
     }
   }
 
+  /**
+   * The daily credential check (secret rotation): queues a `rewrap_credentials` run while any
+   * envelope is still sealed under a retired `CREDENTIAL_KEYS` key. A failure is logged by its
+   * classification only.
+   */
+  async function dailyRewrapCheck(db: Db, config: JobsConfig, logger: Logger): Promise<void> {
+    if (config.commerce === null) return;
+    try {
+      const queued = await queueCredentialRewrap(services(db), config.commerce);
+      logger.info("credential rewrap check", { queued });
+    } catch (error) {
+      logger.error("credential rewrap check failed", classify(error));
+    }
+  }
+
   return {
     /** Liveness only: answers without reading configuration or touching D1. */
     async fetch(request: Request): Promise<Response> {
@@ -379,6 +395,7 @@ export function createJobsWorker(deps: JobsWorkerDeps) {
       const db = createDb(config.db);
       if (controller.cron === CRONS.dailyResync) {
         await dailyPaddleSweeps(db, logger);
+        await dailyRewrapCheck(db, config, logger);
         await dailyResync(db, logger);
         return;
       }

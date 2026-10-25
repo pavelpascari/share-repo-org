@@ -43,8 +43,11 @@ export type SourceSubscription =
  * a customer is linked only when all of its purchases came through the checkout.
  */
 export interface CheckoutClaimSupport {
-  /** `CLAIM_SIGNING_KEY`. */
-  readonly signingKey: Uint8Array;
+  /**
+   * `CLAIM_SIGNING_KEY`'s keys: references carry no key ID, so each is verified against all of
+   * them (secret rotation, Phase 6).
+   */
+  readonly signingKeys: readonly Uint8Array[];
   /**
    * Every subscription the source lists for the customer, any status, each with the customer the
    * source says it belongs to and the claim reference it carries. Fails (and is worth retrying)
