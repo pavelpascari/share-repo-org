@@ -45,6 +45,7 @@ The person running ShareRepo. During the private launch, the operator needs visi
 6. Create an offer that maps one or more prices to read access on one or more repositories.
 7. Share the offer's checkout link (`/buy/<offer>`), and the claim page for buyers who pay through links shared from Paddle.
 8. Observe subscriber entitlement and repository access status.
+9. Optionally, give an early buyer or a trial user an offer's repositories by hand, with no purchase ([decision 0016](decisions/0016-manual-access-source.md)): on **Manual access**, enter their GitHub login, an optional end date and a note. ShareRepo invites them, removes the access at the end date or when the creator revokes it, and records each step in the workspace history.
 
 GitHub login and GitHub App installation are separate steps. Logging in identifies a person; installing the app authorizes access to repositories for a workspace.
 
@@ -59,7 +60,9 @@ GitHub login and GitHub App installation are separate steps. Logging in identifi
 
 **Paid first, through a link the creator shared from Paddle?** Sign in, open the creator's claim page (`/c/<workspace>/claim`) and enter the email you paid with. ShareRepo emails a one-time link to that address. Open it while signed in and confirm "Claim purchase"; access follows. ShareRepo never links a purchase because an email address matches.
 
-If neither works, the creator can link the purchase to your GitHub account by hand, from their Customers page.
+If neither works, the creator can link the purchase to your GitHub account by hand, from their Customers page. The Customers page shows how each purchase was linked, and the creator can remove a link that went to the wrong account; the payer can then claim it by email.
+
+**Given access without a purchase?** The creator granted you manual access: accept the GitHub invitation. You don't need a ShareRepo account.
 
 ## Version 1 scope
 
@@ -68,6 +71,7 @@ If neither works, the creator can link the purchase to your GitHub account by ha
 - GitHub App installation and selected-repository discovery.
 - Paddle connection, webhook ingestion, products, prices, customers, and subscriptions needed for access policy.
 - Offers mapping Paddle prices to read access for GitHub repositories.
+- Manual access: an owner grants an offer's repositories to a GitHub account without a purchase, with an optional end date, and can revoke it (decision 0016). Limited to 100 open grants and 50 new grants a day per workspace.
 - Explicit subscription, entitlement, and grant records.
 - Idempotent provisioning and revocation.
 - Configurable or initially fixed grace-period policy for recoverable payment failure.

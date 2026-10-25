@@ -491,7 +491,7 @@ describe("applyManualAccessWrite: an existing access", () => {
 
 // Security review (decision 0016): a decision is authorized and planned from reads, and the batch
 // re-checks those facts, so a change that commits in between makes the write stale.
-describe("applyManualAccessWrite: re-checks its decision's facts in the batch", () => {
+describe("manual/concurrent-changes-converge: applyManualAccessWrite re-checks its decision's facts in the batch", () => {
   const create = (ws: Grantable, overrides: Partial<ManualAccessWrite> = {}) => {
     const access = accessRow(ws);
     return {

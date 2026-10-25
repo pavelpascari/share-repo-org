@@ -21,3 +21,4 @@ Each record has: **Status**, **Context**, **Decision**, **Consequences**.
 | [0013](0013-database-timers-and-expiry-confirmation.md) | Timers stay in the database; expiry is confirmed before revocation | Accepted |
 | [0014](0014-failure-handling-and-alerting.md) | Failure records, dead-letter queue, operator access, email alerts | Accepted |
 | [0015](0015-data-lifecycle.md) | Data lifecycle: retention, export, workspace and account deletion | Accepted |
+| [0016](0016-manual-access-source.md) | Manual access: an entitlement source without a payment provider | Accepted |
