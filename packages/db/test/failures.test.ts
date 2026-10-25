@@ -24,11 +24,13 @@ import {
   customerRow,
   outboxRow,
   seedOffer,
+  seedSubject,
   subscribedWorkspace,
   subscriptionRow,
 } from "./support/commerce.ts";
 import { connectedWorkspace, db, resourceRow, workspaceWithOwner } from "./support/connections.ts";
 import { seedPaddleConnection } from "./support/paddle.ts";
+import { grantRow, seedGrant } from "./support/reconcile.ts";
 import { T0, uniqueId } from "./support/rows.ts";
 
 // Failure records (decision 0014): written with their audit events, always addressed by their
@@ -229,7 +231,7 @@ describe("listUnhealthyConnections", () => {
     const healthy = await workspaceWithOwner();
     await seedPaddleConnection(healthy.workspaceId);
 
-    const listed = await listUnhealthyConnections(db, { limit: 1000 });
+    const listed = await listUnhealthyConnections(db, { limit: 1000, deletedSince: T0 });
     const ids = listed.map((c) => c.connectionId);
     expect(ids).not.toContain(active.connection.id);
     const mine = listed.filter((c) =>
@@ -246,6 +248,46 @@ describe("listUnhealthyConnections", () => {
       }),
     ]);
     expect(listed.filter((c) => c.workspaceId === healthy.workspaceId)).toEqual([]);
+  });
+});
+
+describe("listUnhealthyConnections: deleted installations", () => {
+  async function deletedWith(managed: boolean | null) {
+    const ws = await connectedWorkspace({ status: "deleted", updatedAt: T0 + 3 });
+    if (managed !== null) {
+      const resource = resourceRow(ws.workspaceId, ws.connection.id);
+      await db.insert(schema.resources).values(resource);
+      const subject = await seedSubject(ws.workspaceId);
+      await seedGrant(
+        grantRow(
+          {
+            workspaceId: ws.workspaceId,
+            connectionId: ws.connection.id,
+            subjectId: subject.id,
+            resourceId: resource.id,
+          },
+          { managed },
+        ),
+      );
+    }
+    return ws.connection.id;
+  }
+
+  it("lists a deletion from the last 30 days, or an older one that still has managed access", async () => {
+    const bare = await deletedWith(null);
+    const unmanaged = await deletedWith(false);
+    const managed = await deletedWith(true);
+    const ids = async (deletedSince: number) =>
+      (await listUnhealthyConnections(db, { limit: 1000, deletedSince })).map(
+        (c) => c.connectionId,
+      );
+    // Deleted at T0 + 3: within the window when it starts at or before then.
+    expect(await ids(T0 + 3)).toEqual(expect.arrayContaining([bare, unmanaged, managed]));
+    // Past the window, only the one whose managed access remains.
+    const later = await ids(T0 + 4);
+    expect(later).toContain(managed);
+    expect(later).not.toContain(bare);
+    expect(later).not.toContain(unmanaged);
   });
 });
 

@@ -62,6 +62,7 @@ export {
 export {
   type AffectedAccess,
   authorizeOperator,
+  DELETED_CONNECTION_LISTED_MS,
   DISMISS_REASON_MAX_LENGTH,
   type DismissFailureResult,
   dismissFailure,
@@ -74,6 +75,7 @@ export {
   type OperatorFailures,
   type OperatorPrincipal,
   type OperatorWorkspaceView,
+  type PurgeBlocked,
   RECONCILE_FAILING_THRESHOLD,
   type RetriedFailure,
   recordJobFailure,

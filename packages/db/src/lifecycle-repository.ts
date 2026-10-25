@@ -300,6 +300,51 @@ export async function getWorkspaceDeletionState(
   };
 }
 
+/** A due purge that waits, with its workspace, for the failure pages and `/ops`. */
+export interface PurgeBlocked {
+  readonly workspaceId: string;
+  readonly workspaceSlug: string;
+  readonly workspaceName: string;
+  /** A `PurgeBlock` reason, as the purge recorded it. */
+  readonly reason: string;
+  /** Since when the purge has waited for this reason. */
+  readonly since: Instant;
+  /** When the purge last checked. */
+  readonly checkedAt: Instant;
+}
+
+/**
+ * The recorded purge blocks of one workspace, or of every workspace (operators), oldest first.
+ * A block outlives nothing: the purge removes it when it starts, and a cancel removes it too.
+ */
+export async function listPurgeBlocks(
+  db: Db,
+  input: { readonly workspaceId: string } | { readonly all: true; readonly limit: number },
+): Promise<PurgeBlocked[]> {
+  const where =
+    "workspaceId" in input
+      ? sql`s.key = ${purgeBlockedKey(input.workspaceId)} AND w.id = ${input.workspaceId}`
+      : sql`s.key LIKE 'purge_blocked:%'`;
+  const rows = await db.all<{ id: string; slug: string; name: string; value: string }>(
+    sql`SELECT w.id, w.slug, w.name, s.value FROM system_state s
+      JOIN workspaces w ON s.key = 'purge_blocked:' || w.id
+      WHERE ${where}
+      ORDER BY json_extract(s.value, '$.since'), w.id
+      LIMIT ${"workspaceId" in input ? 1 : input.limit}`,
+  );
+  return rows.map((row) => {
+    const value = JSON.parse(row.value) as { reason: string; since: Instant; checkedAt: Instant };
+    return {
+      workspaceId: row.id,
+      workspaceSlug: row.slug,
+      workspaceName: row.name,
+      reason: value.reason,
+      since: value.since,
+      checkedAt: value.checkedAt,
+    };
+  });
+}
+
 /** What still holds a purge back: live entitlements and managed grants, in the workspace. */
 export async function countRemainingAccess(
   db: Db,

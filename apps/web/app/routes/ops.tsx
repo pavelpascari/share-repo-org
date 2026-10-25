@@ -8,7 +8,11 @@ import { NotFoundError } from "@sharerepo/platform";
 import { Form, Link, useNavigation } from "react-router";
 import { z } from "zod";
 import { servicesFor } from "../auth/server.ts";
-import { FailedJobsTable, FailingRepositoriesList } from "../components/failure-list.tsx";
+import {
+  FailedJobsTable,
+  FailingRepositoriesList,
+  PurgeBlockedList,
+} from "../components/failure-list.tsx";
 import { TextField } from "../components/text-field.tsx";
 import { cloudflareContext } from "../context.ts";
 import { formatInstant } from "../entitlement-messages.ts";
@@ -113,7 +117,7 @@ function lateness(at: number | null, now: number): string {
 }
 
 export default function Ops({ loaderData, actionData }: Route.ComponentProps) {
-  const { jobs, repositories, connections, sweep, now } = loaderData;
+  const { jobs, repositories, connections, purgesBlocked, sweep, now } = loaderData;
   return (
     <main className="mx-auto max-w-6xl p-4 sm:p-8">
       <header className="flex items-center justify-between">
@@ -216,6 +220,19 @@ export default function Ops({ loaderData, actionData }: Route.ComponentProps) {
               </li>
             ))}
           </ul>
+        )}
+      </section>
+
+      <section aria-labelledby="purges-blocked" className="mt-8">
+        <h2 id="purges-blocked" className="text-lg font-semibold">
+          Workspace deletions that wait
+        </h2>
+        {purgesBlocked.length === 0 ? (
+          <p className="mt-2 text-gray-600">None.</p>
+        ) : (
+          <div className="mt-2">
+            <PurgeBlockedList blocks={purgesBlocked} showWorkspace />
+          </div>
         )}
       </section>
     </main>

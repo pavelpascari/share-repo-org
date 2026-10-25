@@ -1,17 +1,5 @@
 import type { CommercialSource, Instant } from "@sharerepo/domain";
-import {
-  and,
-  asc,
-  eq,
-  gte,
-  inArray,
-  isNotNull,
-  isNull,
-  lte,
-  min,
-  type SQL,
-  sql,
-} from "drizzle-orm";
+import { and, asc, eq, gte, isNotNull, isNull, lte, min, type SQL, sql } from "drizzle-orm";
 import { type AuditEvents, conditionalAuditInserts } from "./audit-repository.ts";
 import { runBatch } from "./batch.ts";
 import type { Db } from "./client.ts";
@@ -20,6 +8,7 @@ import {
   connections,
   customers,
   entitlements,
+  grants,
   offerAccesses,
   offers,
   outbox,
@@ -235,10 +224,15 @@ export interface UnhealthyConnection {
   readonly since: Instant;
 }
 
-/** Every workspace's unhealthy connections (operators), oldest change first. */
+/**
+ * Every workspace's unhealthy connections (operators), oldest change first: suspended GitHub
+ * connections, unauthorized Paddle ones, and deleted GitHub connections that were deleted at or
+ * after `deletedSince` or still have managed access (grants ShareRepo created and may need to
+ * revoke). An old deletion with nothing left to revoke is history, not a failure.
+ */
 export async function listUnhealthyConnections(
   db: Db,
-  input: { limit: number },
+  input: { limit: number; deletedSince: Instant },
 ): Promise<UnhealthyConnection[]> {
   const [github, paddle] = await Promise.all([
     db
@@ -253,7 +247,12 @@ export async function listUnhealthyConnections(
       })
       .from(connections)
       .innerJoin(workspaces, eq(workspaces.id, connections.workspaceId))
-      .where(inArray(connections.status, ["suspended", "deleted"]))
+      .where(
+        sql`${connections.status} = 'suspended' OR (${connections.status} = 'deleted' AND (
+          ${connections.updatedAt} >= ${input.deletedSince} OR EXISTS (SELECT 1 FROM ${grants}
+            WHERE ${grants.workspaceId} = ${connections.workspaceId}
+              AND ${grants.connectionId} = ${connections.id} AND ${grants.managed} = 1)))`,
+      )
       .orderBy(asc(connections.updatedAt), asc(connections.id))
       .limit(input.limit),
     db

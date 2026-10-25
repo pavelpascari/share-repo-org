@@ -13,6 +13,7 @@ import { commerceFor } from "../commerce.server.ts";
 import { TextField } from "../components/text-field.tsx";
 import { cloudflareContext } from "../context.ts";
 import { formatDate } from "../entitlement-messages.ts";
+import { PURGE_BLOCK_MESSAGES } from "../failure-messages.ts";
 import { assertSameOrigin } from "../security/same-origin.ts";
 import { fieldMessages } from "../workspace-messages.ts";
 import { asResponse } from "../workspaces.server.ts";
@@ -21,14 +22,6 @@ import type { Route } from "./+types/w.$slug.settings";
 export function meta(_: Route.MetaArgs) {
   return [{ title: "Settings · ShareRepo" }];
 }
-
-/** Why a due purge waits (decision 0015), as the owner reads it. */
-export const PURGE_BLOCK_MESSAGES: Record<PurgeBlock, string> = {
-  entitlements_remaining:
-    "Some subscribers' access is still being ended. ShareRepo retries every day.",
-  managed_access_remaining:
-    "ShareRepo is still removing collaborators it invited. Keep the GitHub App installed until the workspace is deleted, so it can remove them.",
-};
 
 /** The owner's settings, for an active workspace or one being deleted. */
 export async function loader({ request, params, context }: Route.LoaderArgs) {

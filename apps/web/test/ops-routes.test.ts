@@ -1,5 +1,5 @@
 import { recordJobFailure } from "@sharerepo/application";
-import { enqueueOutbox, listAuditEventsByCorrelationId } from "@sharerepo/db";
+import { enqueueOutbox, listAuditEventsByCorrelationId, recordPurgeBlocked } from "@sharerepo/db";
 import { systemClock } from "@sharerepo/domain";
 import type { RouterContextProvider } from "react-router";
 import { describe, expect, it } from "vitest";
@@ -244,5 +244,50 @@ describe("owner failures on the Access page", () => {
       args(get(`/w/${mine.slug}/access`, mine.owner), harness().context, mine.slug),
     );
     expect(after.failures.jobs).toEqual([]);
+  });
+});
+
+describe("purges that wait", () => {
+  it("shows a workspace's recorded purge block to its owner and on /ops, and no one else's", async () => {
+    const mine = await shop();
+    const theirs = await shop();
+    const operator = await signedIn();
+    const since = systemClock.now();
+    await recordPurgeBlocked(db, {
+      workspaceId: mine.workspaceId,
+      reason: "managed_access_remaining",
+      now: since,
+    });
+    await recordPurgeBlocked(db, {
+      workspaceId: mine.workspaceId,
+      reason: "managed_access_remaining",
+      now: since + 1,
+    });
+    const block = {
+      workspaceId: mine.workspaceId,
+      workspaceSlug: mine.slug,
+      workspaceName: expect.any(String),
+      reason: "managed_access_remaining",
+      since,
+      checkedAt: since + 1,
+    };
+
+    const own = await access.loader(
+      args(get(`/w/${mine.slug}/access`, mine.owner), harness().context, mine.slug),
+    );
+    expect(own.failures.purgeBlocked).toEqual(block);
+    const other = await access.loader(
+      args(get(`/w/${theirs.slug}/access`, theirs.owner), harness().context, theirs.slug),
+    );
+    expect(other.failures.purgeBlocked).toBeNull();
+
+    const { context } = asOperator(operator);
+    const loaded = await ops.loader(args(get("/ops", operator), context));
+    expect(loaded.purgesBlocked).toContainEqual(block);
+    expect(loaded.purgesBlocked.map((b) => b.workspaceId)).not.toContain(theirs.workspaceId);
+    const viewed = await opsWorkspace.loader(
+      args(get(`/ops/w/${mine.slug}`, operator), asOperator(operator).context, mine.slug),
+    );
+    expect(viewed.failures.purgeBlocked).toEqual(block);
   });
 });

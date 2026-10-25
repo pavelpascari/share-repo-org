@@ -11,7 +11,11 @@ import {
 import { OutboxKind } from "@sharerepo/domain";
 import { data, Form, Link, useNavigation } from "react-router";
 import { servicesFor } from "../auth/server.ts";
-import { FailedJobsTable, FailingRepositoriesList } from "../components/failure-list.tsx";
+import {
+  FailedJobsTable,
+  FailingRepositoriesList,
+  PurgeBlockedList,
+} from "../components/failure-list.tsx";
 import { cloudflareContext } from "../context.ts";
 import {
   accessReasonText,
@@ -214,12 +218,18 @@ export default function Access({ loaderData, actionData }: Route.ComponentProps)
 }
 
 /**
- * Failures that need a person (decision 0014): failed jobs about this workspace's access, and
- * repositories whose checks keep failing. Owners can retry a failed job; dismissing one is for
+ * Failures that need a person (decision 0014): failed jobs about this workspace's access,
+ * repositories whose checks keep failing, and a due deletion whose purge waits (decision 0015). Owners can retry a failed job; dismissing one is for
  * ShareRepo support.
  */
 export function FailuresSection({ failures }: { failures: WorkspaceFailures }) {
-  if (failures.jobs.length === 0 && failures.repositories.length === 0) return null;
+  if (
+    failures.jobs.length === 0 &&
+    failures.repositories.length === 0 &&
+    failures.purgeBlocked === null
+  ) {
+    return null;
+  }
   return (
     <section aria-labelledby="needs-attention" className="mt-6 rounded border border-red-200 p-4">
       <h2 id="needs-attention" className="text-lg font-semibold">
@@ -251,6 +261,14 @@ export function FailuresSection({ failures }: { failures: WorkspaceFailures }) {
           <h3 className="mt-4 font-medium">Repositories that keep failing to check</h3>
           <div className="mt-2">
             <FailingRepositoriesList repositories={failures.repositories} />
+          </div>
+        </>
+      )}
+      {failures.purgeBlocked !== null && (
+        <>
+          <h3 className="mt-4 font-medium">Workspace deletion</h3>
+          <div className="mt-2">
+            <PurgeBlockedList blocks={[failures.purgeBlocked]} />
           </div>
         </>
       )}

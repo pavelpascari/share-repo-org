@@ -1,5 +1,5 @@
 import type { AffectedAccess, DismissFailureResult } from "@sharerepo/application";
-import type { OutboxKind } from "@sharerepo/domain";
+import type { OutboxKind, PurgeBlock } from "@sharerepo/domain";
 
 // User-facing copy for failed jobs on the Access page and `/ops` (decision 0014). Repository-
 // centric: "repository" and "subscriber", never "resource" or "subject".
@@ -99,3 +99,16 @@ export const CONNECTION_STATUS_TEXTS: Readonly<Record<string, string>> = {
   deleted: "Uninstalled from GitHub",
   unauthorized: "Paddle refused the API key",
 };
+
+/** Why a due purge waits (decision 0015), as the owner reads it. */
+export const PURGE_BLOCK_MESSAGES: Record<PurgeBlock, string> = {
+  entitlements_remaining:
+    "Some subscribers' access is still being ended. ShareRepo retries every day.",
+  managed_access_remaining:
+    "ShareRepo is still removing collaborators it invited. Keep the GitHub App installed until the workspace is deleted, so it can remove them.",
+};
+
+/** A recorded purge block's reason as text; an unknown reason (from a newer version) as is. */
+export function purgeBlockText(reason: string): string {
+  return (PURGE_BLOCK_MESSAGES as Readonly<Record<string, string>>)[reason] ?? reason;
+}

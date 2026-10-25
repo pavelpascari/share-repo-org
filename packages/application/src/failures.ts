@@ -36,6 +36,11 @@ export const RECONCILE_FAILING_THRESHOLD = 3;
 export const FAILURE_LIST_LIMIT = 200;
 /** The longest dismissal reason accepted. */
 export const DISMISS_REASON_MAX_LENGTH = 500;
+/**
+ * `/ops` lists a deleted GitHub connection for this long after its deletion, and after that only
+ * while it still has managed access that ShareRepo may need to revoke.
+ */
+export const DELETED_CONNECTION_LISTED_MS = 30 * 24 * 60 * 60 * 1000;
 
 const SYSTEM = { type: "system", id: null } as const;
 
@@ -110,6 +115,9 @@ export interface FailedJob {
 
 /** A selected repository with {@link RECONCILE_FAILING_THRESHOLD} or more failures in a row. */
 export type FailingRepository = repo.FailingResource;
+
+/** A workspace deletion whose due purge waits, and why (decision 0015). */
+export type PurgeBlocked = repo.PurgeBlocked;
 
 /** A key's workspace must be the failure's own, or nothing is resolved from it. */
 const ownKey = <T extends { readonly workspaceId: string }>(
@@ -197,21 +205,24 @@ async function failedJobOf(ctx: ServiceContext, row: repo.OpenOutboxFailure): Pr
 export interface WorkspaceFailures {
   readonly jobs: readonly FailedJob[];
   readonly repositories: readonly FailingRepository[];
+  /** Why the workspace's due purge waits (decision 0015), or null. */
+  readonly purgeBlocked: PurgeBlocked | null;
   /** The viewer may retry: an owner of an active workspace. */
   readonly canRetry: boolean;
 }
 
 async function failuresOf(ctx: ServiceContext, workspaceId: string) {
-  const [rows, repositories] = await Promise.all([
+  const [rows, repositories, [purgeBlocked = null]] = await Promise.all([
     repo.listOpenOutboxFailures(ctx.db, { workspaceId, limit: FAILURE_LIST_LIMIT }),
     repo.listFailingResources(ctx.db, {
       workspaceId,
       minFailures: RECONCILE_FAILING_THRESHOLD,
       limit: FAILURE_LIST_LIMIT,
     }),
+    repo.listPurgeBlocks(ctx.db, { workspaceId }),
   ]);
   const jobs = await Promise.all(rows.map((row) => failedJobOf(ctx, row)));
-  return { jobs, repositories };
+  return { jobs, repositories, purgeBlocked };
 }
 
 /**
@@ -238,12 +249,15 @@ export interface OperatorFailures {
   readonly jobs: readonly FailedJob[];
   readonly repositories: readonly FailingRepository[];
   readonly connections: readonly repo.UnhealthyConnection[];
+  /** Workspaces whose due purge waits, oldest first. */
+  readonly purgesBlocked: readonly PurgeBlocked[];
   readonly sweep: repo.SweepHealth;
 }
 
 /**
  * Every open failure, for an operator: failed jobs of every workspace and the system-wide ones,
- * repositories with repeated reconcile failures, unhealthy connections, and sweep health. Each
+ * repositories with repeated reconcile failures, unhealthy connections, purges that wait, and
+ * sweep health. Each
  * job's affected access is resolved within its own workspace.
  */
 export async function listAllOpenFailures(
@@ -252,18 +266,23 @@ export async function listAllOpenFailures(
 ): Promise<OperatorFailures> {
   const ctx = atOneInstant(context);
   const { db } = ctx;
-  const [rows, repositories, connections, sweep] = await Promise.all([
+  const now = ctx.clock.now();
+  const [rows, repositories, connections, purgesBlocked, sweep] = await Promise.all([
     repo.listOpenOutboxFailures(db, { all: true, limit: FAILURE_LIST_LIMIT }),
     repo.listFailingResources(db, {
       all: true,
       minFailures: RECONCILE_FAILING_THRESHOLD,
       limit: FAILURE_LIST_LIMIT,
     }),
-    repo.listUnhealthyConnections(db, { limit: FAILURE_LIST_LIMIT }),
-    repo.readSweepHealth(db, ctx.clock.now()),
+    repo.listUnhealthyConnections(db, {
+      limit: FAILURE_LIST_LIMIT,
+      deletedSince: now - DELETED_CONNECTION_LISTED_MS,
+    }),
+    repo.listPurgeBlocks(db, { all: true, limit: FAILURE_LIST_LIMIT }),
+    repo.readSweepHealth(db, now),
   ]);
   const jobs = await Promise.all(rows.map((row) => failedJobOf(ctx, row)));
-  return { jobs, repositories, connections, sweep };
+  return { jobs, repositories, connections, purgesBlocked, sweep };
 }
 
 /** A retried job, to hand to the queue at once. */

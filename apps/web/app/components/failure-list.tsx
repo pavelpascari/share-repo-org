@@ -1,10 +1,12 @@
-import type { FailedJob, FailingRepository } from "@sharerepo/application";
+import type { FailedJob, FailingRepository, PurgeBlocked } from "@sharerepo/application";
 import type { ReactNode } from "react";
+import { Link } from "react-router";
 import { formatInstant } from "../entitlement-messages.ts";
 import {
   affectedText,
   JOB_KIND_LABELS,
   jobErrorText,
+  purgeBlockText,
   reconcileErrorText,
 } from "../failure-messages.ts";
 
@@ -93,6 +95,35 @@ export function FailingRepositoriesList(props: {
             {repository.lastReconciledAt !== null &&
               `; last tried ${formatInstant(repository.lastReconciledAt)}`}
             .
+          </span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/** Workspace deletions whose purge waits (decision 0015): why, and since when. */
+export function PurgeBlockedList(props: {
+  blocks: readonly PurgeBlocked[];
+  /** On `/ops`: name each workspace, linked to its read-only Access page. */
+  showWorkspace?: boolean;
+}) {
+  return (
+    <ul className="flex flex-col gap-2 text-sm">
+      {props.blocks.map((block) => (
+        <li
+          key={block.workspaceId}
+          aria-label={`Deletion of ${block.workspaceName} waits`}
+          className="flex flex-col"
+        >
+          {props.showWorkspace && (
+            <Link to={`/ops/w/${block.workspaceSlug}`} className="font-medium underline">
+              {block.workspaceName}
+            </Link>
+          )}
+          <span>
+            Deletion waits: {purgeBlockText(block.reason)} Waiting since{" "}
+            {formatInstant(block.since)}; last checked {formatInstant(block.checkedAt)}.
           </span>
         </li>
       ))}

@@ -38,7 +38,8 @@ Cloudflare has no built-in alert for Worker errors, queue backlog or dead letter
 - **Operators** see every workspace's failures on `/ops`:
   - open failed jobs, oldest first, with workspace, kind, error code, attempts and the affected access;
   - repositories with repeated reconcile failures;
-  - connections that are suspended, deleted or unauthorized;
+  - connections that are suspended or unauthorized, and GitHub connections deleted in the last 30 days or that still have managed access ([amendment](#amendment--deleted-connections-and-waiting-purges-on-ops-phase-6-t6));
+  - workspace deletions whose purge waits, with the reason;
   - sweep health: the oldest due evaluation and reconcile, and the last heartbeat.
 
   An operator can retry or dismiss a failure, and can open a workspace's Access page read-only.
@@ -70,3 +71,8 @@ Cloudflare has no built-in alert for Worker errors, queue backlog or dead letter
 - Operators get a cross-workspace view, without a database role that a bug could grant.
 - `OPERATOR_GITHUB_IDS` must be set in each environment. Unset means no operators.
 - Alerting depends on a Cloudflare beta. The runbook has a fallback: a daily review of `/ops`.
+
+## Amendment — deleted connections and waiting purges on `/ops` (Phase 6 T6)
+
+- **Deleted GitHub connections** are listed on `/ops` for 30 days after their deletion (`DELETED_CONNECTION_LISTED_MS`), and after that only while they still have managed grants: access ShareRepo created and may still need to revoke by hand. An old uninstall with nothing left to revoke is history, not a failure, and listing it for ever would bury the live ones.
+- **A purge that waits** (decision 0015: `system_state` key `purge_blocked:<workspaceId>`) is shown on the owner's Access page under "Needs attention" and on `/ops`, with its reason, since when it waits and when it was last checked. It is not an outbox failure: the daily cron queues the purge again, so it needs no retry or dismissal. A workspace whose GitHub App was uninstalled before its purge waits on `managed_access_remaining` until an operator resolves it (incident runbook).

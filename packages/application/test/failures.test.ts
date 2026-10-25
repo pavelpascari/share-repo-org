@@ -4,6 +4,7 @@ import {
   listAuditEventsByCorrelationId,
   markOutboxSent,
   recordExternalEvent,
+  recordPurgeBlocked,
 } from "@sharerepo/db";
 import { type OutboxKind, parseWorkspaceSlug } from "@sharerepo/domain";
 import { GitHubApiError } from "@sharerepo/integrations";
@@ -15,6 +16,7 @@ import {
   authorizeOperator,
   checkPaddleConnection,
   createUserForSignIn,
+  DELETED_CONNECTION_LISTED_MS,
   DISMISS_REASON_MAX_LENGTH,
   dismissFailure,
   encodeOfferKey,
@@ -380,6 +382,42 @@ describe("operators", () => {
       "oldestDueOutboxAt",
       "oldestDueReconcileAt",
     ]);
+  });
+
+  it("lists an uninstalled connection for 30 days, then only while managed access remains", async () => {
+    const a = await shop();
+    a.github.deleteInstallation(a.installationId);
+    await resyncConnection(serviceContext(), a.connection, a.github, "test");
+    const listed = async () =>
+      (await listAllOpenFailures(serviceContext(), await anOperator())).connections.map(
+        (c) => c.connectionId,
+      );
+    expect(await listed()).toContain(a.connection.id);
+    clock.advance(DELETED_CONNECTION_LISTED_MS);
+    expect(await listed()).toContain(a.connection.id);
+    clock.advance(1);
+    expect(await listed()).not.toContain(a.connection.id);
+  });
+
+  it("lists workspaces whose due purge waits, with the reason", async () => {
+    const a = await shop();
+    const since = clock.now();
+    await recordPurgeBlocked(db, {
+      workspaceId: a.workspaceId,
+      reason: "entitlements_remaining",
+      now: since,
+    });
+    const all = await listAllOpenFailures(serviceContext(), await anOperator());
+    expect(all.purgesBlocked).toContainEqual({
+      workspaceId: a.workspaceId,
+      workspaceSlug: a.slug,
+      workspaceName: expect.any(String),
+      reason: "entitlements_remaining",
+      since,
+      checkedAt: since,
+    });
+    const own = await listOpenFailures(serviceContext(), a, a.slug);
+    expect(own.purgeBlocked).toMatchObject({ workspaceId: a.workspaceId, since });
   });
 
   it("operator/actions-audited", async () => {
