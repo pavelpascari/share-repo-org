@@ -117,7 +117,7 @@ describe("/ops", () => {
       ).bind(dueAt + 8 * HOUR, s.workspaceId, connectionId),
     ]);
     const { context } = asOperator(operator);
-    const loaded = await ops.loader(args(get("/ops", operator), context));
+    const loaded = listsOf(await ops.loader(args(get("/ops", operator), context)));
     // An hour of the rate limit is excused; the rest is lag, as sweep_lagging counts it.
     expect(loaded.sweep).toMatchObject({
       oldestDueReconcileAt: dueAt + HOUR,
