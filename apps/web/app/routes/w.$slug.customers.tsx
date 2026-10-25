@@ -1,9 +1,14 @@
-import { type CustomerSummary, linkCustomerManually, listCustomers } from "@sharerepo/application";
+import {
+  type CustomerSummary,
+  linkCustomerManually,
+  listCustomers,
+  unlinkCustomerManually,
+} from "@sharerepo/application";
 import { Form, useNavigation } from "react-router";
 import { z } from "zod";
 import { servicesFor } from "../auth/server.ts";
 import { enqueueRefreshesSince, githubAppFor } from "../commerce.server.ts";
-import { MANUAL_LINK_ERRORS } from "../commerce-messages.ts";
+import { LINK_VIA_LABELS, MANUAL_LINK_ERRORS, MANUAL_UNLINK_ERRORS } from "../commerce-messages.ts";
 import { TextField } from "../components/text-field.tsx";
 import { cloudflareContext } from "../context.ts";
 import { formatDate, SUBSCRIPTION_STATE_LABELS } from "../entitlement-messages.ts";
@@ -31,6 +36,10 @@ const linkForm = z.object({
   githubLogin: z.string().max(100),
   reason: z.string().max(2000),
 });
+const unlinkForm = z.object({
+  customerId: z.string().min(1).max(128),
+  reason: z.string().max(2000),
+});
 
 type ActionData =
   | { ok: true; notice: string; customerId: string; error: null }
@@ -46,6 +55,54 @@ export async function action({ request, params, context }: Route.ActionArgs) {
     "workspace.manage",
   );
   const form = await request.formData();
+  if (form.get("intent") === "unlink") {
+    const unlink = unlinkForm.safeParse({
+      customerId: form.get("customerId") ?? "",
+      reason: form.get("reason") ?? "",
+    });
+    const target = unlink.success ? unlink.data.customerId : "";
+    if (!unlink.success) {
+      return {
+        ok: false,
+        notice: null,
+        customerId: target,
+        error: "Enter a reason.",
+      } satisfies ActionData;
+    }
+    const services = servicesFor(context);
+    const since = services.clock.now();
+    const attempted = await attempt(() =>
+      unlinkCustomerManually(services, user, params.slug, unlink.data),
+    );
+    if (!attempted.ok) {
+      return {
+        ok: false,
+        notice: null,
+        customerId: target,
+        error: attempted.error,
+      } satisfies ActionData;
+    }
+    const result = attempted.value;
+    if (!result.ok) {
+      return {
+        ok: false,
+        notice: null,
+        customerId: target,
+        error: MANUAL_UNLINK_ERRORS[result.error],
+      } satisfies ActionData;
+    }
+    // The removal queued a refresh of each of the customer's subscriptions.
+    if (result.outcome === "unlinked") enqueueRefreshesSince(context, workspace.id, since);
+    return {
+      ok: true,
+      notice:
+        result.outcome === "unlinked"
+          ? "Link removed. ShareRepo is removing the access it granted for this purchase."
+          : "This customer is not linked.",
+      customerId: target,
+      error: null,
+    } satisfies ActionData;
+  }
   const parsed = linkForm.safeParse({
     customerId: form.get("customerId") ?? "",
     githubLogin: form.get("githubLogin") ?? "",
@@ -118,6 +175,14 @@ function CustomerCard(props: {
         <dd>{customer.source === "paddle" ? "Paddle" : "Simulated"}</dd>
         <dt className="text-gray-600">GitHub account</dt>
         <dd>{customer.linked === null ? "Not claimed" : `@${customer.linked.login}`}</dd>
+        {customer.linked !== null && (
+          <>
+            <dt className="text-gray-600">Linked through</dt>
+            <dd>
+              {customer.linked.via === null ? "Unknown" : LINK_VIA_LABELS[customer.linked.via]}
+            </dd>
+          </>
+        )}
         <dt className="text-gray-600">Subscriptions</dt>
         <dd>
           {customer.subscriptions.length === 0 ? (
@@ -166,6 +231,28 @@ function CustomerCard(props: {
           </button>
         </Form>
       </details>
+      {customer.linked !== null && (
+        <details className="mt-3">
+          <summary className="cursor-pointer text-sm underline">Remove the link</summary>
+          <Form method="post" className="mt-3 flex flex-col gap-3">
+            <p className="text-sm text-gray-600">
+              For a purchase linked to the wrong GitHub account. ShareRepo removes the access it
+              granted for this purchase. The payer can claim it again with the emailed link, or you
+              can link it by hand. Your reason is recorded.
+            </p>
+            <input type="hidden" name="intent" value="unlink" />
+            <input type="hidden" name="customerId" value={customer.id} />
+            <TextField name="reason" label="Reason" isRequired />
+            <button
+              type="submit"
+              disabled={navigation.state === "submitting"}
+              className="self-start rounded border border-red-600 px-4 py-2 text-red-700 disabled:opacity-60"
+            >
+              Remove link
+            </button>
+          </Form>
+        </details>
+      )}
     </li>
   );
 }
