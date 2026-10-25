@@ -13,6 +13,8 @@ import {
 } from "../src/index.ts";
 
 const NOW = 1_700_000_000_000;
+/** The expiry confirmation window, 6 hours (decision 0013). */
+const WINDOW = 6 * 60 * 60 * 1000;
 
 const entitlement = (
   id: string,
@@ -246,7 +248,65 @@ describe("planReconciliation: access desired", () => {
     });
     expect(plan(at(NOW))).toEqual([expect.objectContaining({ entitlementIds: ["e2"] })]);
     expect(plan(at(NOW - 1))).toEqual([expect.objectContaining({ entitlementIds: ["e2"] })]);
-    expect(plan({ entitlements: [entitlement("e1", { validUntil: NOW })] })).toEqual([]);
+    expect(plan(at(NOW - WINDOW))).toEqual([expect.objectContaining({ entitlementIds: ["e2"] })]);
+  });
+});
+
+describe("planReconciliation: expiry confirmation (decision 0013)", () => {
+  const pending = (validUntil = NOW, id = "e1") => entitlement(id, { validUntil });
+
+  it("timing/expiry-confirmed-before-revoke: waits instead of revoking or granting", () => {
+    // Every grant state: nothing is revoked, re-sent, retried or settled while expiry is pending.
+    for (const g of [
+      grant("g1"),
+      grant("g1", { state: "pending_invitation", expiresAt: NOW - 1 }),
+      grant("g1", { state: "error", retryClass: "retryable" }),
+      grant("g1", { state: "absent" }),
+      grant("g1", { managed: false }),
+    ]) {
+      expect(plan({ entitlements: [pending()], grants: [g] })).toEqual([
+        {
+          subjectId: "s1",
+          resourceId: "r1",
+          action: "wait",
+          reason: "expiry_pending",
+          accessLevel: null,
+          entitlementIds: [],
+          grantId: "g1",
+        },
+      ]);
+    }
+    // No access yet: nothing new is granted.
+    expect(plan({ entitlements: [pending(NOW - WINDOW + 1)] })).toEqual([
+      expect.objectContaining({ action: "wait", reason: "expiry_pending", grantId: null }),
+    ]);
+  });
+
+  it("timing/expiry-revokes-after-confirmation-window", () => {
+    const at = (validUntil: number) =>
+      plan({ entitlements: [pending(validUntil)], grants: [grant("g1")] });
+    expect(at(NOW - WINDOW + 1)).toEqual([
+      expect.objectContaining({ action: "wait", reason: "expiry_pending" }),
+    ]);
+    for (const validUntil of [NOW - WINDOW, NOW - WINDOW - 1]) {
+      expect(at(validUntil)).toEqual([
+        expect.objectContaining({ action: "revoke", reason: "not_entitled", entitlementIds: [] }),
+      ]);
+    }
+    // Without a grant, a confirmed expiry leaves nothing to decide.
+    expect(plan({ entitlements: [pending(NOW - WINDOW)] })).toEqual([]);
+  });
+
+  it("decides on a desired entitlement of the same pair as if none were pending", () => {
+    expect(plan({ entitlements: [pending(), entitlement("e2", { validUntil: NOW + 1 })] })).toEqual(
+      [
+        expect.objectContaining({
+          action: "provision",
+          reason: "grant_missing",
+          entitlementIds: ["e2"],
+        }),
+      ],
+    );
   });
 });
 
@@ -263,7 +323,10 @@ describe("planReconciliation: access not desired", () => {
 
   it("revokes a grant whose entitlement has expired, with no level desired", () => {
     expect(
-      plan({ entitlements: [entitlement("e1", { validUntil: NOW })], grants: [grant("g1")] }),
+      plan({
+        entitlements: [entitlement("e1", { validUntil: NOW - WINDOW })],
+        grants: [grant("g1")],
+      }),
     ).toEqual([
       {
         subjectId: "s1",
@@ -496,7 +559,13 @@ const inputArb: fc.Arbitrary<ReconciliationInput> = fc.record({
         subjectId: fc.constantFrom(...SUBJECTS),
         resourceId: fc.constantFrom(...RESOURCES),
         accessLevel: fc.constantFrom(...LEVELS),
-        validUntil: fc.option(fc.integer({ min: NOW - 2, max: NOW + 2 })),
+        // Around now, and around the end of the expiry confirmation window.
+        validUntil: fc.option(
+          fc.oneof(
+            fc.integer({ min: NOW - 2, max: NOW + 2 }),
+            fc.integer({ min: NOW - WINDOW - 2, max: NOW - WINDOW + 2 }),
+          ),
+        ),
       }),
       { maxLength: 6 },
     )
@@ -564,13 +633,14 @@ describe("planReconciliation properties", () => {
               expect(target?.managed).toBe(true);
               expect(target?.indirect).toBe(false);
             }
-            // Unmanaged or indirect access that exists is never changed either way.
+            // Unmanaged or indirect access that exists is never changed either way (an expiry
+            // pending wait changes nothing either).
             if (
               target !== undefined &&
               (!target.managed || target.indirect) &&
               target.state === "active"
             ) {
-              expect(["verify", "blocked", "noop"]).toContain(decision.action);
+              expect(["verify", "blocked", "noop", "wait"]).toContain(decision.action);
             }
           }
         }),
@@ -600,6 +670,43 @@ describe("planReconciliation properties", () => {
           expect([...listed].sort()).toEqual(desired.map((e) => e.id).sort());
           for (const d of decisions) {
             expect(d.accessLevel === null).toBe(d.entitlementIds.length === 0);
+          }
+        }),
+      );
+    },
+    PROPERTY_TIMEOUT,
+  );
+
+  it(
+    "timing/expiry-confirmed-before-revoke: a pair whose only live access awaits confirmation waits",
+    () => {
+      fc.assert(
+        fc.property(inputArb, (input) => {
+          const inPair = (d: ReconciliationDecision) =>
+            input.entitlements.filter(
+              (e) => e.subjectId === d.subjectId && e.resourceId === d.resourceId,
+            );
+          for (const decision of planReconciliation(input)) {
+            const entitlements = inPair(decision);
+            const desired = entitlements.some(
+              (e) => e.validUntil === null || e.validUntil > input.now,
+            );
+            const pending = entitlements.some(
+              (e) =>
+                e.validUntil !== null &&
+                e.validUntil <= input.now &&
+                input.now < e.validUntil + WINDOW,
+            );
+            if (!desired && pending) {
+              expect(decision).toMatchObject({
+                action: "wait",
+                reason: "expiry_pending",
+                accessLevel: null,
+                entitlementIds: [],
+              });
+            } else {
+              expect(decision.reason).not.toBe("expiry_pending");
+            }
           }
         }),
       );

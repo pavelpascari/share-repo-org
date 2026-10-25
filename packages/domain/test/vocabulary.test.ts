@@ -16,8 +16,11 @@ import {
   CredentialKind,
   ENTITLEMENT_SOURCE_TYPES,
   ENTITLEMENT_STATES,
+  ENTITLEMENT_VALIDITIES,
+  EntitlementValidity,
   EVENT_PROVIDERS,
   EventProvider,
+  EXPIRY_CONFIRMATION_WINDOW_MS,
   EXTERNAL_EVENT_STATES,
   GRACE_PERIOD_DAYS_DEFAULT,
   GRACE_PERIOD_DAYS_MAX,
@@ -64,6 +67,8 @@ import {
   SIGN_IN_REFUSAL_REASONS,
   SUBJECT_TYPES,
   SUBSCRIPTION_STATES,
+  SWEEP_LAG_ALERT_INTERVAL_MS,
+  SWEEP_LAG_ALERT_MS,
 } from "../src/index.ts";
 
 // These lists feed database CHECK constraints; changing one needs a migration.
@@ -219,6 +224,7 @@ describe("stable decision codes", () => {
       "no_access",
       "invitation_quota",
       "indirect_access",
+      "expiry_pending",
     ]));
   it("grant error codes", () =>
     expect(GRANT_ERROR_CODES).toEqual([
@@ -310,4 +316,17 @@ describe("provisioning constants", () => {
     ]).toEqual([5 * MINUTE, 10, 15 * MINUTE, 6 * HOUR]));
   it("retry backoff", () =>
     expect(RETRY_BACKOFF_MS).toEqual([1 * MINUTE, 5 * MINUTE, 15 * MINUTE, 60 * MINUTE]));
+});
+
+// Expiry confirmation and sweep health (decisions 0013 and 0014).
+describe("timing constants", () => {
+  const MINUTE = 60_000;
+  it("expiry confirmation window", () =>
+    expect(EXPIRY_CONFIRMATION_WINDOW_MS).toBe(6 * 60 * MINUTE));
+  it("entitlement validities", () =>
+    expect(ENTITLEMENT_VALIDITIES).toEqual(["desired", "expiry_pending", "not_desired"]));
+  it("entitlement validities by name", () =>
+    expect(Object.values(EntitlementValidity)).toEqual(ENTITLEMENT_VALIDITIES));
+  it("sweep lag alert", () =>
+    expect([SWEEP_LAG_ALERT_MS, SWEEP_LAG_ALERT_INTERVAL_MS]).toEqual([15 * MINUTE, 15 * MINUTE]));
 });

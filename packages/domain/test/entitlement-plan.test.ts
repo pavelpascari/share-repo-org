@@ -13,6 +13,8 @@ import {
 
 const DAY = 86_400_000;
 const NOW = 1_700_000_000_000;
+/** The expiry confirmation window, 6 hours (decision 0013). */
+const WINDOW = 6 * 60 * 60 * 1000;
 
 const subscription = (overrides: Partial<PlanSubscription> = {}): PlanSubscription => ({
   id: "sub1",
@@ -236,13 +238,38 @@ describe("planEntitlements", () => {
       },
     );
 
-    it("treats an end exactly at now as passed, and one just after as live", () => {
+    it("treats a confirmation window ending exactly at now as passed", () => {
       const at = (validUntil: number) =>
         plan({ live: [live("e1", { validUntil, decisionReason: "cancel_scheduled" })] });
-      expect(at(NOW).end).toEqual([
-        { id: "e1", state: "expired", reason: "cancellation_effective" },
-      ]);
-      expect(at(NOW + 1)).toEqual({
+      expect(at(NOW - WINDOW)).toEqual({
+        ...EMPTY,
+        create: [created("o1", "r1")],
+        end: [{ id: "e1", state: "expired", reason: "cancellation_effective" }],
+      });
+      const continued = {
+        ...EMPTY,
+        update: [
+          {
+            id: "e1",
+            set: {
+              validUntil: null,
+              decisionReason: "active",
+              offerVersion: 1,
+              policyVersion: ACCESS_POLICY_VERSION,
+            },
+          },
+        ],
+      };
+      expect(at(NOW - WINDOW + 1)).toEqual(continued);
+      expect(at(NOW)).toEqual(continued);
+      expect(at(NOW + 1)).toEqual(continued);
+    });
+
+    it("timing/expiry-confirmed-before-revoke: continues a row whose expiry was pending when the source still grants access", () => {
+      // A renewal whose webhook was lost: the refresh after the boundary finds it, and the row
+      // whose expiry reconciliation was waiting to confirm goes on (decision 0013).
+      const pending = live("e1", { validUntil: NOW - 1, decisionReason: "past_due_in_grace" });
+      expect(plan({ live: [pending] })).toEqual({
         ...EMPTY,
         update: [
           {
@@ -270,16 +297,22 @@ describe("planEntitlements", () => {
     });
 
     it("replaces it at a changed access level with one end and one create", () => {
-      const lapsed = live("e1", { validUntil: NOW - 1, decisionReason: "cancel_scheduled" });
-      expect(
+      const readOnly = [offer("o1", { accesses: [{ resourceId: "r1", accessLevel: "read" }] })];
+      const at = (validUntil: number) =>
         plan({
-          offers: [offer("o1", { accesses: [{ resourceId: "r1", accessLevel: "read" }] })],
-          live: [lapsed],
-        }),
-      ).toEqual({
+          offers: readOnly,
+          live: [live("e1", { validUntil, decisionReason: "cancel_scheduled" })],
+        });
+      expect(at(NOW - WINDOW)).toEqual({
         ...EMPTY,
         create: [created("o1", "r1", { accessLevel: "read" })],
         end: [{ id: "e1", state: "expired", reason: "cancellation_effective" }],
+      });
+      // Expiry pending: the row went on, so the change of level ends it like any live row.
+      expect(at(NOW - 1)).toEqual({
+        ...EMPTY,
+        create: [created("o1", "r1", { accessLevel: "read" })],
+        end: [{ id: "e1", state: "revoked", reason: "offer_access_changed" }],
       });
     });
   });
@@ -439,8 +472,14 @@ const liveArb = (offers: readonly PlanOffer[], now: number): fc.Arbitrary<LiveEn
             subjectId: fc.constantFrom(...SUBJECTS),
             accessLevel: fc.constantFrom(...LEVELS),
             offerVersion: fc.integer({ min: 1, max: 3 }),
-            // Ends before, at and after `now`: a late sweep leaves lapsed rows live.
-            validUntil: fc.option(fc.integer({ min: now - 20 * DAY, max: now + 20 * DAY })),
+            // Ends before, at and after `now`: a late sweep leaves lapsed rows live. Some end
+            // within the expiry confirmation window.
+            validUntil: fc.option(
+              fc.oneof(
+                fc.integer({ min: now - 20 * DAY, max: now + 20 * DAY }),
+                fc.integer({ min: now - WINDOW - 2, max: now + 2 }),
+              ),
+            ),
             decisionReason: fc.constantFrom(
               "active" as const,
               "trialing" as const,
@@ -576,7 +615,7 @@ describe("planEntitlements properties", () => {
   );
 
   it(
-    "ends every lapsed live entitlement once, as expired, and never extends it",
+    "ends every lapsed live entitlement once, as expired, and never extends it past the window",
     () => {
       fc.assert(
         fc.property(inputArb, (input) => {
@@ -585,10 +624,49 @@ describe("planEntitlements properties", () => {
           expect(new Set(ended).size).toBe(ended.length);
           for (const e of input.live) {
             if (e.validUntil === null || e.validUntil > input.now) continue;
-            expect(result.end).toContainEqual(
-              expect.objectContaining({ id: e.id, state: "expired" }),
+            const update = result.update.find((u) => u.id === e.id);
+            if (e.validUntil + WINDOW <= input.now) {
+              expect(result.end).toContainEqual(
+                expect.objectContaining({ id: e.id, state: "expired" }),
+              );
+              expect(update).toBeUndefined();
+            } else if (update === undefined) {
+              // Expiry pending and not updated: it ends (expired, or replaced at another level).
+              expect(result.end.some((x) => x.id === e.id)).toBe(true);
+            } else {
+              // Expiry pending and granted again: it goes on, to a boundary still ahead.
+              expect(update.set.validUntil === null || update.set.validUntil > input.now).toBe(
+                true,
+              );
+            }
+          }
+        }),
+      );
+    },
+    PROPERTY_TIMEOUT,
+  );
+
+  it(
+    "timing/expiry-confirmed-before-revoke: continues an expiry-pending row exactly when access is still granted",
+    () => {
+      fc.assert(
+        fc.property(inputArb, (input) => {
+          const result = planEntitlements(input);
+          for (const e of input.live) {
+            if (e.validUntil === null || e.validUntil > input.now) continue;
+            if (e.validUntil + WINDOW <= input.now) continue;
+            const end = result.end.find((x) => x.id === e.id);
+            const continued = end === undefined || end.reason === "offer_access_changed";
+            const created = result.create.some(
+              (c) =>
+                c.offerId === e.offerId &&
+                c.resourceId === e.resourceId &&
+                c.subjectId === e.subjectId,
             );
-            expect(result.update.some((u) => u.id === e.id)).toBe(false);
+            // A continued row is never replaced by a new one at the same level.
+            if (end === undefined) expect(created).toBe(false);
+            // An ended one is expired, never revoked, unless its level changed.
+            if (!continued) expect(end?.state).toBe("expired");
           }
         }),
       );
