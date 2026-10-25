@@ -28,7 +28,7 @@ import {
   outboxIdFor,
   receivedWebhook,
 } from "./support/github.ts";
-import { deliver, jobsWorker, runCron, sentAt } from "./support/worker.ts";
+import { deliver, jobsWorker, outboxRow, runCron, sentAt } from "./support/worker.ts";
 
 const resourcesOf = (connectionId: string) =>
   count("SELECT count(*) AS n FROM resources WHERE connection_id = ?", connectionId);
@@ -94,6 +94,51 @@ describe("queue()", () => {
     expect(changedTables(before, await snapshotTables(env.DB))).toEqual([]);
     expect(github.calls).toEqual([]);
     expect(logged().map((line) => line.msg)).toContain("job has no workspace scope");
+  });
+
+  // Phase 6 T1 placeholders: the kinds exist in the vocabulary; T4 and T5 add their handlers.
+  it.each(["prune_data", "purge_workspace", "rewrap_credentials"] as const)(
+    "fails %s for good until its handler lands",
+    async (kind) => {
+      const outboxId = `row-${crypto.randomUUID()}`;
+      await enqueueOutbox(db, {
+        id: outboxId,
+        kind,
+        subjectId: "x",
+        createdAt: clock.now(),
+        availableAt: clock.now(),
+        workspaceId: null,
+      });
+      const result = await deliver(jobsWorker(createFakeGitHubApp()), [
+        { kind, subjectId: "x", outboxId },
+      ]);
+      expect(result.explicitAcks).toHaveLength(1);
+      expect(result.retryMessages).toEqual([]);
+      expect(await outboxRow(outboxId)).toMatchObject({
+        sent_at: null,
+        last_error_code: "not_implemented",
+      });
+    },
+  );
+
+  // Phase 6 T1 placeholder: T3 records dead-lettered rows as failures (decision 0014).
+  it("acknowledges dead-lettered messages without running them", async () => {
+    const github = createFakeGitHubApp();
+    const before = await snapshotTables(env.DB);
+    const result = await deliver(
+      jobsWorker(github),
+      [{ kind: "resync_connection", subjectId: "c-dead", outboxId: "o-dead" }],
+      { queue: "sharerepo-events-dlq-dev" },
+    );
+    expect(result.explicitAcks).toHaveLength(1);
+    expect(result.retryMessages).toEqual([]);
+    expect(changedTables(before, await snapshotTables(env.DB))).toEqual([]);
+    expect(github.calls).toEqual([]);
+    const lines = logged().filter(
+      (line) => line.msg === "dead-lettered message acknowledged, not yet handled",
+    );
+    expect(lines).toHaveLength(1);
+    expect(JSON.stringify(lines)).not.toContain("c-dead");
   });
 
   it("drops a poison message without retrying it", async () => {
@@ -262,6 +307,7 @@ describe("scheduled()", () => {
       subjectId: "no-such-connection",
       createdAt: clock.now(),
       availableAt: clock.now(),
+      workspaceId: null,
     });
     await runCron(jobsWorker(createFakeGitHubApp()), CRONS.drainOutbox);
     expect(await sentAt(id)).toBe(clock.now());
@@ -375,6 +421,7 @@ describe("scheduled()", () => {
         subjectId: "no-such-connection",
         createdAt: 0,
         availableAt: 0,
+        workspaceId: null,
       });
     }
     return () =>

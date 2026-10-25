@@ -137,6 +137,12 @@ function logOutcome(logger: Logger, outcome: JobOutcome, fields: Record<string, 
 }
 
 /** A classified code for a failed outbox row, never a message. */
+/**
+ * The dead-letter queue of the events queue (`sharerepo-events-dlq-<env>`, decision 0014): it
+ * receives messages that used up their queue retries, and this Worker consumes it too.
+ */
+export const DEAD_LETTER_QUEUE_PREFIX = "sharerepo-events-dlq-";
+
 const errorCode = (error: unknown): string =>
   isProviderError(error) ? error.kind : error instanceof AppError ? error.code : "internal_error";
 
@@ -306,6 +312,7 @@ export function createJobsWorker(deps: JobsWorkerDeps) {
         subjectId: connection.id,
         createdAt: now,
         availableAt: now,
+        workspaceId: connection.workspaceId,
       });
     }
     logger.info("daily resync queued", { connections: connections.length });
@@ -393,6 +400,17 @@ export function createJobsWorker(deps: JobsWorkerDeps) {
         { correlationId: deps.ids.next(), worker: "jobs", queue: batch.queue },
         logOptions,
       );
+      if (batch.queue.startsWith(DEAD_LETTER_QUEUE_PREFIX)) {
+        // Placeholder until the dead-letter handling lands (Phase 6 plan, T3): acknowledged and
+        // logged by message ID only, so the dead-letter queue does not grow meanwhile.
+        for (const message of batch.messages) {
+          batchLogger.warn("dead-lettered message acknowledged, not yet handled", {
+            messageId: message.id,
+          });
+          message.ack();
+        }
+        return;
+      }
       const config = configFrom(env, batchLogger);
       const db = createDb(config.db);
       const jobs = config.github === null ? null : jobDeps(config, config.github);

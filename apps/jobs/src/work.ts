@@ -61,6 +61,8 @@ export const JobRejection = {
   KeyInvalid: "key_invalid",
   /** The job's entitlement source does not run in this environment. */
   SourceUnavailable: "source_unavailable",
+  /** The kind has no handler yet in this build (Phase 6 T1 placeholders). */
+  NotImplemented: "not_implemented",
 } as const;
 export type JobRejection = (typeof JobRejection)[keyof typeof JobRejection];
 
@@ -171,6 +173,12 @@ export async function runJob(
       const swept = await sweepPaddleSubscriptions(ctx, key, commerceOf(deps));
       return swept?.truncated === true ? JobOutcome.Partial : JobOutcome.Done;
     }
+    case OutboxKind.PruneData:
+    case OutboxKind.PurgeWorkspace:
+    case OutboxKind.RewrapCredentials:
+      // Placeholders until their handlers land (Phase 6 plan, T4 and T5). Nothing enqueues these
+      // kinds before then. Not retryable: the row is marked failed with this rejection's code.
+      throw new JobRejectedError(JobRejection.NotImplemented);
   }
 }
 

@@ -12,6 +12,13 @@ const EXEMPTIONS: readonly ConformanceExemption[] = [
       "Holds account-scoped events with no workspace, so workspace_id is nullable; workspace rows " +
       "reference the root workspaces table directly (decision 0007).",
   },
+  {
+    table: "outbox",
+    reason:
+      "System-wide work (the sweeps) has no workspace, so workspace_id is nullable and references " +
+      "the root workspaces table directly. A row's subject differs by kind, so no composite key " +
+      "can tie it to one table; the key's workspace prefix is checked by the jobs (decision 0014).",
+  },
 ];
 
 describe("isolation/composite-fk-rejects-cross-tenant-link: migrated schema", () => {

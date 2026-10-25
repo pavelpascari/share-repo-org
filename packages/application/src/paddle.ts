@@ -433,6 +433,8 @@ export async function connectPaddle(
       apiKeyExpiresOn: input.apiKeyExpiresOn,
       destinationId: destination.id,
       webhookSecretEnvelope: await sealFor(deps, ids, "webhook_secret", destination.secret),
+      destinationNextId: null,
+      webhookSecretNextEnvelope: null,
       status: "active",
       statusReason: null,
       lastEventAt: null,
@@ -907,6 +909,7 @@ export async function ingestPaddleWebhook(
         subjectId: eventId,
         createdAt: now,
         availableAt: now,
+        workspaceId,
       },
     ],
   );
@@ -955,6 +958,7 @@ export async function processPaddleEvent(
         subjectId: encodePaddleConnectionKey({ workspaceId, connectionId: connection.id }),
         createdAt: now,
         availableAt: now,
+        workspaceId,
       };
     }
   }
@@ -1073,6 +1077,7 @@ export async function queuePaddleSweeps(context: ServiceContext): Promise<number
       }),
       createdAt: now,
       availableAt: now,
+      workspaceId: connection.workspaceId,
     };
     if (await repo.enqueueOutboxOnce(ctx.db, row)) queued += 1;
   }

@@ -7,6 +7,7 @@ import {
 } from "./claim.ts";
 import { CONNECTION_STATUSES } from "./connection.ts";
 import { ACCESS_LEVELS } from "./entitlement.ts";
+import { OUTBOX_KINDS } from "./external-event.ts";
 import { GRANT_STATES, MUTATION_OPERATIONS, RETRY_CLASSES } from "./grant.ts";
 import { IDENTITY_PROVIDERS } from "./identity.ts";
 import type { IdGenerator } from "./ids.ts";
@@ -47,7 +48,12 @@ export interface AuditEvent {
 }
 
 interface AuditActionDefinition {
-  readonly scope: AuditScope;
+  /**
+   * `either`: the event is in the workspace when there is one and account-scoped otherwise, such
+   * as a failed job, which may be system-wide (decision 0014). The caller passes the workspace ID
+   * or null explicitly.
+   */
+  readonly scope: AuditScope | "either";
   readonly targetType: string;
   readonly details: z.ZodObject;
   /** The event must carry a human reason, such as an owner's justification for a manual link. */
@@ -74,6 +80,9 @@ const liveConnectionStatus = z.enum([
 ]);
 /** The self-service claim paths; an owner's manual link has its own action. */
 const claimPath = z.enum([LinkPath.Checkout, LinkPath.Email]);
+const outboxKind = z.enum(OUTBOX_KINDS);
+/** Rows deleted per table, by table name: counts only, never row contents (decision 0015). */
+const deletedRows = z.record(z.string().regex(/^[a-z][a-z0-9_]*$/), count);
 
 /** The grant fields a `grant.observed` event reports, before and after. */
 const observedGrant = z.strictObject({
@@ -491,16 +500,98 @@ export const AUDIT_ACTIONS = {
       .strictObject({ previousSubjectId: text.nullable(), subjectId: text })
       .refine((d) => d.previousSubjectId !== d.subjectId, { path: ["subjectId"] }),
   },
+  // Failures, operators and the data lifecycle (Phase 6, decisions 0014 and 0015). Minimal shapes
+  // from Phase 6 T1, refined by the tasks that write them. IDs, counts and codes only: never a
+  // login, email, secret or key ID. A job is in its workspace when it has one (`outbox.workspace_id`).
+  "job.failed": {
+    scope: "either",
+    targetType: "outbox",
+    details: z.strictObject({
+      kind: outboxKind,
+      subjectId: text,
+      errorCode: text,
+      attempts: count,
+    }),
+  },
+  "job.retried": {
+    scope: "either",
+    targetType: "outbox",
+    details: z.strictObject({ kind: outboxKind, previousErrorCode: text }),
+  },
+  // The dismissal reason is the event's `reason`, which is required.
+  "job.dismissed": {
+    scope: "either",
+    targetType: "outbox",
+    requiresReason: true,
+    details: z.strictObject({ kind: outboxKind, errorCode: text }),
+  },
+  // An operator read a workspace's page; the actor is the operator.
+  "operator.viewed_workspace": {
+    scope: "workspace",
+    targetType: "workspace",
+    details: z.strictObject({}),
+  },
+  // One per pruning run, a system event (decision 0015).
+  "data.pruned": {
+    scope: "account",
+    targetType: "retention_run",
+    details: z.strictObject({ deleted: deletedRows }),
+  },
+  "workspace.exported": {
+    scope: "workspace",
+    targetType: "workspace",
+    details: z.strictObject({ formatVersion: positive }),
+  },
+  "workspace.deletion_requested": {
+    scope: "workspace",
+    targetType: "workspace",
+    details: z.strictObject({ deleteAfter: instant }),
+  },
+  "workspace.deletion_cancelled": {
+    scope: "workspace",
+    targetType: "workspace",
+    details: z.strictObject({}),
+  },
+  // The tombstone written after the workspace's own audit events are gone: the target is the
+  // workspace ID, the details only counts.
+  "workspace.purged": {
+    scope: "account",
+    targetType: "workspace",
+    details: z.strictObject({ deleted: deletedRows }),
+  },
+  "user.deleted": {
+    scope: "account",
+    targetType: "user",
+    details: z.strictObject({ unlinkedSubjects: count, deleted: deletedRows }),
+  },
+  "paddle.webhook_secret_rotated": {
+    scope: "workspace",
+    targetType: "paddle_connection",
+    details: z
+      .strictObject({ previousDestinationId: text, destinationId: text })
+      .refine((d) => d.previousDestinationId !== d.destinationId, { path: ["destinationId"] }),
+  },
+  // One per rewrap run over every workspace's envelopes (secret rotation).
+  "credentials.rewrapped": {
+    scope: "account",
+    targetType: "rewrap_run",
+    details: z.strictObject({ rewrapped: count, remaining: count }),
+  },
 } as const satisfies Record<string, AuditActionDefinition>;
 
 export type AuditAction = keyof typeof AUDIT_ACTIONS;
 type Definition<A extends AuditAction> = (typeof AUDIT_ACTIONS)[A];
 export type AuditDetails<A extends AuditAction> = z.input<Definition<A>["details"]>;
 
-/** A workspace ID is required for workspace-scoped actions and not allowed for account-scoped ones. */
+/**
+ * A workspace ID is required for workspace-scoped actions and not allowed for account-scoped
+ * ones. An `either` action takes the workspace ID, or an explicit null when there is none.
+ */
 type WorkspaceField<A extends AuditAction> = Definition<A>["scope"] extends "workspace"
   ? { readonly workspaceId: string }
-  : { readonly workspaceId?: never };
+  : Definition<A>["scope"] extends "account"
+    ? { readonly workspaceId?: never }
+    : { readonly workspaceId: string | null };
 
 /** A reason is required for actions that demand one and optional for the rest. */
 type ReasonField<A extends AuditAction> =
@@ -533,11 +624,17 @@ export function auditEvent<A extends AuditAction>(
   if (!Object.hasOwn(AUDIT_ACTIONS, action)) throw new Error(`unknown audit action: ${action}`);
   const definition: AuditActionDefinition = AUDIT_ACTIONS[action];
   const { workspaceId, reason } = input as {
-    readonly workspaceId?: string;
+    readonly workspaceId?: string | null;
     readonly reason?: string;
   };
+  const scope: AuditScope =
+    definition.scope === "either"
+      ? workspaceId === null
+        ? "account"
+        : "workspace"
+      : definition.scope;
 
-  if (definition.scope === "workspace" && !workspaceId) {
+  if (scope === "workspace" && !workspaceId) {
     throw new Error(`${action} is workspace-scoped and needs a workspace ID`);
   }
   if (definition.scope === "account" && workspaceId !== undefined) {
@@ -565,7 +662,7 @@ export function auditEvent<A extends AuditAction>(
 
   return {
     id: context.ids.next(),
-    scope: definition.scope,
+    scope,
     workspaceId: workspaceId ?? null,
     actor: { type: input.actor.type, id: input.actor.id },
     action,

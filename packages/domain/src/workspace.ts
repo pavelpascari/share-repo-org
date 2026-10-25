@@ -72,7 +72,13 @@ export function parseWorkspaceRole(value: unknown): ParseResult<WorkspaceRole, "
   return isWorkspaceRole(value) ? { ok: true, value } : { ok: false, error: "role_invalid" };
 }
 
-export const WORKSPACE_STATUSES = ["active", "suspended"] as const;
+/**
+ * `deleting`: an owner asked to delete the workspace (decision 0015). It is read-only, its access
+ * is being revoked, and the owner can cancel until `delete_after`. `purging`: the purge job is
+ * deleting its rows; the only status under which its audit events may be deleted. Anything other
+ * than `active` refuses writes, checkout and claims.
+ */
+export const WORKSPACE_STATUSES = ["active", "suspended", "deleting", "purging"] as const;
 export type WorkspaceStatus = (typeof WORKSPACE_STATUSES)[number];
 
 export function isWorkspaceStatus(value: unknown): value is WorkspaceStatus {

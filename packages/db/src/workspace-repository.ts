@@ -47,6 +47,8 @@ export async function createWorkspace(
     status: "active",
     createdAt: input.now,
     updatedAt: input.now,
+    deleteAfter: null,
+    deletionRequestedBy: null,
   };
   try {
     await db.batch([

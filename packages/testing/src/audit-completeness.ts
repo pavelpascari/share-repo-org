@@ -13,7 +13,10 @@ export const UNAUDITED_TABLES: Readonly<Record<string, string>> = {
   auth_rate_limits: "Better Auth rate-limit counters",
   claim_rate_limits: "claim request and checkout start rate-limit counters (bookkeeping)",
   external_events: "receipt bookkeeping; the resulting changes are audited",
-  outbox: "work hand-off bookkeeping (decision 0003)",
+  outbox:
+    "work hand-off bookkeeping (decision 0003); retrying or dismissing a failure is audited as job.*",
+  system_state:
+    "sweep health bookkeeping, such as when a lag alert was last raised (decision 0014)",
 };
 
 export type TableSnapshot = ReadonlyMap<string, string>;

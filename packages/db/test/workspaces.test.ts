@@ -141,6 +141,8 @@ describe("createWorkspace", () => {
         status: "active",
         createdAt: T0 + 1,
         updatedAt: T0 + 1,
+        deleteAfter: null,
+        deletionRequestedBy: null,
       },
     });
     const membership = await env.DB.prepare(

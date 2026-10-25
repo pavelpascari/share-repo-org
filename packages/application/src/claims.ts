@@ -612,6 +612,7 @@ export async function requestClaim(
     subjectId: encodeClaimRequestKey({ workspaceId, claimRequestId }),
     createdAt: now,
     availableAt: now,
+    workspaceId,
   };
   await repo.createClaimRequest(
     ctx.db,

@@ -57,6 +57,7 @@ const refreshRow =
     id: uniqueId("obx"),
     kind: "refresh_subscription",
     subjectId: `${workspaceId}:${subscription.source}:${subscription.externalSubscriptionId}`,
+    workspaceId,
     createdAt: NOW,
     availableAt: NOW,
   });

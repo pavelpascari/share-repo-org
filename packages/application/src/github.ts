@@ -211,6 +211,7 @@ export async function completeGitHubConnection(
         lastSyncedAt: null,
         syncVersion: 0,
         syncToken: null,
+        rateLimitedUntil: null,
       },
       outbox: [
         {
@@ -219,6 +220,7 @@ export async function completeGitHubConnection(
           subjectId: connectionId,
           createdAt: now,
           availableAt: now,
+          workspaceId: intent.workspaceId,
         },
       ],
     },
@@ -332,6 +334,8 @@ export async function ingestGitHubWebhook(
         subjectId: eventId,
         createdAt: now,
         availableAt: now,
+        // Which workspace a GitHub event concerns is known only once it is processed.
+        workspaceId: null,
       },
     ],
   );

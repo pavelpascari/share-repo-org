@@ -11,6 +11,7 @@ import { sql } from "drizzle-orm";
 import { check, index, integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
 import { paddleConnections } from "./paddle.ts";
 import { literalList } from "./sql.ts";
+import { workspaces } from "./workspaces.ts";
 
 /**
  * Receipt of a provider webhook (domain `ExternalEvent`). Global: an event can arrive before any
@@ -57,6 +58,8 @@ export const externalEvents = sqliteTable(
     // absent from the snapshots; `pnpm db:check` compares snapshots only. Writers use
     // ON CONFLICT DO NOTHING without a target, which covers this index.
     index("external_events_state_idx").on(t.processingState, t.receivedAt),
+    // Pruning by age (decision 0015).
+    index("external_events_received_idx").on(t.receivedAt),
     check("external_events_provider_valid", sql`provider IN (${literalList(EVENT_PROVIDERS)})`),
     // Paddle events always name their connection; GitHub events never do.
     check(
@@ -74,6 +77,11 @@ export const externalEvents = sqliteTable(
 /**
  * Transactional outbox (decision 0003): work intents written in the same batch as the change
  * that causes them, delivered to the jobs Worker at least once. Carries IDs only.
+ *
+ * A row that failed for good is a failure record (decision 0014): `workspace_id` scopes it (null
+ * for system-wide jobs such as the sweeps), and an operator may dismiss it with a reason.
+ * `dismissed_by` is a user ID without a foreign key, like an audit actor's, so an operator can
+ * still delete their account.
  */
 export const outbox = sqliteTable(
   "outbox",
@@ -88,10 +96,30 @@ export const outbox = sqliteTable(
     // Set when the work failed permanently or ran out of attempts; such rows are never claimed.
     failedAt: integer("failed_at").$type<Instant>(),
     lastErrorCode: text("last_error_code"),
+    // The workspace the work is about; null for system-wide work.
+    workspaceId: text("workspace_id").references(() => workspaces.id, { onDelete: "restrict" }),
+    dismissedAt: integer("dismissed_at").$type<Instant>(),
+    dismissedBy: text("dismissed_by"),
+    dismissReason: text("dismiss_reason"),
   },
   (t) => [
+    // Also serves pruning sent rows by `sent_at` (decision 0015).
     index("outbox_pending_idx").on(t.sentAt, t.availableAt),
+    // "Is this work already queued?" for the sweeps' repair queries and deduplicated inserts.
+    index("outbox_pending_subject_idx")
+      .on(t.kind, t.subjectId)
+      .where(sql`sent_at IS NULL AND failed_at IS NULL`),
+    // Open failures per workspace, oldest first (decision 0014).
+    index("outbox_open_failures_idx")
+      .on(t.workspaceId, t.failedAt)
+      .where(sql`failed_at IS NOT NULL AND dismissed_at IS NULL`),
     check("outbox_kind_valid", sql`kind IN (${literalList(OUTBOX_KINDS)})`),
     check("outbox_attempts_non_negative", sql`attempts >= 0`),
+    // Only a failure can be dismissed; a dismissal names who and why.
+    check("outbox_dismissed_only_failed", sql`dismissed_at IS NULL OR failed_at IS NOT NULL`),
+    check(
+      "outbox_dismissal_complete",
+      sql`(dismissed_at IS NULL) = (dismissed_by IS NULL) AND (dismissed_at IS NULL) = (dismiss_reason IS NULL) AND (dismiss_reason IS NULL OR length(dismiss_reason) > 0)`,
+    ),
   ],
 );

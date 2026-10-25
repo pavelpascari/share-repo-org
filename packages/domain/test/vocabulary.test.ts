@@ -3,6 +3,8 @@ import {
   ACCESS_DECISION_REASONS,
   ACCESS_LEVELS,
   ACCESS_POLICY_VERSION,
+  ALERT_NAMES,
+  AlertName,
   AUDIT_ACTOR_TYPES,
   AUDIT_SCOPES,
   CLAIM_REJECTION_REASONS,
@@ -89,6 +91,9 @@ describe("persisted vocabularies", () => {
       "send_claim_email",
       "check_paddle_connection",
       "sweep_paddle_subscriptions",
+      "prune_data",
+      "purge_workspace",
+      "rewrap_credentials",
     ]));
   it("outbox kinds by name", () => expect(Object.values(OutboxKind)).toEqual(OUTBOX_KINDS));
   it("event providers", () => expect(EVENT_PROVIDERS).toEqual(["github", "paddle"]));
@@ -175,6 +180,8 @@ describe("stable decision codes", () => {
       "item_removed",
       "customer_unlinked",
       "subscription_missing",
+      "workspace_deleted",
+      "account_deleted",
     ]));
   it("offer changes", () =>
     expect(OFFER_CHANGES).toEqual(["name", "gracePeriodDays", "items", "accesses"]));
@@ -260,6 +267,18 @@ describe("stable decision codes", () => {
 });
 
 // Provider-neutral failure kinds that adapters map their errors to.
+// Monitors match these names in log lines (decision 0014); renaming one silences its alert.
+describe("alert names", () => {
+  it("lists them", () =>
+    expect(ALERT_NAMES).toEqual([
+      "job_failed",
+      "reconcile_failing",
+      "connection_lost",
+      "sweep_lagging",
+    ]));
+  it("by name", () => expect(Object.values(AlertName)).toEqual(ALERT_NAMES));
+});
+
 describe("provider failure kinds", () => {
   it("lists them", () =>
     expect(PROVIDER_FAILURE_KINDS).toEqual([

@@ -42,6 +42,8 @@ function work(subjectId: string, overrides: Partial<NewOutboxRow> = {}): NewOutb
     subjectId,
     createdAt: T0,
     availableAt: T0,
+    // Processing an event finds its workspace later, if it has one.
+    workspaceId: null,
     ...overrides,
   };
 }
@@ -195,6 +197,9 @@ describe("outbox", () => {
         sentAt: null,
         failedAt: null,
         lastErrorCode: null,
+        dismissedAt: null,
+        dismissedBy: null,
+        dismissReason: null,
         availableAt: at + 30_000,
       },
     ]);

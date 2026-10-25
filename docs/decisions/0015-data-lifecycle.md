@@ -69,3 +69,13 @@ A daily `prune_data` job deletes in bounded batches (500 rows per table per run)
 - New audit actions: `data.pruned`, `workspace.exported`, `workspace.deletion_requested`, `workspace.deletion_cancelled`, `workspace.purged`, `user.deleted`.
 - New entitlement end reasons: `workspace_deleted`, `account_deleted`.
 - Privacy and legal text describing these periods belongs to Phase 8, and must match this record.
+
+## Amendment — the other append-only tables and the way into `purging` (Phase 6 T1)
+
+Migration 0009 found two more tables a purge must empty, and one weakness in the audit exception:
+
+- **`offer_versions`** is append-only too (decision 0009). Its delete trigger gets the same `purging` exception as `audit_events`.
+- **`provider_mutations`** is append-only too (decision 0010), and this record prunes settled rows after 90 days. Its delete trigger now allows deleting a settled row, and a `started` row only while its workspace is `purging`. A `started` row records a request whose outcome is unknown, so pruning never removes one.
+- **`purging` is one-way.** The exception is only as strong as the way into `purging`. Triggers allow it only from `deleting`, never allow leaving it, and refuse creating a workspace already `deleting` or `purging`. A CHECK requires `delete_after` and the requester exactly while a workspace is `deleting` or `purging`.
+
+UPDATE stays rejected on all three tables. Threats O10 and O13 in the [operations threat model](../security/operations-threat-model.md) depend on these triggers.

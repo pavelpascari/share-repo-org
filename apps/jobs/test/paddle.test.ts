@@ -41,6 +41,7 @@ async function job(kind: OutboxKind, subjectId: string) {
     subjectId,
     createdAt: clock.now(),
     availableAt: clock.now(),
+    workspaceId: null,
   });
   return { kind, subjectId, outboxId };
 }

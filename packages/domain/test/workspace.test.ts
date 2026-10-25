@@ -181,11 +181,11 @@ describe("workspace role", () => {
 });
 
 describe("workspace status", () => {
-  it("lists exactly active and suspended", () => {
-    expect(WORKSPACE_STATUSES).toEqual(["active", "suspended"]);
+  it("lists exactly active, suspended, deleting and purging", () => {
+    expect(WORKSPACE_STATUSES).toEqual(["active", "suspended", "deleting", "purging"]);
   });
 
-  it.each(["active", "suspended"])("accepts %j", (status) => {
+  it.each(["active", "suspended", "deleting", "purging"])("accepts %j", (status) => {
     expect(isWorkspaceStatus(status)).toBe(true);
     expect(parseWorkspaceStatus(status)).toEqual({ ok: true, value: status });
   });

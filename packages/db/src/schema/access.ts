@@ -70,6 +70,8 @@ export const entitlements = sqliteTable(
       .on(t.workspaceId, t.sourceId, t.offerId, t.resourceId, t.subjectId)
       .where(sql`state = 'active'`),
     index("entitlements_subject_resource_idx").on(t.workspaceId, t.subjectId, t.resourceId),
+    // The sweeps' repair query: active entitlements past `valid_until` (decision 0013).
+    index("entitlements_state_valid_until_idx").on(t.state, t.validUntil),
     foreignKey({
       name: "entitlements_subject_fk",
       columns: [t.workspaceId, t.subjectId],
@@ -184,8 +186,9 @@ export const grants = sqliteTable(
 /**
  * A change ShareRepo asked an access provider to make (decision 0010; integrations.md
  * § Reconciliation ownership). Written as `started` before the request is sent, then settled once.
- * Rows are never deleted, and only `status`, `error_code`, `retry_class`, `external_id` and
- * `finished_at` change, once, from `started` (enforced by triggers in migration 0005).
+ * Only `status`, `error_code`, `retry_class`, `external_id` and `finished_at` change, once, from
+ * `started` (enforced by triggers in migration 0005). A settled row may be pruned; a `started`
+ * one is deleted only by its workspace's purge (decision 0015, triggers in migration 0009).
  */
 export const providerMutations = sqliteTable(
   "provider_mutations",
@@ -215,6 +218,8 @@ export const providerMutations = sqliteTable(
   },
   (t) => [
     unique("provider_mutations_workspace_id_id_unique").on(t.workspaceId, t.id),
+    // Pruning settled mutations by age (decision 0015).
+    index("provider_mutations_finished_idx").on(t.finishedAt),
     index("provider_mutations_budget_idx").on(
       t.workspaceId,
       t.resourceId,

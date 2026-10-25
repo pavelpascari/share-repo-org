@@ -54,6 +54,10 @@ export const paddleConnections = sqliteTable(
     // the creator can be told which destination to delete in Paddle.
     destinationId: text("destination_id"),
     webhookSecretEnvelope: text("webhook_secret_envelope"),
+    // During a webhook secret rotation: the second destination, at the same URL, and its secret.
+    // Both secrets are accepted until the old destination is deleted and these are promoted.
+    destinationNextId: text("destination_next_id"),
+    webhookSecretNextEnvelope: text("webhook_secret_next_envelope"),
     status: text("status", { enum: PADDLE_CONNECTION_STATUSES })
       .$type<PaddleConnectionStatus>()
       .notNull(),
@@ -91,6 +95,15 @@ export const paddleConnections = sqliteTable(
       "paddle_connections_webhook_secret_envelope_json",
       sql`webhook_secret_envelope IS NULL OR (json_valid(webhook_secret_envelope) AND json_type(webhook_secret_envelope) = 'object')`,
     ),
+    check(
+      "paddle_connections_webhook_secret_next_envelope_json",
+      sql`webhook_secret_next_envelope IS NULL OR (json_valid(webhook_secret_next_envelope) AND json_type(webhook_secret_next_envelope) = 'object')`,
+    ),
+    // A rotation's secret belongs to its destination.
+    check(
+      "paddle_connections_next_secret_has_destination",
+      sql`webhook_secret_next_envelope IS NULL OR destination_next_id IS NOT NULL`,
+    ),
     // A live API-key connection holds its key; a live connection holds its destination's secret.
     check(
       "paddle_connections_live_has_credentials",
@@ -99,7 +112,7 @@ export const paddleConnections = sqliteTable(
     // Disconnecting erases the stored credentials (decision 0011).
     check(
       "paddle_connections_disconnected_erased",
-      sql`status <> 'disconnected' OR (api_key_envelope IS NULL AND webhook_secret_envelope IS NULL)`,
+      sql`status <> 'disconnected' OR (api_key_envelope IS NULL AND webhook_secret_envelope IS NULL AND webhook_secret_next_envelope IS NULL)`,
     ),
     check("paddle_connections_updated_after_created", sql`updated_at >= created_at`),
   ],

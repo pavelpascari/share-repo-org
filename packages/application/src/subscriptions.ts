@@ -499,6 +499,7 @@ export function refreshOutboxRow(ctx: ServiceContext, ref: SubscriptionRef): rep
     subjectId: encodeRefreshKey(ref),
     createdAt: now,
     availableAt: now,
+    workspaceId: ref.workspaceId,
   };
 }
 

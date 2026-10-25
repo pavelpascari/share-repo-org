@@ -32,6 +32,8 @@ function connectionRow(
     lastEventAt: null,
     lastCheckedAt: null,
     catalogSyncedAt: null,
+    destinationNextId: null,
+    webhookSecretNextEnvelope: null,
     ...paddleConnectionRow(workspaceId),
     ...overrides,
   } as PaddleConnection;

@@ -101,6 +101,8 @@ const ACCESS_REASONS: Record<AccessDecisionReason, string> = {
   item_removed: "Item no longer on the subscription",
   customer_unlinked: "Subscriber unlinked from the customer",
   subscription_missing: "Subscription no longer found",
+  workspace_deleted: "Workspace being deleted",
+  account_deleted: "Subscriber deleted their account",
 };
 
 /** Human text for a stored decision reason; an unrecognized one still reads as a sentence. */

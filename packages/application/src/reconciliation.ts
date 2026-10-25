@@ -73,6 +73,7 @@ export function reconcileOutboxRow(ctx: ServiceContext, ref: ReconcileRef): repo
     subjectId: encodeReconcileKey(ref),
     createdAt: now,
     availableAt: now,
+    workspaceId: ref.workspaceId,
   };
 }
 
@@ -579,6 +580,7 @@ async function queueResync(run: Run): Promise<void> {
     subjectId: run.connection.id,
     createdAt: run.now,
     availableAt: run.now,
+    workspaceId: run.connection.workspaceId,
   });
 }
 

@@ -91,6 +91,7 @@ describe("reconcile_resource on the queue", () => {
         subjectId,
         createdAt: clock.now(),
         availableAt: clock.now(),
+        workspaceId: null,
       });
       const before = await snapshotTables(env.DB);
       const result = await deliver(jobsWorker(fake), [
@@ -117,6 +118,7 @@ describe("reconcile_resource on the queue", () => {
       subjectId,
       createdAt: clock.now(),
       availableAt: clock.now(),
+      workspaceId: null,
     });
     const before = await snapshotTables(env.DB, {});
     const calls = fake.calls.length;

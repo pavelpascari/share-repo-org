@@ -84,7 +84,7 @@ describe("provider_mutations triggers", () => {
     ).rejects.toThrow(/settle once/);
   });
 
-  it("never deletes a row", async () => {
+  it("never deletes a started row outside a purge", async () => {
     const { grant } = await seeded();
     const mutation = await seedMutation(mutationRow(grant));
     await expect(run("DELETE FROM provider_mutations WHERE id = ?", mutation.id)).rejects.toThrow(

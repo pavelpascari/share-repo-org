@@ -12,7 +12,8 @@ import type { Instant } from "./time.ts";
  * Not granted, from the subscription: `paused`, `grace_expired`, `cancellation_effective`,
  * `canceled`, `expired`. From the mapping (entitlement planning): `offer_archived`,
  * `offer_access_removed`, `offer_access_changed`, `item_removed`, `customer_unlinked`,
- * `subscription_missing`.
+ * `subscription_missing`. From the data lifecycle (decision 0015): `workspace_deleted`,
+ * `account_deleted`.
  */
 export const ACCESS_DECISION_REASONS = [
   "active",
@@ -31,6 +32,8 @@ export const ACCESS_DECISION_REASONS = [
   "item_removed",
   "customer_unlinked",
   "subscription_missing",
+  "workspace_deleted",
+  "account_deleted",
 ] as const;
 export type AccessDecisionReason = (typeof ACCESS_DECISION_REASONS)[number];
 

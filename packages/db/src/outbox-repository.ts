@@ -7,9 +7,13 @@ import { outbox } from "./schema/index.ts";
 
 /** A transactional outbox row (decision 0003). Carries IDs only, never authoritative state. */
 export type OutboxRow = typeof outbox.$inferSelect;
+/**
+ * New work. `workspaceId` is the workspace the work is about, or null for system-wide work such
+ * as a sweep (decision 0014): it scopes the row's failure record, so every caller states it.
+ */
 export type NewOutboxRow = Pick<
   OutboxRow,
-  "id" | "kind" | "subjectId" | "createdAt" | "availableAt"
+  "id" | "kind" | "subjectId" | "createdAt" | "availableAt" | "workspaceId"
 >;
 
 const fresh = (row: NewOutboxRow): OutboxRow => ({
@@ -18,6 +22,9 @@ const fresh = (row: NewOutboxRow): OutboxRow => ({
   sentAt: null,
   failedAt: null,
   lastErrorCode: null,
+  dismissedAt: null,
+  dismissedBy: null,
+  dismissReason: null,
 });
 
 /** An outbox insert to put in the same `db.batch()` as the change that causes the work. */
@@ -35,10 +42,11 @@ export function conditionalOutboxInsert(
   condition: ReturnType<typeof sql>,
 ) {
   const r = fresh(row);
+  // Every column, in the table's column order: drizzle names them all in the INSERT.
   return db
     .insert(outbox)
     .select(
-      sql`SELECT ${r.id}, ${r.kind}, ${r.subjectId}, ${r.createdAt}, ${r.availableAt}, ${r.attempts}, ${r.sentAt}, ${r.failedAt}, ${r.lastErrorCode} WHERE ${condition}`,
+      sql`SELECT ${r.id}, ${r.kind}, ${r.subjectId}, ${r.createdAt}, ${r.availableAt}, ${r.attempts}, ${r.sentAt}, ${r.failedAt}, ${r.lastErrorCode}, ${r.workspaceId}, ${r.dismissedAt}, ${r.dismissedBy}, ${r.dismissReason} WHERE ${condition}`,
     );
 }
 

@@ -67,6 +67,7 @@ async function queuedRow(subjectId: string, kind: "refresh_subscription" | "reco
     subjectId,
     createdAt: clock.now(),
     availableAt: clock.now(),
+    workspaceId: null,
   });
   return id;
 }

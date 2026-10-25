@@ -24,5 +24,6 @@ export { externalIdentities } from "./identities.ts";
 export { paddleConnections, paddlePrices } from "./paddle.ts";
 export { resources } from "./resources.ts";
 export { simulatedSubscriptions } from "./simulation.ts";
+export { systemState } from "./system.ts";
 export { users } from "./users.ts";
 export { workspaceMemberships, workspaces } from "./workspaces.ts";
