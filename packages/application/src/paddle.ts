@@ -488,7 +488,7 @@ export async function connectPaddle(
   } catch (error) {
     // The write may have committed before the error (a lost response): then the stored
     // connection uses this destination, which must stay.
-    const stored = await repo.getPaddleConnection(ctx.db, { workspaceId }).catch(() => null);
+    const stored = await repo.getPaddleConnection(ctx.db, { workspaceId });
     if (stored?.id !== connectionId) await deleteDestination(client, destination.id);
     throw error;
   }
@@ -791,7 +791,7 @@ export async function rotatePaddleWebhookSecret(
     } catch (error) {
       // The write may have committed before the error (a lost response): then the stored
       // rotation uses this destination, and a re-run resumes with it.
-      const stored = await repo.getPaddleConnection(ctx.db, { workspaceId }).catch(() => null);
+      const stored = await repo.getPaddleConnection(ctx.db, { workspaceId });
       if (stored?.destinationNextId !== created.id) await discard();
       throw error;
     }

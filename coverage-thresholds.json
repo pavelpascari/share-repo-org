@@ -33,7 +33,7 @@
     },
     "packages/testing/src/**": {
       "lines": 100,
-      "branches": 99.1,
+      "branches": 99.3,
       "functions": 100,
       "statements": 100
     },

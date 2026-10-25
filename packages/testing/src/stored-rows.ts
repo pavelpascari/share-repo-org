@@ -61,7 +61,6 @@ export async function readStoredText(db: D1Database): Promise<StoredValue[]> {
     const { results: columns } = await db
       .prepare(`PRAGMA table_info(${quote(table)})`)
       .all<{ name: string }>();
-    if (columns.length === 0) continue;
     const select = columns.map((column) => quote(column.name)).join(", ");
     const rows = await db.prepare(`SELECT ${select} FROM ${quote(table)}`).raw<unknown[]>();
     for (const row of rows) {

@@ -72,6 +72,13 @@ describe("crashingD1", () => {
     const statement = wrapped.prepare("SELECT ? AS v").bind(5);
     expect(await statement.first("v")).toBe(5);
     expect(typeof wrapped.exec).toBe("function");
+    // Properties that are not methods, on the binding and on a statement, read as they are.
+    expect(Reflect.get(wrapped, "no_such_property")).toBeUndefined();
+    expect(Reflect.get(statement, "no_such_property")).toBeUndefined();
+    // A statement prepared on the plain binding is accepted in the wrapped binding's batch.
+    await reset();
+    await wrapped.batch([env.DB.prepare("INSERT INTO crash_probe (id) VALUES (9)")]);
+    expect(await count()).toBe(1);
     expect(await wrapped.prepare("SELECT 1 AS one").raw()).toEqual([[1]]);
   });
 });
