@@ -1,5 +1,10 @@
 import type { ConnectionStatus } from "./connection.ts";
-import { type AccessLevel, supportsAccessLevel } from "./entitlement.ts";
+import {
+  type AccessLevel,
+  EntitlementValidity,
+  entitlementValidity,
+  supportsAccessLevel,
+} from "./entitlement.ts";
 import type { GrantState, RetryClass } from "./grant.ts";
 import { isSellable, type ResourceCapabilities, type ResourceSelection } from "./resource.ts";
 import type { Instant } from "./time.ts";
@@ -51,6 +56,11 @@ export type ReconciliationAction = (typeof RECONCILIATION_ACTIONS)[number];
  * - `invitation_quota` (wait): a provision or retry, which sends an invitation, waits for the
  *   repository's invitation budget; checked after the blocking reasons and the retry time;
  * - `indirect_access` (noop): access that does not come from a direct grant, never revoked.
+ *
+ * Phase 6 (decision 0013):
+ * - `expiry_pending` (wait): the pair's only live entitlements are past their `validUntil` but
+ *   within the confirmation window. Nothing is granted or revoked until the subscription's
+ *   refresh confirms the end, or the window passes.
  */
 export const RECONCILIATION_REASONS = [
   "grant_missing",
@@ -74,6 +84,7 @@ export const RECONCILIATION_REASONS = [
   "no_access",
   "invitation_quota",
   "indirect_access",
+  "expiry_pending",
 ] as const;
 export type ReconciliationReason = (typeof RECONCILIATION_REASONS)[number];
 
@@ -113,7 +124,10 @@ export interface ReconciliationResource {
 
 export interface ReconciliationInput {
   readonly now: Instant;
-  /** Live (`active`) entitlements; those whose validity has passed are not desired. */
+  /**
+   * Live (`active`) entitlements. One whose validity has passed is expiry pending within the
+   * confirmation window, and not desired after it (decision 0013).
+   */
   readonly entitlements: readonly ReconciliationEntitlement[];
   readonly grants: readonly ReconciliationGrant[];
   readonly resources: readonly ReconciliationResource[];
@@ -146,6 +160,8 @@ interface Pair {
   readonly subjectId: string;
   readonly resourceId: string;
   readonly entitlements: ReconciliationEntitlement[];
+  /** Entitlements whose expiry waits for confirmation; they keep access without granting it. */
+  readonly pending: ReconciliationEntitlement[];
   readonly grants: ReconciliationGrant[];
 }
 
@@ -154,9 +170,12 @@ type Outcome = Pick<ReconciliationDecision, "action" | "reason">;
 /**
  * Compares desired access (entitlements) with observed access (grants) and returns one decision
  * per subject and resource that has either, sorted by subject then resource. Pure: it plans,
- * and the caller acts. An entitlement whose `validUntil` has passed is not desired, so access
- * never outlives policy because an evaluation ran late. Unmanaged and indirect access is never
- * revoked or changed.
+ * and the caller acts. Unmanaged and indirect access is never revoked or changed.
+ *
+ * An entitlement whose `validUntil` has passed is expiry pending for the confirmation window
+ * (decision 0013): a pair with no other desired entitlement waits (`expiry_pending`), granting
+ * nothing new and revoking nothing, so a lost renewal webhook never revokes a paying subscriber.
+ * After the window it is not desired, so access never outlives policy by more than the window.
  *
  * When a pair has several grants (v1 grants only `write`, so normally one), the decision is
  * about the one with the highest access level, then the lowest ID.
@@ -167,13 +186,16 @@ export function planReconciliation(input: ReconciliationInput): ReconciliationDe
     const key = [subjectId, resourceId].join("\u0000");
     const existing = pairs.get(key);
     if (existing !== undefined) return existing;
-    const pair: Pair = { subjectId, resourceId, entitlements: [], grants: [] };
+    const pair: Pair = { subjectId, resourceId, entitlements: [], pending: [], grants: [] };
     pairs.set(key, pair);
     return pair;
   };
   for (const entitlement of input.entitlements) {
-    if (entitlement.validUntil !== null && entitlement.validUntil <= input.now) continue;
-    pairFor(entitlement.subjectId, entitlement.resourceId).entitlements.push(entitlement);
+    const validity = entitlementValidity(entitlement.validUntil, input.now);
+    if (validity === EntitlementValidity.NotDesired) continue;
+    const pair = pairFor(entitlement.subjectId, entitlement.resourceId);
+    if (validity === EntitlementValidity.Desired) pair.entitlements.push(entitlement);
+    else pair.pending.push(entitlement);
   }
   for (const grant of input.grants) pairFor(grant.subjectId, grant.resourceId).grants.push(grant);
 
@@ -185,10 +207,13 @@ export function planReconciliation(input: ReconciliationInput): ReconciliationDe
     const pair = pairs.get(key) as Pair;
     const grant = preferredGrant(pair.grants);
     const accessLevel = desiredLevel(pair.entitlements);
-    // Expired entitlements make no pair, so a pair with no desired access exists for a grant.
-    const outcome =
+    // Expired entitlements make no pair, so a pair with no desired or pending entitlement exists
+    // for a grant.
+    const outcome: Outcome =
       accessLevel === null
-        ? undesired(grant as ReconciliationGrant, connectionActive)
+        ? pair.pending.length > 0
+          ? { action: "wait", reason: "expiry_pending" }
+          : undesired(grant as ReconciliationGrant, connectionActive)
         : desired(accessLevel, grant, input.now, (change, notBefore = input.now) => {
             const resource = resources.get(pair.resourceId);
             if (resource === undefined) return blocked("resource_missing");

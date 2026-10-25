@@ -1,4 +1,9 @@
-import { ACCESS_POLICY_VERSION, type AccessLevel } from "./entitlement.ts";
+import {
+  ACCESS_POLICY_VERSION,
+  type AccessLevel,
+  EntitlementValidity,
+  entitlementValidity,
+} from "./entitlement.ts";
 import type { OfferStatus } from "./offer.ts";
 import {
   type AccessDecision,
@@ -134,6 +139,10 @@ interface Desired {
  *   granted again, create a new row, so the gap stays visible (decision 0009: a reactivation
  *   creates a new row). A `past_due_in_grace` row cut short by a scheduled cancellation also
  *   reads `grace_expired`: the row records only that its grace-period access ran out.
+ * - Except while its expiry is pending (decision 0013: within the confirmation window after
+ *   `validUntil`, reconciliation neither granted nor revoked for it): when access is granted
+ *   again, the source has confirmed it went on (a renewal whose webhook was lost), so the row
+ *   continues like any live one. Access never had a gap, so neither does the record.
  *
  * Throws on duplicate offers, live entitlements or accesses, and when a live entitlement refers
  * to an offer missing from the input: those are caller defects, not facts to act on.
@@ -169,7 +178,10 @@ export function planEntitlements(input: EntitlementPlanInput): EntitlementPlan {
   for (const key of [...new Set([...live.keys(), ...desired.keys()])].sort()) {
     let current = live.get(key);
     const wanted = desired.get(key);
-    if (current !== undefined && current.validUntil !== null && current.validUntil <= now) {
+    const validity = current === undefined ? null : entitlementValidity(current.validUntil, now);
+    const continues =
+      validity === EntitlementValidity.ExpiryPending && wanted?.decision.granted === true;
+    if (current !== undefined && validity !== EntitlementValidity.Desired && !continues) {
       end.push({ id: current.id, state: "expired", reason: lapseReason(current.decisionReason) });
       current = undefined;
       if (wanted === undefined || !wanted.decision.granted) continue;

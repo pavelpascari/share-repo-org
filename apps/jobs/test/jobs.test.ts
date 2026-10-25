@@ -1,5 +1,6 @@
 import { env } from "cloudflare:workers";
 import { claimOutbox, enqueueOutbox, getExternalEvent } from "@sharerepo/db";
+import { dailyOffsetMs } from "@sharerepo/domain";
 import { GitHubApiError, type GitHubAppPort } from "@sharerepo/integrations";
 import { createFakeGitHubApp, type FakeGitHubApp } from "@sharerepo/integrations/testing";
 import { ConflictError, NotFoundError } from "@sharerepo/platform";
@@ -29,6 +30,8 @@ import {
   receivedWebhook,
 } from "./support/github.ts";
 import { deliver, jobsWorker, outboxRow, runCron, sentAt } from "./support/worker.ts";
+
+const DAY_MS = 86_400_000;
 
 const resourcesOf = (connectionId: string) =>
   count("SELECT count(*) AS n FROM resources WHERE connection_id = ?", connectionId);
@@ -298,17 +301,22 @@ describe("scheduled()", () => {
     const first = await connectedCreator(github);
     const second = await connectedCreator(github);
     await runCron(jobsWorker(github), CRONS.drainOutbox);
+    const at = clock.now();
     await runCron(jobsWorker(github), CRONS.dailyResync);
     const summary = logged().find((line) => line.msg === "daily resync queued");
-    expect(summary?.connections).toBeGreaterThanOrEqual(2);
+    expect(summary?.queued).toBeGreaterThanOrEqual(2);
     for (const { connection } of [first, second]) {
       const queued = await env.DB.prepare(
-        "SELECT count(*) AS n FROM outbox WHERE kind = 'resync_connection' AND subject_id = ? AND sent_at IS NULL",
+        "SELECT count(*) AS n, max(available_at) AS a FROM outbox WHERE kind = 'resync_connection' AND subject_id = ? AND sent_at IS NULL",
       )
         .bind(connection.id)
-        .first<{ n: number }>();
+        .first<{ n: number; a: number }>();
       expect(queued?.n).toBe(1);
+      // Spread over the day by connection (phase-6 plan § Partitioning).
+      expect(queued?.a).toBe(at + dailyOffsetMs("resync_connection", connection.id));
     }
+    // Within a day every resync has come due and the drain runs it.
+    clock.advance(DAY_MS);
     await runCron(jobsWorker(github), CRONS.drainOutbox);
     expect(await resourcesOf(first.connection.id)).toBe(1);
     expect(await resourcesOf(second.connection.id)).toBe(1);

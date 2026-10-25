@@ -1,5 +1,5 @@
 import { type Instant, OutboxKind } from "@sharerepo/domain";
-import { and, asc, eq, gte, inArray, isNull, lt, lte, type SQL, sql } from "drizzle-orm";
+import { and, asc, eq, gt, gte, inArray, isNull, lt, lte, type SQL, sql } from "drizzle-orm";
 import { runBatch } from "./batch.ts";
 import { chunked } from "./chunks.ts";
 import type { Db } from "./client.ts";
@@ -93,9 +93,29 @@ export function assertReconcileRows(
 /**
  * Adds work on its own unless the same work (kind and key) is already pending. Returns whether
  * the row was queued, so the caller knows whether to hand its ID to the queue.
+ *
+ * A pending row that waits for a later `available_at` and was never claimed (a daily job spread
+ * over the day) is brought forward to this row's `available_at` instead, so work wanted sooner
+ * (a resync a reconcile asked for) is never held back by it. A claimed row's `available_at` is
+ * its lease and is left alone.
  */
 export async function enqueueOutboxOnce(db: Db, row: NewOutboxRow): Promise<boolean> {
-  const [queued] = await runBatch(db, [dedupedOutboxInsert(db, row)]);
+  const [, queued] = await runBatch(db, [
+    db
+      .update(outbox)
+      .set({ availableAt: row.availableAt })
+      .where(
+        and(
+          eq(outbox.kind, row.kind),
+          eq(outbox.subjectId, row.subjectId),
+          isNull(outbox.sentAt),
+          isNull(outbox.failedAt),
+          eq(outbox.attempts, 0),
+          gt(outbox.availableAt, row.availableAt),
+        ),
+      ),
+    dedupedOutboxInsert(db, row),
+  ]);
   return queued === 1;
 }
 

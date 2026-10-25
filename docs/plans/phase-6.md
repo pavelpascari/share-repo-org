@@ -302,6 +302,32 @@ Where the build differs from, or adds to, the design above.
   - **T4:** set `purging` only from `deleting`, in the purge's first batch. Delete the outbox rows of the workspace before the `workspaces` row (foreign key). Started provider mutations can only be deleted while purging. The purged tombstone and `data.pruned` are account-scoped.
   - **T5:** `claim_requests.email_hash` and the claim rate-limit buckets are HMACs under the claim signing key. Rotating the key changes them, so lookups by email hash must try every key, or the rotation must wait out the claim windows. The e2e environment still uses the plain-text key format.
 
+### T2
+
+- **Expiry confirmation** (`packages/domain`):
+  - The window is `EXPIRY_CONFIRMATION_WINDOW_MS`, following the other `_MS` constants. `entitlementValidity(validUntil, now)` returns `desired`, `expiry_pending` or `not_desired` (`EntitlementValidity`). The reconciliation planner and `nextReconcileAt` both use it.
+  - A pair whose only live entitlements are expiry pending is planned `wait` / `expiry_pending`, whatever its grant. Its `accessLevel` is null and `entitlementIds` is empty, because nothing is desired. A desired entitlement of the same pair wins.
+  - `nextReconcileAt` takes the repository's live entitlements, and schedules `valid_until + window` for each expiry-pending one.
+  - **Entitlement planner (beyond the plan).** It used to end every lapsed row and create a new one when access was granted again. Now an expiry-pending row that the source still grants continues: it is updated in place. This is what keeps "the same entitlement active" after a lost renewal (0013). After the window, or when access is not granted, the row ends `expired` with its lapse reason, as before.
+- **Refresh and repair.** The refresh that ends an entitlement already queues its repository's reconcile in the same batch (verified; unchanged). The evaluation sweep's repair query now selects `(workspace_id, source_id) IN (…)` from `entitlements_state_valid_until_idx`, instead of a probe per subscription.
+- **Access page.** Expiry pending reads "Ending: confirming with Paddle" when the live entitlement's subscription is Paddle's, and "Ending: confirming the subscription" otherwise. The simulator is not named, like other access texts. `readAccessState` joins each entitlement's subscription for its `source`, and `AccessEntitlement.source` carries it.
+- **Sweep health:**
+  - After the drain, each minute tick logs `sweep.heartbeat` with `evaluationsQueued`, `reconcilesQueued`, `outboxClaimed`, `outboxSent` (null for a step that failed), `oldestEvaluationDueAt`, `oldestReconcileDueAt`, `oldestOutboxDueAt` and `lagMs`. It is logged even when the drain throws.
+  - The oldest due instants come from `readSweepBacklog` (`packages/db/src/sweep-repository.ts`). It excludes rate-limited connections' repositories, which wait on purpose, and outbox rows out of attempts, which are failures (T3), not lag. T3's `/ops` sweep-health panel can reuse it.
+  - `sweep_lagging` is raised by `checkSweepHealth` (application) through `claimSweepLagAlert`: one conditional upsert of `system_state` key `sweep.lag_alerted`, so replays and concurrent ticks raise it once per 15 minutes. The policy constants are `SWEEP_LAG_ALERT_MS` and `SWEEP_LAG_ALERT_INTERVAL_MS`, with `sweepLag()`, in `packages/domain/src/sweep.ts`.
+  - **Alert helper.** T1 defined only the names, so T2 added `alert(logger, name, ids)` to `packages/platform`. It logs one warn line `{"msg":"alert","alert":"<name>",…}`, and `ids` may hold only strings, numbers, booleans and nulls. The platform does not depend on the domain, so callers pass an `AlertName`. T3 reuses it.
+- **Partitioning:**
+  - `dailyOffsetMs(kind, subjectId)` is a 32-bit FNV-1a hash of `kind:subject` modulo 24 hours. The daily resync (now `queueDailyResyncs` in the application) and `queuePaddleSweeps` set `available_at = now + offset`, each with its own kind as the salt. Both deduplicate on a pending row.
+  - **Delayed rows and urgent work.** A delayed daily resync would have swallowed a resync that a reconcile asks for at once, because `enqueueOutboxOnce` deduplicated on any pending row. It now brings a pending, never-claimed (`attempts = 0`) row forward to the new row's `available_at`. A claimed row's `available_at` is its lease, and is left alone.
+  - `claimDueReconciles` takes `perConnection`. It ranks due repositories with `row_number() OVER (PARTITION BY workspace_id, connection_id …)`, which is per installation, since an installation belongs to one connection. The jobs Worker passes `DUE_RECONCILES_PER_INSTALLATION = 10` and `DUE_RECONCILE_BATCH = 100`. The repair kinds are not capped per installation: they are rare and already deduplicated.
+  - **Rate limits.** A `rate_limited` observation or mutation failure calls `deferConnectionReconciles`. It sets `connections.rate_limited_until` to GitHub's reset (or the repository's retry time, when GitHub gave no reset), and only ever moves it later. The sweep's due and repair queries skip that connection's repositories until then. Like `next_reconcile_at`, this is a scheduling hint and carries no audit event; the failure itself is audited or recorded. An owner's "Check now" is not deferred.
+- **Tests:**
+  - Domain: `timing.test.ts`, plus property tests for the three-way filter and the continued row.
+  - DB: `sweep.test.ts`.
+  - Application: `sweeps.test.ts`, the access view in `subscriptions.test.ts`, and rate-limit deferral in `reconciliation.test.ts`.
+  - Entry points: `apps/jobs/test/timing.test.ts` and `apps/jobs/test/sweeps.test.ts`.
+  - `timing/sweep-replay-is-idempotent` runs the boundary tick twice concurrently. It then replays a settled tick one second later, because a reconcile request stamped at its run's own instant re-runs once by design.
+
 ### T3
 
 - **One terminal-failure path.** `recordJobFailure` (`packages/application/src/failures.ts`) is the only way a job fails for good: the drain's last attempt or a non-retryable error, the queue consumer's non-retryable error, and the dead-letter queue. It marks the outbox row failed and writes `job.failed` in one batch (`failOutboxRow`), in the row's workspace or account-scoped when it has none, then logs the `job_failed` alert line. Only an unsent, unfailed row changes. `markOutboxFailed`, which wrote no audit event, is removed.

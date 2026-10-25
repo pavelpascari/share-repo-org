@@ -74,6 +74,14 @@ const ref = (s: Shop) => ({ workspaceId: s.workspaceId, resourceId: resourceOf(s
 const reconcile = (s: Shop, github: GitHubAppPort = s.github, ctx = serviceContext()) =>
   reconcileResource(ctx, ref(s), github);
 
+/** Until when the shop's installation is rate-limited (phase-6 plan § Partitioning). */
+const rateLimitedUntil = async (s: Shop) =>
+  (
+    await env.DB.prepare("SELECT rate_limited_until AS u FROM connections WHERE workspace_id = ?")
+      .bind(s.workspaceId)
+      .first<{ u: number | null }>()
+  )?.u;
+
 interface SubjectRow {
   id: string;
   external_subject_id: string;
@@ -546,6 +554,8 @@ describe("reconcileResource", () => {
       nextAttemptAt: clock.now() + 2 * MINUTE,
     });
     expect((await resourceRow(s)).nextReconcileAt).toBe(clock.now() + 2 * MINUTE);
+    // The installation's other repositories wait for the reset too.
+    expect(await rateLimitedUntil(s)).toBe(clock.now() + 2 * MINUTE);
     const rows = (await listAccess(serviceContext(), s, s.slug)).rows;
     expect(rows.find((r) => r.subjectId === first?.subjectId)).toMatchObject({
       grant: { retryClass: "rate_limited", nextAttemptAt: clock.now() + 2 * MINUTE },
@@ -583,6 +593,7 @@ describe("reconcileResource", () => {
       lastReconcileError: "rate_limited",
     });
     expect(await lastError()).toBe("rate_limited");
+    expect(await rateLimitedUntil(s)).toBe(clock.now() + 3 * MINUTE);
 
     // Consecutive failures back off (1, 5, 15, 60 minutes), however GitHub fails.
     clock.advance(3 * MINUTE);
@@ -608,6 +619,17 @@ describe("reconcileResource", () => {
     s.github.failNext("listInvitations", githubError("rate_limited", { retryAfterMs: MINUTE }));
     await reconcile(s);
     expect((await resourceRow(s)).nextReconcileAt).toBe(clock.now() + 60 * MINUTE);
+    // The installation waits only for GitHub's reset, not this repository's backoff.
+    expect(await rateLimitedUntil(s)).toBe(clock.now() + MINUTE);
+    // Without a reset from GitHub, it waits as long as the repository does; never less.
+    clock.advance(60 * MINUTE);
+    s.github.failNext("listInvitations", githubError("rate_limited"));
+    await reconcile(s);
+    expect(await rateLimitedUntil(s)).toBe(clock.now() + 60 * MINUTE);
+    clock.advance(MINUTE);
+    s.github.failNext("listInvitations", githubError("rate_limited", { retryAfterMs: MINUTE }));
+    await reconcile(s);
+    expect(await rateLimitedUntil(s)).toBe(clock.now() + 59 * MINUTE);
 
     // A successful observation clears both.
     clock.advance(60 * MINUTE);
@@ -701,7 +723,9 @@ describe("reconcileResource", () => {
     down = false;
     await settleOutbox(s);
     clock.advance(MINUTE);
-    expect(await queueDueReconciles(serviceContext(), { limit: 1000 })).toBeGreaterThan(0);
+    expect(
+      await queueDueReconciles(serviceContext(), { limit: 1000, perConnection: 1000 }),
+    ).toBeGreaterThan(0);
     expect(await pendingOutbox("reconcile_resource", encodeReconcileKey(ref(s)))).toBe(1);
     await reconcile(s, flaky);
     expect(await grantFor(s, sub.subjectId)).toMatchObject({ state: "pending_invitation" });
@@ -1046,7 +1070,9 @@ describe("reconcileResource", () => {
     // ... but the run, which planned before it, schedules the repository now, not in 15 minutes.
     expect((await resourceRow(s)).nextReconcileAt).toBe(clock.now());
     await settleOutbox(s);
-    expect(await queueDueReconciles(serviceContext(), { limit: 1000 })).toBeGreaterThan(0);
+    expect(
+      await queueDueReconciles(serviceContext(), { limit: 1000, perConnection: 1000 }),
+    ).toBeGreaterThan(0);
     expect(await pendingOutbox("reconcile_resource", key)).toBe(1);
     await reconcile(s);
     expect(accessOf(s).invitations).toEqual([]);
@@ -1073,11 +1099,11 @@ describe("reconcileResource", () => {
     await drain(s.workspaceId);
     await expect(reconcile(s)).resolves.toBe("busy");
     await settleOutbox(s);
-    await queueDueReconciles(serviceContext(), { limit: 1000 });
+    await queueDueReconciles(serviceContext(), { limit: 1000, perConnection: 1000 });
     expect(await pendingOutbox("reconcile_resource", key)).toBe(0);
     // Once the crashed run's lease expires, the sweep queues the repository.
     clock.advance(RECONCILE_LEASE_MS);
-    await queueDueReconciles(serviceContext(), { limit: 1000 });
+    await queueDueReconciles(serviceContext(), { limit: 1000, perConnection: 1000 });
     expect(await pendingOutbox("reconcile_resource", key)).toBe(1);
     await reconcile(s);
     expect(accessOf(s).invitations).toEqual([]);

@@ -63,7 +63,12 @@ const makeOutboxRow = (resource: { workspaceId: string; id: string }) =>
 
 /** Queues every resource the repair path would pick up, so a test starts from a quiet sweep. */
 async function quiet() {
-  await claimDueReconciles(db, { now: T0 - 1, limit: 10_000, makeOutboxRow });
+  await claimDueReconciles(db, {
+    perConnection: 10_000,
+    now: T0 - 1,
+    limit: 10_000,
+    makeOutboxRow,
+  });
 }
 
 const failAll = (workspaceId: string, resourceId: string) =>
@@ -231,7 +236,12 @@ describe("claimDueReconciles", () => {
       return makeOutboxRow(resource);
     };
     await expect(
-      claimDueReconciles(db, { now: at, limit: 10, makeOutboxRow: recording }),
+      claimDueReconciles(db, {
+        perConnection: 10_000,
+        now: at,
+        limit: 10,
+        makeOutboxRow: recording,
+      }),
     ).resolves.toBe(2);
     expect(made).toEqual([due.id, exactlyDue.id]);
     for (const r of [due, exactlyDue]) {
@@ -240,7 +250,9 @@ describe("claimDueReconciles", () => {
     }
     expect(await nextReconcile(notDue.id)).toBe(NOW + 1e9);
     expect(await queued(notDue.workspaceId, notDue.id)).toBe(0);
-    await expect(claimDueReconciles(db, { now: at, limit: 10, makeOutboxRow })).resolves.toBe(0);
+    await expect(
+      claimDueReconciles(db, { perConnection: 10_000, now: at, limit: 10, makeOutboxRow }),
+    ).resolves.toBe(0);
   });
 
   it("clears a due schedule without queueing twice when a reconcile is pending", async () => {
@@ -254,7 +266,9 @@ describe("claimDueReconciles", () => {
       failedAt: null,
       lastErrorCode: null,
     });
-    await expect(claimDueReconciles(db, { now: at, limit: 10, makeOutboxRow })).resolves.toBe(0);
+    await expect(
+      claimDueReconciles(db, { perConnection: 10_000, now: at, limit: 10, makeOutboxRow }),
+    ).resolves.toBe(0);
     expect(await nextReconcile(r.id)).toBeNull();
     expect(await queued(r.workspaceId, r.id)).toBe(1);
   });
@@ -266,6 +280,7 @@ describe("claimDueReconciles", () => {
     const races: Promise<unknown>[] = [];
     await expect(
       claimDueReconciles(db, {
+        perConnection: 10_000,
         now: at,
         limit: 10,
         makeOutboxRow: (resource) => {
@@ -313,7 +328,9 @@ describe("claimDueReconciles", () => {
       );
     }
 
-    await expect(claimDueReconciles(db, { now: at, limit: 100, makeOutboxRow })).resolves.toBe(3);
+    await expect(
+      claimDueReconciles(db, { perConnection: 10_000, now: at, limit: 100, makeOutboxRow }),
+    ).resolves.toBe(3);
     expect(await queued(entitled.workspaceId, entitled.resource.id)).toBe(1);
     expect(await queued(expiredLease.workspaceId, expiredLease.resource.id)).toBe(1);
     expect(await queued(granted.workspaceId, grantedResource.id)).toBe(1);
@@ -321,10 +338,14 @@ describe("claimDueReconciles", () => {
     expect(await queued(bare.workspaceId, bareResource.id)).toBe(0);
     expect(await queued(absent.workspaceId, absentResource.id)).toBe(0);
 
-    await expect(claimDueReconciles(db, { now: at, limit: 100, makeOutboxRow })).resolves.toBe(0);
+    await expect(
+      claimDueReconciles(db, { perConnection: 10_000, now: at, limit: 100, makeOutboxRow }),
+    ).resolves.toBe(0);
     // The run failed for good: the next sweep repairs it with a new row.
     await failAll(entitled.workspaceId, entitled.resource.id);
-    await expect(claimDueReconciles(db, { now: at, limit: 100, makeOutboxRow })).resolves.toBe(1);
+    await expect(
+      claimDueReconciles(db, { perConnection: 10_000, now: at, limit: 100, makeOutboxRow }),
+    ).resolves.toBe(1);
     expect(await queued(entitled.workspaceId, entitled.resource.id, "failed_at IS NULL")).toBe(1);
   });
 
@@ -334,13 +355,17 @@ describe("claimDueReconciles", () => {
     const due = await scheduled(at);
     const first = await subscribedWorkspace();
     const second = await subscribedWorkspace();
-    await expect(claimDueReconciles(db, { now: at, limit: 2, makeOutboxRow })).resolves.toBe(2);
+    await expect(
+      claimDueReconciles(db, { perConnection: 10_000, now: at, limit: 2, makeOutboxRow }),
+    ).resolves.toBe(2);
     expect(await queued(due.workspaceId, due.id)).toBe(1);
     const repaired =
       (await queued(first.workspaceId, first.resource.id)) +
       (await queued(second.workspaceId, second.resource.id));
     expect(repaired).toBe(1);
-    await expect(claimDueReconciles(db, { now: at, limit: 1, makeOutboxRow })).resolves.toBe(1);
+    await expect(
+      claimDueReconciles(db, { perConnection: 10_000, now: at, limit: 1, makeOutboxRow }),
+    ).resolves.toBe(1);
     expect(await queued(first.workspaceId, first.resource.id)).toBe(1);
     expect(await queued(second.workspaceId, second.resource.id)).toBe(1);
   });
@@ -350,7 +375,9 @@ describe("claimDueReconciles", () => {
     const at = NOW + 6_000;
     const due = await scheduled(at);
     const repairable = await subscribedWorkspace();
-    await expect(claimDueReconciles(db, { now: at, limit: 1, makeOutboxRow })).resolves.toBe(1);
+    await expect(
+      claimDueReconciles(db, { perConnection: 10_000, now: at, limit: 1, makeOutboxRow }),
+    ).resolves.toBe(1);
     expect(await queued(due.workspaceId, due.id)).toBe(1);
     expect(await queued(repairable.workspaceId, repairable.resource.id)).toBe(0);
   });
@@ -361,6 +388,7 @@ describe("claimDueReconciles", () => {
     const races: Promise<unknown>[] = [];
     await expect(
       claimDueReconciles(db, {
+        perConnection: 10_000,
         now: NOW,
         limit: 10,
         makeOutboxRow: (resource) => {
@@ -384,6 +412,7 @@ describe("claimDueReconciles", () => {
     await quiet();
     await expect(
       claimDueReconciles(db, {
+        perConnection: 10_000,
         now: T0 - 1,
         limit: 10,
         makeOutboxRow: () => {
@@ -526,7 +555,8 @@ describe("reconcile requests", () => {
 
     // Other tests' leases expire meanwhile, so only this resource's rows are counted.
     const pending = () => queued(ws.workspaceId, ws.resource.id, "sent_at IS NULL");
-    const sweep = (now: number) => claimDueReconciles(db, { now, limit: 10_000, makeOutboxRow });
+    const sweep = (now: number) =>
+      claimDueReconciles(db, { perConnection: 10_000, now, limit: 10_000, makeOutboxRow });
     // The lease is live: not yet.
     await sweep(at + 60_000);
     expect(await pending()).toBe(0);

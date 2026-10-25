@@ -64,6 +64,10 @@ export {
   ACCESS_POLICY_VERSION,
   ENTITLEMENT_SOURCE_TYPES,
   ENTITLEMENT_STATES,
+  ENTITLEMENT_VALIDITIES,
+  EntitlementValidity,
+  EXPIRY_CONFIRMATION_WINDOW_MS,
+  entitlementValidity,
   supportsAccessLevel,
 } from "./entitlement.ts";
 export type {
@@ -250,6 +254,13 @@ export {
   parseSubscriptionSnapshot,
   SUBSCRIPTION_STATES,
 } from "./subscription.ts";
+export type { SweepLag } from "./sweep.ts";
+export {
+  dailyOffsetMs,
+  SWEEP_LAG_ALERT_INTERVAL_MS,
+  SWEEP_LAG_ALERT_MS,
+  sweepLag,
+} from "./sweep.ts";
 export type { Clock, Instant } from "./time.ts";
 export { systemClock } from "./time.ts";
 export type {

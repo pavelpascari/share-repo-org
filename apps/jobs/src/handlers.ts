@@ -1,8 +1,10 @@
 import {
   type CommerceDeps,
+  checkSweepHealth,
   type EntitlementSourcePort,
   PaddleUnavailableError,
   queueCredentialRewrap,
+  queueDailyResyncs,
   queueDueEvaluations,
   queueDueReconciles,
   queuePaddleSweeps,
@@ -13,13 +15,11 @@ import {
   claimOutbox,
   createDb,
   type Db,
-  enqueueOutbox,
-  listActiveConnectionIds,
   markOutboxSent,
   type OutboxRow,
   pendingOutboxSince,
 } from "@sharerepo/db";
-import { type Clock, type IdGenerator, OutboxKind } from "@sharerepo/domain";
+import { AlertName, type Clock, type IdGenerator, OutboxKind } from "@sharerepo/domain";
 import {
   GitHubApiError,
   type GitHubAppConfig,
@@ -31,6 +31,7 @@ import {
 } from "@sharerepo/integrations";
 import {
   AppError,
+  alert,
   ConflictError,
   correlationIdFrom,
   createLogger,
@@ -89,6 +90,11 @@ export const OUTBOX_MAX_ATTEMPTS = 10;
 export const DUE_EVALUATION_BATCH = 100;
 /** Repositories due for reconciliation, queued per minute (phase-4 plan § Reconciliation job). */
 export const DUE_RECONCILE_BATCH = 100;
+/**
+ * Due repositories queued per minute for one GitHub installation (phase-6 plan § Partitioning),
+ * so one large installation cannot starve the others or spend its rate limit in one minute.
+ */
+export const DUE_RECONCILES_PER_INSTALLATION = 10;
 /**
  * Follow-up work a job's queue consumer hands to the queue at once (decision 0003): a refresh
  * that a Paddle event or a customer link queued, and a Paddle key check. Reconciliations keep
@@ -202,7 +208,11 @@ export function createJobsWorker(deps: JobsWorkerDeps) {
    * queue far more than one batch a minute), until about {@link OUTBOX_DRAIN_BUDGET_MS} has
    * passed. Work queued during the drain is claimed by it too.
    */
-  async function drainOutbox(db: Db, jobs: JobDeps, logger: Logger): Promise<void> {
+  async function drainOutbox(
+    db: Db,
+    jobs: JobDeps,
+    logger: Logger,
+  ): Promise<{ claimed: number; sent: number }> {
     const started = deps.clock.now();
     let claimed = 0;
     let sent = 0;
@@ -223,6 +233,7 @@ export function createJobsWorker(deps: JobsWorkerDeps) {
       }
     }
     logger.info("outbox drained", { claimed, sent });
+    return { claimed, sent };
   }
 
   /**
@@ -285,47 +296,83 @@ export function createJobsWorker(deps: JobsWorkerDeps) {
    * has passed (and repairs lapsed entitlements), so the drain that follows in the same tick runs
    * them. A failing sweep is logged by its classification only and never stops that drain.
    */
-  async function sweepDueEvaluations(db: Db, logger: Logger): Promise<void> {
+  async function sweepDueEvaluations(db: Db, logger: Logger): Promise<number | null> {
     try {
       const queued = await queueDueEvaluations(services(db), { limit: DUE_EVALUATION_BATCH });
       logger.info("due evaluations queued", { queued });
+      return queued;
     } catch (error) {
       logger.error("due evaluation sweep failed", classify(error));
+      return null;
     }
   }
 
   /**
    * Scheduled reconciliation: queues a `reconcile_resource` for every repository that is due (or
-   * has live access and nothing scheduled), for the drain that follows in the same tick. Like the
-   * evaluation sweep, a failure is logged by its classification only and stops nothing else.
+   * has live access and nothing scheduled), for the drain that follows in the same tick, at most
+   * {@link DUE_RECONCILES_PER_INSTALLATION} per GitHub installation and none of a rate-limited
+   * one. Like the evaluation sweep, a failure is logged by its classification only and stops
+   * nothing else.
    */
-  async function sweepDueReconciles(db: Db, logger: Logger): Promise<void> {
+  async function sweepDueReconciles(db: Db, logger: Logger): Promise<number | null> {
     try {
-      const queued = await queueDueReconciles(services(db), { limit: DUE_RECONCILE_BATCH });
+      const queued = await queueDueReconciles(services(db), {
+        limit: DUE_RECONCILE_BATCH,
+        perConnection: DUE_RECONCILES_PER_INSTALLATION,
+      });
       logger.info("due reconciles queued", { queued });
+      return queued;
     } catch (error) {
       logger.error("due reconcile sweep failed", classify(error));
+      return null;
     }
   }
 
   /**
-   * The daily repair path: queue a resync of every connection that is not deleted. The outbox
-   * drain runs them a batch at a time, so one cron run never does every connection's GitHub calls.
+   * Sweep health (decision 0014): after the tick, one `sweep.heartbeat` line with what it claimed
+   * and the oldest instants still due, which a Monitor counts as the dead-man's switch. When the
+   * oldest due row is more than 15 minutes late, a `sweep_lagging` alert line too, at most once
+   * per 15 minutes. A failing check is logged by its classification only; the missing heartbeat
+   * is then the signal.
+   */
+  async function reportSweepHealth(
+    db: Db,
+    logger: Logger,
+    claimed: {
+      evaluations: number | null;
+      reconciles: number | null;
+      outbox: { claimed: number; sent: number } | null;
+    },
+  ): Promise<void> {
+    try {
+      const health = await checkSweepHealth(services(db), { maxAttempts: OUTBOX_MAX_ATTEMPTS });
+      const due = {
+        oldestEvaluationDueAt: health.evaluationDueAt,
+        oldestReconcileDueAt: health.reconcileDueAt,
+        oldestOutboxDueAt: health.outboxDueAt,
+        lagMs: health.lagMs,
+      };
+      logger.info("sweep.heartbeat", {
+        evaluationsQueued: claimed.evaluations,
+        reconcilesQueued: claimed.reconciles,
+        outboxClaimed: claimed.outbox?.claimed ?? null,
+        outboxSent: claimed.outbox?.sent ?? null,
+        ...due,
+      });
+      if (health.alert) alert(logger, AlertName.SweepLagging, due);
+    } catch (error) {
+      logger.error("sweep health check failed", classify(error));
+    }
+  }
+
+  /**
+   * The daily repair path: queue a resync of every connection that is not deleted, spread over
+   * the next 24 hours by connection. The outbox drain runs them as they come due, so one cron run
+   * never does every connection's GitHub calls.
    */
   async function dailyResync(db: Db, logger: Logger): Promise<void> {
-    const connections = await listActiveConnectionIds(db);
-    const now = deps.clock.now();
-    for (const connection of connections) {
-      await enqueueOutbox(db, {
-        id: deps.ids.next(),
-        kind: OutboxKind.ResyncConnection,
-        subjectId: connection.id,
-        createdAt: now,
-        availableAt: now,
-        workspaceId: connection.workspaceId,
-      });
-    }
-    logger.info("daily resync queued", { connections: connections.length });
+    const queued = await queueDailyResyncs(services(db));
+    logger.info("daily resync queued", { queued });
   }
 
   /**
@@ -417,8 +464,9 @@ export function createJobsWorker(deps: JobsWorkerDeps) {
 
     /**
      * Crons: heartbeat; every minute, the due-evaluation and due-reconcile sweeps then the outbox
-     * drain (each runs even when another fails); daily, the Paddle sweeps and the connection
-     * resync. Invalid configuration fails the run.
+     * drain (each runs even when another fails), then the sweep's health line; daily, the Paddle
+     * sweeps and the connection resyncs, each spread over the day. Invalid configuration fails
+     * the run.
      */
     async scheduled(controller: ScheduledController, env: Env): Promise<void> {
       const logger = createLogger(
@@ -448,9 +496,15 @@ export function createJobsWorker(deps: JobsWorkerDeps) {
         await dailyResync(db, logger);
         return;
       }
-      await sweepDueEvaluations(db, logger);
-      await sweepDueReconciles(db, logger);
-      await drainOutbox(db, jobDeps(config, config.github), logger);
+      const evaluations = await sweepDueEvaluations(db, logger);
+      const reconciles = await sweepDueReconciles(db, logger);
+      let outbox: { claimed: number; sent: number } | null = null;
+      try {
+        outbox = await drainOutbox(db, jobDeps(config, config.github), logger);
+      } finally {
+        // Even when the drain failed: the heartbeat then shows nothing drained.
+        await reportSweepHealth(db, logger, { evaluations, reconciles, outbox });
+      }
     },
 
     /**
