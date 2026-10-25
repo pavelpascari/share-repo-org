@@ -23,12 +23,17 @@ const KEYS = {
   userId: "u1",
   ipHash: "i".repeat(64),
 };
-const BUCKETS = claimRateLimitBuckets(KEYS);
-const [EMAIL_H, EMAIL_D, USER_H, IP_H] = BUCKETS.map((b) => b.bucket) as [
-  string,
-  string,
-  string,
-  string,
+// The claim buckets for KEYS, written out rather than built: a top-level call to
+// claimRateLimitBuckets would run at module load, where a failure fails no test.
+const EMAIL_H = `email:w1:${KEYS.emailHash}:h`;
+const EMAIL_D = `email:w1:${KEYS.emailHash}:d`;
+const USER_H = "user:u1:h";
+const IP_H = `ip:${KEYS.ipHash}:h`;
+const BUCKETS: readonly RateLimitBucket[] = [
+  { bucket: EMAIL_H, windowMs: HOUR, limit: 3 },
+  { bucket: EMAIL_D, windowMs: DAY, limit: 10 },
+  { bucket: USER_H, windowMs: HOUR, limit: 5 },
+  { bucket: IP_H, windowMs: HOUR, limit: 20 },
 ];
 
 describe("claim rate limits (decision 0012, threat T5)", () => {
@@ -42,12 +47,7 @@ describe("claim rate limits (decision 0012, threat T5)", () => {
   });
 
   it("name one bucket per key and window, the email's within its workspace", () => {
-    expect(BUCKETS).toEqual([
-      { bucket: `email:w1:${KEYS.emailHash}:h`, windowMs: HOUR, limit: 3 },
-      { bucket: `email:w1:${KEYS.emailHash}:d`, windowMs: DAY, limit: 10 },
-      { bucket: "user:u1:h", windowMs: HOUR, limit: 5 },
-      { bucket: `ip:${KEYS.ipHash}:h`, windowMs: HOUR, limit: 20 },
-    ]);
+    expect(claimRateLimitBuckets(KEYS)).toEqual(BUCKETS);
   });
 
   // Anyone can type anyone's email: requests in one workspace must not use up its limits in
