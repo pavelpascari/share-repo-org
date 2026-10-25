@@ -18,3 +18,6 @@ Each record has: **Status**, **Context**, **Decision**, **Consequences**.
 | [0010](0010-grant-ownership-and-reconciliation.md) | ShareRepo manages only access it created; per-repository reconciliation | Accepted |
 | [0011](0011-paddle-connection-and-tenant-credentials.md) | Paddle by API key, automatic webhook destination, envelope-encrypted tenant credentials | Accepted |
 | [0012](0012-purchase-claims.md) | Purchase claims: checkout reference, emailed claim link, audited manual link | Accepted |
+| [0013](0013-database-timers-and-expiry-confirmation.md) | Timers stay in the database; expiry is confirmed before revocation | Accepted |
+| [0014](0014-failure-handling-and-alerting.md) | Failure records, dead-letter queue, operator access, email alerts | Accepted |
+| [0015](0015-data-lifecycle.md) | Data lifecycle: retention, export, workspace and account deletion | Accepted |
