@@ -4,5 +4,7 @@ declare namespace Cloudflare {
     DB: D1Database;
     UPGRADE_DB: D1Database;
     TEST_MIGRATIONS: import("cloudflare:test").D1Migration[];
+    /** `test/fixtures/at-NNNN.sql` contents by file name. */
+    UPGRADE_FIXTURES: Record<string, string>;
   }
 }
