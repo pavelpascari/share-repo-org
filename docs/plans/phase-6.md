@@ -302,6 +302,37 @@ Where the build differs from, or adds to, the design above.
   - **T4:** set `purging` only from `deleting`, in the purge's first batch. Delete the outbox rows of the workspace before the `workspaces` row (foreign key). Started provider mutations can only be deleted while purging. The purged tombstone and `data.pruned` are account-scoped.
   - **T5:** `claim_requests.email_hash` and the claim rate-limit buckets are HMACs under the claim signing key. Rotating the key changes them, so lookups by email hash must try every key, or the rotation must wait out the claim windows. The e2e environment still uses the plain-text key format.
 
+### T5
+
+- **`CLAIM_SIGNING_KEY` keyring.**
+  - `CommerceDeps.claimSigningKeys` replaces `claimSigningKey`; `claimSigningKeysOf` (`packages/platform`) splits the current key from the others.
+  - `verifyClaimReference` takes `keys` and always tries all of them, so its timing does not say which key matched.
+  - A checkout claim the customer already used is not verified again on its renewals.
+- **HMAC lookup keys** ([decision 0012 amendment](../decisions/0012-purchase-claims.md#amendment--rotating-claim_signing_key-phase-6-t5)).
+  - `claim_requests.email_hash` is stored but never looked up, so only the rate-limit buckets matter. The email and IP hashes are computed under every listed key (`KeyedHash`).
+  - `RateLimitBucket.retired` names the same limit's buckets under the other keys. Their counts in the window add to the limit, both in `rateLimitDecision` and atomically in `takeRateLimits`; only the current bucket is incremented.
+  - So no claim window needs waiting out, and a rotation never resets a limit. The runbook keeps a retired key 8 days, so checkouts started under it still link.
+- **GitHub webhook.** `ingestGitHubWebhook` takes `secrets`. The web route passes `GITHUB_WEBHOOK_SECRET`, plus `GITHUB_WEBHOOK_SECRET_PREVIOUS` while it is set.
+- **Paddle webhook secret rotation** (`rotatePaddleWebhookSecret`, the billing page's `rotate_webhook` intent).
+  - The second destination's URL is `/webhooks/paddle/<connectionId>?v=<fresh id>`. The webhook route reads the pathname only, and both destinations deliver every event under the same event ID, so the second copy is a duplicate.
+  - The next secret is sealed with its own AAD purpose, `webhook_secret_next` (a new `EnvelopePurpose` and `PaddleEnvelopeField`). Promotion re-seals it for `webhook_secret`.
+  - The writes are `startPaddleWebhookRotation`, guarded on the current destination and the expected next one (null, or the one being replaced), and `completePaddleWebhookRotation`, guarded on both IDs.
+  - Re-running resumes: a pending second destination that no longer delivers (deleted or deactivated in Paddle) is deleted and replaced, and deleting an old destination that is already gone counts as done.
+  - The audit action `paddle.webhook_secret_rotated` gains `stage` (`started`, `completed`).
+  - `disconnectPaddle` deletes both destinations and returns `orphanedDestinationIds`. The billing action data has `orphanedDestinationIds` instead of `orphanedDestinationId`. `BillingView.connection.rotationInProgress` drives the page's notice.
+- **Fake Paddle.** `emitToAll` delivers one event to every active destination, each copy signed with its own secret. The existing `failNext` and `loseNextResponse` cover the failure-at-each-step tests. The E2E fake needed no change. There is no E2E journey for rotation yet (T7).
+- **`rewrap_credentials`** (`packages/application/src/credentials.ts`).
+  - The key is `rewrap:<generation>`. A run re-seals up to 50 envelopes under listed non-current keys, found by their `kid` (`listEnvelopesUnderKeys` in `credential-repository.ts`): Paddle API keys, webhook secrets and next secrets, and pending claim emails.
+  - Each write is guarded on the envelope it replaces.
+  - Paddle envelopes are audited per row as `paddle.credentials_rewrapped` (whose `field` gains `webhook_secret_next`, as T1's lazy path does). The run is audited as `credentials.rewrapped`, whose details gain `failed`.
+  - A run that moved something and left work queues the next generation, deduplicated. A run that moved nothing stops, so envelopes that never open cannot keep it alive.
+  - **Trigger:** the daily cron's `dailyRewrapCheck` queues `rewrap:0` while any envelope is under a retired key: one line in the `dailyResync` branch. The runbook also gives the D1 insert that starts a run by hand.
+- **Not changed:** the E2E environment still uses the plain-text `CLAIM_SIGNING_KEY`.
+- **Merge notes for T2–T4:**
+  - `apps/jobs/src/handlers.ts` gains `dailyRewrapCheck` and one call in the daily branch.
+  - `apps/jobs/src/work.ts` handles `RewrapCredentials`, and `apps/jobs/test/jobs.test.ts` drops it from the placeholder list.
+  - `packages/application/src/index.ts`, `packages/db/src/index.ts` and `packages/domain/src/audit.ts` gain exports and entries.
+
 ## Risks and open points
 
 - **Monitors is a beta.** Alerting has a manual fallback, a daily `/ops` review, until it is stable.

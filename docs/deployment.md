@@ -60,7 +60,7 @@ Phase 0 serves from `*.workers.dev`. Attaching `sharerepo.org` is a separate, ex
    # and again with --env production, with new values
    ```
 
-   Store both in the password manager, then delete the files. Treat `CREDENTIAL_KEYS` like the GitHub App private key: losing it makes every stored Paddle credential unreadable, and every creator must reconnect. To rotate it, add a key to `keys`, make it `current`, and keep the old one: envelopes under the old key are re-wrapped as they are used. Remove the old key only once no envelope references it. Changing `CLAIM_SIGNING_KEY` invalidates open checkout claims and makes rate-limit buckets start over; claim links already sent keep working.
+   Store both in the password manager, then delete the files. Treat `CREDENTIAL_KEYS` like the GitHub App private key: losing it makes every stored Paddle credential unreadable, and every creator must reconnect. Rotate either one with the [secret rotation runbook](runbooks/secret-rotation.md): add the new key to both Workers, make it current, and remove the old key only when the runbook says so. Replacing `CLAIM_SIGNING_KEY` outright, without the keyring, invalidates open checkout claims; claim links already sent keep working.
 
 10. Create the queues that carry webhook work from web to jobs:
 

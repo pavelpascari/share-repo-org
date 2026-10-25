@@ -49,7 +49,18 @@ Phase 6 adds the first surfaces that cross workspaces on purpose (operators), mo
 - **Operators see every workspace's failures.** That is the purpose of `/ops`. Failure rows hold IDs and error codes. The affected access is resolved to repository and subscriber names at read time. An operator's reads of a workspace page are audited (O4), but the `/ops` list itself is not audited per view.
 - **An operator's GitHub account is a single point of compromise.** Anyone who controls an operator's GitHub account can use `/ops`. GitHub's own account protections (two-factor authentication) are the control. The operator list should stay short.
 - **Restoring a purged workspace is an incident procedure.** D1 Time Travel keeps 30 days of history, so the operator can restore a purge only by an in-place restore of the whole database (decision 0015). The runbook treats it as an incident.
+- **A lost response can orphan a Paddle destination.** If Paddle creates a rotation's second destination but the response never arrives, the destination is unknown to ShareRepo. Its deliveries are refused, so it cannot inject events, but it uses one of the seller's 10 slots until the creator deletes it in Paddle ([secret-rotation runbook](../runbooks/secret-rotation.md) § 5).
 - **Monitors is a beta.** If it stops emailing, alerts go unread until the daily `/ops` review (decision 0014).
+
+## Status — rotation threats (Phase 6 T5)
+
+T5 built the rotation surfaces. T6's adversarial review is still to come.
+
+- **O15: mitigated.** `GITHUB_WEBHOOK_SECRET_PREVIOUS` is accepted only while it is set. A Paddle connection's next secret is accepted only while a rotation is in progress, and promotion erases it. Tests show the old secret refused once it is removed, at the GitHub route, at the Paddle route and in the service. The runbook ends the GitHub window within the hour.
+- **O16: mitigated.** Claim references are signed, and email and IP hashes computed, only under the current claim key. A retired key verifies references and counts rate limits only while it is listed. `rewrap_credentials` moves every envelope off non-current master keys, and the runbook removes a key only after a run reports none remaining. The next webhook secret has its own AAD purpose (`webhook_secret_next`), so it cannot be swapped with the current secret's envelope.
+- **O17: mitigated.** Each step of a Paddle webhook rotation is a guarded write. The second destination is stored before the old one is deleted, and promoted only after that deletion. A failure at each step (create, lost create response, store, delete, lost delete response, promote) leaves at least one working destination and secret, and re-running resumes. Tests cover each case.
+- **Residual: an orphaned destination.** When Paddle creates the second destination but its response is lost, ShareRepo never learns its ID. The destination delivers to the connection's URL with a secret ShareRepo does not know, so it is refused with `401`, and it takes one of the seller's 10 slots. Recorded under accepted risks.
+- **Residual: claim emails re-wrapped by the job** are audited by the run's `credentials.rewrapped` counts, not per row. They carry no tenant-visible change: the email is unchanged and erased within the job's run.
 
 ## Constraints already in the schema (Phase 6 T1)
 
