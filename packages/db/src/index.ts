@@ -43,10 +43,14 @@ export {
 } from "./connection-repository.ts";
 export {
   countEnvelopesUnderKeys,
+  type EnvelopeCursor,
   listEnvelopesUnderKeys,
+  REWRAP_CURSOR_KEY,
+  readRewrapCursor,
   rewrapClaimRequestEmail,
   type StoredEnvelope,
   type StoredEnvelopeField,
+  saveRewrapCursor,
 } from "./credential-repository.ts";
 export {
   type ApplyCustomerLinkResult,

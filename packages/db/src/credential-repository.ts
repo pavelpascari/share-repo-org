@@ -1,6 +1,6 @@
 import { and, eq, isNull, sql } from "drizzle-orm";
 import type { Db } from "./client.ts";
-import { claimRequests } from "./schema/index.ts";
+import { claimRequests, systemState } from "./schema/index.ts";
 
 // Tenant credential envelopes across tables, for the `rewrap_credentials` job (Phase 6, secret
 // rotation): every envelope records the ID of the master key that sealed it (`kid`), so the
@@ -46,18 +46,66 @@ function envelopesUnder(keyIds: readonly string[]) {
   );
 }
 
+/** A position in the job's order: the envelope column (by field) and the row. */
+export interface EnvelopeCursor {
+  readonly field: StoredEnvelopeField;
+  readonly rowId: string;
+}
+
 /**
  * Up to `limit` envelopes sealed under one of `keyIds` (the keyring's listed keys other than the
- * current one), in a stable order: table, field, then row. Empty when `keyIds` is.
+ * current one), in a stable order: table, field, then row. With `after`, only those that come
+ * after that position, so a run can continue past envelopes an earlier run could not open.
+ * Empty when `keyIds` is.
  */
 export async function listEnvelopesUnderKeys(
   db: Db,
-  input: { keyIds: readonly string[]; limit: number },
+  input: { keyIds: readonly string[]; limit: number; after?: EnvelopeCursor | null },
 ): Promise<StoredEnvelope[]> {
   if (input.keyIds.length === 0) return [];
+  const after = input.after ?? null;
+  const ord = ENVELOPE_COLUMNS.findIndex((column) => column.field === after?.field);
+  const from =
+    after === null ? sql`` : sql`WHERE ord > ${ord} OR (ord = ${ord} AND rowId > ${after.rowId})`;
   return db.all<StoredEnvelope>(
-    sql`SELECT "table", field, workspaceId, rowId, envelope FROM (${envelopesUnder(input.keyIds)}) ORDER BY ord, rowId LIMIT ${input.limit}`,
+    sql`SELECT "table", field, workspaceId, rowId, envelope FROM (${envelopesUnder(input.keyIds)}) ${from} ORDER BY ord, rowId LIMIT ${input.limit}`,
   );
+}
+
+/**
+ * The `system_state` key of the rewrap job's cursor: where the next run of a pass starts. It
+ * holds only a field name, a row ID and the run's generation, never an envelope.
+ */
+export const REWRAP_CURSOR_KEY = "rewrap.cursor";
+
+/** The cursor the run of `generation` continues from, or null to start at the beginning. */
+export async function readRewrapCursor(db: Db, generation: number): Promise<EnvelopeCursor | null> {
+  const [row] = await db
+    .select({ value: systemState.value })
+    .from(systemState)
+    .where(eq(systemState.key, REWRAP_CURSOR_KEY));
+  if (row === undefined) return null;
+  const stored = JSON.parse(row.value) as { generation: number } & EnvelopeCursor;
+  return stored.generation === generation ? { field: stored.field, rowId: stored.rowId } : null;
+}
+
+/**
+ * Records where the run of `generation` starts (bookkeeping, like the sweep's heartbeat), or
+ * clears the cursor when `cursor` is null: the pass reached the end.
+ */
+export async function saveRewrapCursor(
+  db: Db,
+  input: { generation: number; cursor: EnvelopeCursor | null; now: number },
+): Promise<void> {
+  if (input.cursor === null) {
+    await db.delete(systemState).where(eq(systemState.key, REWRAP_CURSOR_KEY));
+    return;
+  }
+  const value = JSON.stringify({ generation: input.generation, ...input.cursor });
+  await db
+    .insert(systemState)
+    .values({ key: REWRAP_CURSOR_KEY, value, updatedAt: input.now })
+    .onConflictDoUpdate({ target: systemState.key, set: { value, updatedAt: input.now } });
 }
 
 /** How many envelopes are sealed under one of `keyIds`; 0 when `keyIds` is empty. */
