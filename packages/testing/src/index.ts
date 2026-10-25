@@ -19,3 +19,14 @@ export type { FreshWorkspaceIds, SequentialIdsOptions } from "./ids.ts";
 export { freshWorkspaceIds, SequentialIds } from "./ids.ts";
 export type { CapturedLog, ConsoleLevel, LogCapture } from "./logs.ts";
 export { CONSOLE_LEVELS, captureLogs } from "./logs.ts";
+export type { StoredFinding, StoredScanOptions, StoredValue } from "./stored-rows.ts";
+export {
+  applicationTables,
+  EMAIL_SHAPES,
+  emailShapes,
+  encodedForms,
+  encodedNeedles,
+  expectNoSecretsInStoredRows,
+  readStoredText,
+  scanStoredValues,
+} from "./stored-rows.ts";
