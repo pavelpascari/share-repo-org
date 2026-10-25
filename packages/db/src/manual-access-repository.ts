@@ -1,4 +1,4 @@
-import type { Instant } from "@sharerepo/domain";
+import type { Instant, WorkspaceStatus } from "@sharerepo/domain";
 import { and, asc, desc, eq, isNotNull, isNull, lte, type SQL, sql } from "drizzle-orm";
 import { type AuditEvents, conditionalAuditInserts } from "./audit-repository.ts";
 import { insertWhere, runBatch, type Statement } from "./batch.ts";
@@ -6,7 +6,14 @@ import type { Db } from "./client.ts";
 import { isUniqueViolation } from "./errors.ts";
 import { assertReconcileRows, type NewOutboxRow } from "./outbox-repository.ts";
 import { reconcileRequest } from "./reconcile-repository.ts";
-import { entitlements, manualAccesses, offers, subjects } from "./schema/index.ts";
+import {
+  entitlements,
+  manualAccesses,
+  offers,
+  subjects,
+  workspaceMemberships,
+  workspaces,
+} from "./schema/index.ts";
 import type {
   Entitlement,
   EntitlementPlanWrite,
@@ -111,6 +118,17 @@ export interface ManualAccessWrite {
    * workspace before it, counted in the batch itself.
    */
   openLimit?: number;
+  /**
+   * The workspace status the decision was made under (it decides whether access is withdrawn).
+   * The write is stale unless the workspace still has it, checked in the batch: a deletion
+   * requested or cancelled after the read cannot be overwritten by a decision made before it.
+   */
+  workspaceStatus: WorkspaceStatus;
+  /**
+   * For an owner's change: the user, who must still own the workspace when the batch runs, so a
+   * membership removed after the authorization check authorizes nothing. Absent for system work.
+   */
+  ownerUserId?: string;
   entitlements: EntitlementPlanWrite;
   /**
    * `reconcile_resource` rows for every repository whose entitlements the plan changes. Each is
@@ -122,7 +140,8 @@ export interface ManualAccessWrite {
 export type ManualAccessWriteResult =
   | { ok: true }
   /**
-   * `stale`: the access or its offer changed since it was read, so nothing was written; read again
+   * `stale`: the access or its offer changed since it was read, the workspace left the status it
+   * was read in, or the owner no longer owns it, so nothing was written; read (and authorize) again
    * and decide again. `already_open`: creating, but the subject already has an open manual access
    * to the offer. `limit_reached`: creating, but the workspace has `openLimit` open ones.
    */
@@ -164,8 +183,12 @@ const openCount = (workspaceId: string) =>
  * Writes one manual access decision in one atomic batch (decision 0003): the access row, its
  * entitlement plan, reconcile requests and audit events. Like `applySubscriptionRefresh`:
  *
- * - **Creating** (`expectedVersion` 0): the INSERT runs first, only while the offer is still at
- *   the version read and the workspace has fewer than `openLimit` open manual accesses; the rest
+ * Every statement is guarded on the decision's facts still holding when the batch runs: the offer
+ * at the version read, the workspace in the status read and, for an owner's change, the owner
+ * still owning it. A deletion, an offer edit or a lost membership that commits after the read
+ * therefore makes the write `stale` rather than racing it.
+ *
+ * - **Creating** (`expectedVersion` 0): the INSERT runs first, only while those facts hold and the workspace has fewer than `openLimit` open manual accesses; the rest
  *   is guarded on the new row existing. An open access of the same offer and subject fails the
  *   partial unique index and rolls everything back (`already_open`).
  * - **Existing**: every statement is guarded on the access still being at `expectedVersion` and
@@ -181,7 +204,13 @@ export async function applyManualAccessWrite(
   assertWriteScoped(input);
   const { workspaceId, now, expectedVersion, access } = input;
   const creating = expectedVersion === 0;
-  const offerCurrent = sql`EXISTS (SELECT 1 FROM ${offers} WHERE ${offers.workspaceId} = ${workspaceId} AND ${offers.id} = ${input.offer.offerId} AND ${offers.version} = ${input.offer.version})`;
+  // The offer at its version, the workspace at its status, and the owner still an owner: the
+  // facts the decision and its authorization were made under, re-checked inside the batch.
+  const ownerStill =
+    input.ownerUserId === undefined
+      ? sql`1`
+      : sql`EXISTS (SELECT 1 FROM ${workspaceMemberships} WHERE ${workspaceMemberships.workspaceId} = ${workspaceId} AND ${workspaceMemberships.userId} = ${input.ownerUserId} AND ${workspaceMemberships.role} = 'owner')`;
+  const decisionCurrent = sql`EXISTS (SELECT 1 FROM ${offers} WHERE ${offers.workspaceId} = ${workspaceId} AND ${offers.id} = ${input.offer.offerId} AND ${offers.version} = ${input.offer.version}) AND EXISTS (SELECT 1 FROM ${workspaces} WHERE ${workspaces.id} = ${workspaceId} AND ${workspaces.status} = ${input.workspaceStatus}) AND ${ownerStill}`;
   const current = and(
     eq(manualAccesses.workspaceId, workspaceId),
     eq(manualAccesses.id, access.id),
@@ -189,7 +218,7 @@ export async function applyManualAccessWrite(
   ) as SQL;
   const guard = creating
     ? sql`EXISTS (SELECT 1 FROM ${manualAccesses} WHERE ${manualAccesses.workspaceId} = ${workspaceId} AND ${manualAccesses.id} = ${access.id})`
-    : sql`EXISTS (SELECT 1 FROM ${manualAccesses} WHERE ${current}) AND ${offerCurrent}`;
+    : sql`EXISTS (SELECT 1 FROM ${manualAccesses} WHERE ${current}) AND ${decisionCurrent}`;
 
   const statements: Statement[] = [];
   if (creating) {
@@ -198,7 +227,7 @@ export async function applyManualAccessWrite(
         db,
         manualAccesses,
         access,
-        sql`${offerCurrent} AND ${openCount(workspaceId)} < ${input.openLimit as number}`,
+        sql`${decisionCurrent} AND ${openCount(workspaceId)} < ${input.openLimit as number}`,
       ),
     );
   }
@@ -231,7 +260,7 @@ export async function applyManualAccessWrite(
   if (!creating) {
     const { id: _id, workspaceId: _ws, createdAt: _createdAt, ...fields } = access;
     // Last: once it runs, the guard no longer holds.
-    statements.push(db.update(manualAccesses).set(fields).where(and(current, offerCurrent)));
+    statements.push(db.update(manualAccesses).set(fields).where(and(current, decisionCurrent)));
   }
 
   let changes: number[];

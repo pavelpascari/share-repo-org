@@ -113,6 +113,7 @@ async function granted(ws: Grantable, overrides: Partial<ManualAccess> = {}) {
       expectedVersion: 0,
       access,
       offer: ws.offerRef,
+      workspaceStatus: "active",
       openLimit: 100,
       entitlements: { create: [entitlement], update: [], end: [] },
       reconcile: [reconcileRow(ws)],
@@ -253,6 +254,7 @@ describe("applyManualAccessWrite: a new access", () => {
           expectedVersion: 0,
           access,
           offer: ws.offerRef,
+          workspaceStatus: "active",
           openLimit: 100,
           entitlements: { create: [entitlement], update: [], end: [] },
           reconcile: [reconcileRow(ws)],
@@ -291,6 +293,7 @@ describe("applyManualAccessWrite: a new access", () => {
           expectedVersion: 0,
           access,
           offer: ws.offerRef,
+          workspaceStatus: "active",
           openLimit: 100,
           entitlements: { create: [], update: [], end: [] },
           reconcile: [],
@@ -320,6 +323,7 @@ describe("applyManualAccessWrite: a new access", () => {
       expectedVersion: 0,
       access: accessRow(ws, { subjectId: second.id }),
       offer: ws.offerRef,
+      workspaceStatus: "active",
       openLimit: limit,
       entitlements: { create: [], update: [], end: [] },
       reconcile: [],
@@ -345,6 +349,7 @@ describe("applyManualAccessWrite: a new access", () => {
           expectedVersion: 0,
           access,
           offer: { ...ws.offerRef, version: 2 },
+          workspaceStatus: "active",
           openLimit: 100,
           entitlements: { create: [manualEntitlement(ws, access)], update: [], end: [] },
           reconcile: [reconcileRow(ws)],
@@ -369,6 +374,7 @@ describe("applyManualAccessWrite: a new access", () => {
           expectedVersion: 0,
           access: accessRow(ws, { subjectId: other.subject.id }),
           offer: ws.offerRef,
+          workspaceStatus: "active",
           openLimit: 100,
           entitlements: { create: [], update: [], end: [] },
           reconcile: [],
@@ -390,6 +396,7 @@ describe("applyManualAccessWrite: an existing access", () => {
       expectedVersion: version,
       access: { ...updated, version: version + 1, updatedAt: NOW + 1 },
       offer: ws.offerRef,
+      workspaceStatus: "active",
       entitlements: {
         create: [],
         update: [{ id: entitlement.id, set: { validUntil: NOW + 60 * DAY } }],
@@ -433,6 +440,7 @@ describe("applyManualAccessWrite: an existing access", () => {
         updatedAt: NOW + 1,
       },
       offer: { ...ws.offerRef, version: offerVersion },
+      workspaceStatus: "active",
       entitlements: {
         create: [],
         update: [],
@@ -467,6 +475,7 @@ describe("applyManualAccessWrite: an existing access", () => {
           expectedVersion: 1,
           access: { ...access, version: 2, updatedAt: NOW + 1 },
           offer: ws.offerRef,
+          workspaceStatus: "active",
           entitlements: {
             create: [manualEntitlement(ws, access, { resourceId: other.resource.id })],
             update: [],
@@ -477,6 +486,140 @@ describe("applyManualAccessWrite: an existing access", () => {
         [workspaceEvent(ws.workspaceId)],
       ),
     ).rejects.toThrow();
+  });
+});
+
+// Security review (decision 0016): a decision is authorized and planned from reads, and the batch
+// re-checks those facts, so a change that commits in between makes the write stale.
+describe("applyManualAccessWrite: re-checks its decision's facts in the batch", () => {
+  const create = (ws: Grantable, overrides: Partial<ManualAccessWrite> = {}) => {
+    const access = accessRow(ws);
+    return {
+      access,
+      write: {
+        workspaceId: ws.workspaceId,
+        now: NOW,
+        expectedVersion: 0,
+        access,
+        offer: ws.offerRef,
+        workspaceStatus: "active",
+        ownerUserId: ws.userId,
+        openLimit: 100,
+        entitlements: { create: [manualEntitlement(ws, access)], update: [], end: [] },
+        reconcile: [reconcileRow(ws)],
+        ...overrides,
+      } satisfies ManualAccessWrite,
+    };
+  };
+
+  it("grants nothing in a workspace whose deletion was requested after the decision read it", async () => {
+    const ws = await grantableWorkspace();
+    const { access, write } = create(ws);
+    await scheduleWorkspaceDeletion(
+      db,
+      { workspaceId: ws.workspaceId, requestedBy: ws.userId, now: NOW, deleteAfter: NOW + DAY },
+      [workspaceEvent(ws.workspaceId)],
+    );
+    const event = workspaceEvent(ws.workspaceId);
+    await expect(applyManualAccessWrite(db, write, [event])).resolves.toEqual({
+      ok: false,
+      reason: "stale",
+    });
+    expect(await getManualAccess(db, { workspaceId: ws.workspaceId, id: access.id })).toBeNull();
+    expect(await count("entitlements", "source_id = ?", access.id)).toBe(0);
+    expect(await auditCount(env.DB, event.correlationId)).toBe(0);
+  });
+
+  it("writes nothing for an owner demoted after being authorized", async () => {
+    const ws = await grantableWorkspace();
+    const { access } = await granted(ws);
+    await env.DB.prepare(
+      "UPDATE workspace_memberships SET role = 'member' WHERE workspace_id = ? AND user_id = ?",
+    )
+      .bind(ws.workspaceId, ws.userId)
+      .run();
+    const revoke: ManualAccessWrite = {
+      workspaceId: ws.workspaceId,
+      now: NOW + 1,
+      expectedVersion: 1,
+      access: {
+        ...access,
+        revokedAt: NOW + 1,
+        revokeCause: "owner",
+        nextEvaluationAt: null,
+        version: 2,
+        updatedAt: NOW + 1,
+      },
+      offer: ws.offerRef,
+      workspaceStatus: "active",
+      ownerUserId: ws.userId,
+      entitlements: { create: [], update: [], end: [] },
+      reconcile: [],
+    };
+    await expect(
+      applyManualAccessWrite(db, revoke, [workspaceEvent(ws.workspaceId)]),
+    ).resolves.toEqual({ ok: false, reason: "stale" });
+    const other = await seedSubject(ws.workspaceId);
+    const grant = accessRow(ws, { subjectId: other.id });
+    await expect(
+      applyManualAccessWrite(
+        db,
+        { ...create(ws).write, access: grant, entitlements: { create: [], update: [], end: [] } },
+        [workspaceEvent(ws.workspaceId)],
+      ),
+    ).resolves.toEqual({ ok: false, reason: "stale" });
+    // System work names no owner and still applies.
+    const { ownerUserId: _owner, ...system } = revoke;
+    await expect(
+      applyManualAccessWrite(db, system, [workspaceEvent(ws.workspaceId)]),
+    ).resolves.toEqual({ ok: true });
+  });
+
+  it("is stale when the workspace left the status the decision read", async () => {
+    const ws = await grantableWorkspace();
+    const { write } = create(ws, { workspaceStatus: "deleting" });
+    await expect(
+      applyManualAccessWrite(db, write, [workspaceEvent(ws.workspaceId)]),
+    ).resolves.toEqual({ ok: false, reason: "stale" });
+  });
+
+  it("a concurrent revoke and end date edit: the second writer is stale", async () => {
+    const ws = await grantableWorkspace();
+    const { access } = await granted(ws);
+    const change = (next: Partial<ManualAccess>): ManualAccessWrite => ({
+      workspaceId: ws.workspaceId,
+      now: NOW + 1,
+      expectedVersion: 1,
+      access: { ...access, ...next, version: 2, updatedAt: NOW + 1 },
+      offer: ws.offerRef,
+      workspaceStatus: "active",
+      ownerUserId: ws.userId,
+      entitlements: { create: [], update: [], end: [] },
+      reconcile: [],
+    });
+    const [revoked, edited] = await Promise.all([
+      applyManualAccessWrite(
+        db,
+        change({ revokedAt: NOW + 1, revokeCause: "owner", nextEvaluationAt: null }),
+        [workspaceEvent(ws.workspaceId)],
+      ),
+      applyManualAccessWrite(db, change({ endsAt: NOW + 90 * DAY }), [
+        workspaceEvent(ws.workspaceId),
+      ]),
+    ]);
+    expect([revoked, edited]).toContainEqual({ ok: true });
+    expect([revoked, edited]).toContainEqual({ ok: false, reason: "stale" });
+  });
+
+  it("two concurrent grants of one offer to one account: one is already_open", async () => {
+    const ws = await grantableWorkspace();
+    const results = await Promise.all([
+      applyManualAccessWrite(db, create(ws).write, [workspaceEvent(ws.workspaceId)]),
+      applyManualAccessWrite(db, create(ws).write, [workspaceEvent(ws.workspaceId)]),
+    ]);
+    expect(results).toContainEqual({ ok: true });
+    expect(results).toContainEqual({ ok: false, reason: "already_open" });
+    expect(await count("manual_accesses", "workspace_id = ?", ws.workspaceId)).toBe(1);
   });
 });
 
@@ -495,6 +638,7 @@ describe("applyManualAccessWrite: programmer errors", () => {
           expectedVersion: 0,
           access: accessRow(ws, override),
           offer: ws.offerRef,
+          workspaceStatus: "active",
           openLimit: 100,
           entitlements: { create: [], update: [], end: [] },
           reconcile: [],
@@ -518,10 +662,11 @@ describe("applyManualAccessWrite: programmer errors", () => {
           expectedVersion: 0,
           access: accessRow(ws),
           offer: { ...ws.offerRef, ...offerOverride },
+          workspaceStatus: "active",
           openLimit: 100,
           entitlements: { create: [], update: [], end: [] },
           reconcile: [],
-          ...writeOverride,
+          ...(writeOverride as object),
         },
         [workspaceEvent(ws.workspaceId)],
       ),
@@ -545,6 +690,7 @@ describe("applyManualAccessWrite: programmer errors", () => {
           expectedVersion: 0,
           access,
           offer: ws.offerRef,
+          workspaceStatus: "active",
           openLimit: 100,
           entitlements: {
             create: [manualEntitlement(ws, access, overrides)],
@@ -569,6 +715,7 @@ describe("applyManualAccessWrite: programmer errors", () => {
           expectedVersion: 0,
           access: accessRow(ws),
           offer: ws.offerRef,
+          workspaceStatus: "active",
           openLimit: 100,
           entitlements: { create: [], update: [], end: [] },
           reconcile: [outboxRow("reconcile_resource", "ws_other:res", "ws_other")],

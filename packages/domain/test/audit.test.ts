@@ -158,6 +158,7 @@ const VALID_DETAILS = {
     externalSubjectId: "583231",
     cause: "owner",
   },
+  "manual_access.evaluated": { nextEvaluationAt: 1_702_592_000_000 },
   "job.failed": {
     kind: "reconcile_resource",
     subjectId: "w1:r1",
@@ -243,6 +244,7 @@ describe("audit action catalog", () => {
     ["access.granted_manually", "workspace", "manual_access"],
     ["access.updated_manually", "workspace", "manual_access"],
     ["access.revoked_manually", "workspace", "manual_access"],
+    ["manual_access.evaluated", "workspace", "manual_access"],
     ["job.failed", "either", "outbox"],
     ["job.retried", "either", "outbox"],
     ["job.dismissed", "either", "outbox"],
@@ -424,6 +426,7 @@ describe("audit action catalog", () => {
     ["access.updated_manually", "endsAt", { from: null }],
     ["access.updated_manually", "endsAt", { from: null, to: 1, login: "x" }],
     ["access.revoked_manually", "cause", "expired"],
+    ["manual_access.evaluated", "nextEvaluationAt", -1],
     ["entitlement.created", "manualAccessId", "ma1"],
     ["entitlement.created", "manualAccessId", ""],
     ["job.failed", "kind", "send_email"],
@@ -507,6 +510,7 @@ describe("offer, commerce and entitlement details", () => {
     ],
     ["entitlement.ended", { state: "revoked", reason: "paused" }],
     ["entitlement.ended", { state: "expired", reason: "manual_ended" }],
+    ["manual_access.evaluated", { nextEvaluationAt: null }],
     ["access.granted_manually", { ...VALID_DETAILS["access.granted_manually"], endsAt: null }],
     [
       "access.updated_manually",

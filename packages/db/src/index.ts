@@ -268,6 +268,7 @@ export {
 export {
   findOrCreateSubjectForIdentity,
   findSubjectByExternalId,
+  getSubject,
   insertSubject,
   listSubjects,
   type Subject,

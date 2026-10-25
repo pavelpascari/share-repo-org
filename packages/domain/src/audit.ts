@@ -563,6 +563,13 @@ export const AUDIT_ACTIONS = {
       cause: z.enum(MANUAL_ACCESS_REVOKE_CAUSES),
     }),
   },
+  // The system evaluated a manual access again (its end date passed, its offer changed, or its
+  // workspace's deletion was requested or cancelled), with its next timer, or null for none.
+  "manual_access.evaluated": {
+    scope: "workspace",
+    targetType: "manual_access",
+    details: z.strictObject({ nextEvaluationAt: instant.nullable() }),
+  },
   // Failures, operators and the data lifecycle (Phase 6, decisions 0014 and 0015). Minimal shapes
   // from Phase 6 T1, refined by the tasks that write them. IDs, counts and codes only: never a
   // login, email, secret or key ID. A job is in its workspace when it has one (`outbox.workspace_id`).
