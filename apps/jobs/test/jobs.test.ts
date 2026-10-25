@@ -29,7 +29,7 @@ import {
   outboxIdFor,
   receivedWebhook,
 } from "./support/github.ts";
-import { deliver, jobsWorker, outboxRow, runCron, sentAt } from "./support/worker.ts";
+import { deliver, jobsWorker, runCron, sentAt } from "./support/worker.ts";
 
 const DAY_MS = 86_400_000;
 
@@ -98,31 +98,6 @@ describe("queue()", () => {
     expect(github.calls).toEqual([]);
     expect(logged().map((line) => line.msg)).toContain("job has no workspace scope");
   });
-
-  // Phase 6 T1 placeholders: the kinds exist in the vocabulary; T4 and T5 add their handlers.
-  it.each(["prune_data", "purge_workspace"] as const)(
-    "fails %s for good until its handler lands",
-    async (kind) => {
-      const outboxId = `row-${crypto.randomUUID()}`;
-      await enqueueOutbox(db, {
-        id: outboxId,
-        kind,
-        subjectId: "x",
-        createdAt: clock.now(),
-        availableAt: clock.now(),
-        workspaceId: null,
-      });
-      const result = await deliver(jobsWorker(createFakeGitHubApp()), [
-        { kind, subjectId: "x", outboxId },
-      ]);
-      expect(result.explicitAcks).toHaveLength(1);
-      expect(result.retryMessages).toEqual([]);
-      expect(await outboxRow(outboxId)).toMatchObject({
-        sent_at: null,
-        last_error_code: "not_implemented",
-      });
-    },
-  );
 
   it("drops a poison message without retrying it", async () => {
     const result = await deliver(jobsWorker(createFakeGitHubApp()), [

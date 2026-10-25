@@ -71,6 +71,13 @@
       "when": 1792951335032,
       "tag": "0009_operational_hardening",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1792953561436,
+      "tag": "0010_retention_indexes",
+      "breakpoints": true
     }
   ]
 }

@@ -7,6 +7,7 @@ import {
   queueDailyResyncs,
   queueDueEvaluations,
   queueDueReconciles,
+  queueLifecycleJobs,
   queuePaddleSweeps,
   recordJobFailure,
   type ServiceContext,
@@ -141,6 +142,7 @@ const isRetryable = (error: unknown): boolean =>
 function logOutcome(logger: Logger, outcome: JobOutcome, fields: Record<string, string>): void {
   if (outcome === JobOutcome.OutOfScope) logger.warn("job has no workspace scope", fields);
   if (outcome === JobOutcome.Partial) logger.warn("job covered only part of its subject", fields);
+  if (outcome === JobOutcome.Waiting) logger.warn("job waits for a precondition", fields);
 }
 
 /**
@@ -443,6 +445,20 @@ export function createJobsWorker(deps: JobsWorkerDeps) {
     }
   }
 
+  /**
+   * The daily data lifecycle (decision 0015): queues the retention run and the purge of every
+   * workspace whose deletion is due, each spread over the day. A failure is logged by its
+   * classification only.
+   */
+  async function dailyLifecycle(db: Db, logger: Logger): Promise<void> {
+    try {
+      const queued = await queueLifecycleJobs(services(db));
+      logger.info("lifecycle jobs queued", { queued });
+    } catch (error) {
+      logger.error("lifecycle job queueing failed", classify(error));
+    }
+  }
+
   return {
     /** Liveness only: answers without reading configuration or touching D1. */
     async fetch(request: Request): Promise<Response> {
@@ -494,6 +510,7 @@ export function createJobsWorker(deps: JobsWorkerDeps) {
         await dailyPaddleSweeps(db, logger);
         await dailyRewrapCheck(db, config, logger);
         await dailyResync(db, logger);
+        await dailyLifecycle(db, logger);
         return;
       }
       const evaluations = await sweepDueEvaluations(db, logger);

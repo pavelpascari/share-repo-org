@@ -74,6 +74,7 @@ const VALID_DETAILS = {
     previousLogin: "octocat",
     login: "octocat-renamed",
   },
+  "subject.identity_unlinked": { provider: "github", externalSubjectId: "583231" },
   "customer.created": { source: "simulated", externalCustomerId: "ctm_1" },
   "customer.linked": { previousSubjectId: "s1", subjectId: "s2" },
   "subscription.recorded": {
@@ -190,6 +191,7 @@ describe("audit action catalog", () => {
     ["offer.archived", "workspace", "offer"],
     ["subject.created", "workspace", "subject"],
     ["subject.login_updated", "workspace", "subject"],
+    ["subject.identity_unlinked", "workspace", "subject"],
     ["customer.created", "workspace", "customer"],
     ["customer.linked", "workspace", "customer"],
     ["subscription.recorded", "workspace", "subscription"],

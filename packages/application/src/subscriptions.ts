@@ -15,6 +15,7 @@ import {
   type PlanSubscription,
   planEntitlements,
   type SubscriptionSnapshot,
+  workspaceWithdrawal,
 } from "@sharerepo/domain";
 import { ConflictError } from "@sharerepo/platform";
 import { linkCheckoutReference } from "./claims.ts";
@@ -260,14 +261,22 @@ async function attemptRefresh(
           workspaceId,
           subscriptionId: stored.id,
         });
-  const observed = await port.refreshSubscription({
-    workspaceId,
-    externalSubscriptionId: ref.externalSubscriptionId,
-  });
-  if (!observed.found && stored === null) {
+  // A workspace being deleted withdraws all access (decision 0015). Its source is not read (its
+  // Paddle connection is gone): the stored facts stand, and the plan revokes every entitlement.
+  const workspace = await repo.getWorkspace(ctx.db, workspaceId);
+  const withdrawn = workspace === null ? null : workspaceWithdrawal(workspace.status);
+  const observed =
+    withdrawn === null
+      ? await port.refreshSubscription({
+          workspaceId,
+          externalSubscriptionId: ref.externalSubscriptionId,
+        })
+      : null;
+  const found = observed === null ? stored !== null : observed.found;
+  if (!found && stored === null) {
     return { summary: { outcome: "absent", created: 0, updated: 0, ended: 0 }, claim: null };
   }
-  const snapshot = observed.found && isNewerSnapshot(stored, observed.snapshot) ? observed : null;
+  const snapshot = observed?.found && isNewerSnapshot(stored, observed.snapshot) ? observed : null;
   const audit: AuditEvent[] = [];
   const event = <A extends WorkspaceAuditAction>(
     action: A,
@@ -333,7 +342,7 @@ async function attemptRefresh(
   }
   const { id: customerId, subjectId } = customer as repo.Customer;
   const claim: ReportedClaim | null =
-    observed.found && observed.claimReference !== null
+    observed?.found && observed.claimReference !== null
       ? {
           customer: customer as repo.Customer,
           reference: observed.claimReference,
@@ -352,7 +361,7 @@ async function attemptRefresh(
           pastDueSince: carryPastDueSince(stored, snapshot.snapshot),
         };
   const subscriptionId = stored?.id ?? ctx.ids.next();
-  const planned: PlanSubscription | null = observed.found
+  const planned: PlanSubscription | null = found
     ? {
         id: subscriptionId,
         items: facts.items,
@@ -369,6 +378,7 @@ async function attemptRefresh(
     subjectId,
     offers,
     live: live.map(liveEntitlement),
+    withdrawn,
   });
 
   const changed =

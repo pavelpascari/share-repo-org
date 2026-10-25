@@ -16,7 +16,7 @@ export const UNAUDITED_TABLES: Readonly<Record<string, string>> = {
   outbox:
     "work hand-off bookkeeping (decision 0003); retrying or dismissing a failure is audited as job.*",
   system_state:
-    "sweep health bookkeeping, such as when a lag alert was last raised (decision 0014)",
+    "sweep health bookkeeping, such as when a lag alert was last raised (decision 0014), and a workspace purge's progress (decision 0015)",
 };
 
 export type TableSnapshot = ReadonlyMap<string, string>;

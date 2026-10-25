@@ -51,6 +51,20 @@ export default function WorkspaceLayout({ loaderData }: Route.ComponentProps) {
           </>
         )}
       </nav>
+      {(workspace.status === "deleting" || workspace.status === "purging") && (
+        <p className="mb-6 rounded border border-amber-300 bg-amber-50 p-3 text-sm">
+          This workspace is being deleted and is read-only.
+          {workspace.role === "owner" && workspace.status === "deleting" && (
+            <>
+              {" "}
+              <Link to={`/w/${workspace.slug}/settings`} className="underline">
+                See settings
+              </Link>{" "}
+              to cancel.
+            </>
+          )}
+        </p>
+      )}
       <Outlet />
     </>
   );

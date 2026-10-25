@@ -44,6 +44,23 @@ Phase 6 adds the first surfaces that cross workspaces on purpose (operators), mo
 | O18 | **Alert lines leak data.** An alert line carries a login, email, payload or secret into logs and emails. | Alerts go through one helper, `alert(name, ids)`, with a closed vocabulary of names (`ALERT_NAMES`) and fields limited to IDs and codes. Logs pass through redaction. A test runs every job and page with canaries and scans the logs. | `security/no-secrets-in-stored-rows-or-logs`, `audit/no-secrets-in-logs-or-audit` |
 | O19 | **Failures nobody hears about.** The cron stops, the sweep lags, or a job dies without a record, so access drifts unnoticed. | Every terminal failure is an outbox row, a `job.failed` audit event and an alert line. The sweep logs a heartbeat each minute and alerts when it lags. A Monitor emails on a missing heartbeat. | `failure/exhausted-job-is-recorded-and-alerted`, `timing/sweep-lag-alerts` |
 
+## Implementation status
+
+| # | Status | Where |
+|---|---|---|
+| O6 | Implemented (T4) | Export allow-list in `packages/db/src/export-repository.ts`. `export/contains-no-secrets` scans for a canary, the stored envelopes and hashes, and email shapes. |
+| O7 | Implemented (T4) | `POST /w/:slug/export`: same-origin check, `workspace.manage`, 5 an hour per workspace, `workspace.exported`, a `no-store` attachment without CORS headers. |
+| O8 | Implemented (T4) | The settings page: a same-origin POST, `workspace.manage`, the slug typed exactly, 30 days to cancel. |
+| O9 | Implemented (T4) | Requesting deletion queues a refresh of every subscription. A refresh of a workspace being deleted withdraws all access. The purge starts only when no entitlement is live and no managed grant remains, checked again in the batch that sets `purging`. The reason it waits is recorded (`purge_blocked:<workspaceId>`) and shown. |
+| O10 | Implemented (T1, T4) | Only `purgeWorkspace` sets `purging`, in its first delete batch, once `delete_after` has passed. |
+| O11 | Implemented (T4) | The job's subject is the workspace ID. The purge re-reads the workspace and requires `purgeDue`. Every delete names the workspace (`PURGE_ORDER`), and `deletion/purge-touches-only-its-workspace` checks another workspace row by row. |
+| O12 | Implemented (T4) | `/me`: same-origin POST, the session's own user, the login typed, refused while owning a workspace that is not being deleted. Access is revoked first and `user.deleted` has counts only. |
+| O13 | Implemented (T4) | Pruning selects by age and state, never selects referenced rows (`retention/prune-keeps-referenced-rows`), deletes at most 500 per table per run, and writes `data.pruned`. |
+
+Open for T6's review:
+- A workspace whose GitHub App was uninstalled before its purge waits for ever on managed grants that ShareRepo cannot revoke. An operator must resolve it.
+- An account deletion keeps the ID-only `users` row while a connection or offer version still names it. Pruning removes it later.
+
 ## Accepted risks
 
 - **Operators see every workspace's failures.** That is the purpose of `/ops`. Failure rows hold IDs and error codes. The affected access is resolved to repository and subscriber names at read time. An operator's reads of a workspace page are audited (O4), but the `/ops` list itself is not audited per view.

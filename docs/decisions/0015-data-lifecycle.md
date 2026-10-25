@@ -79,3 +79,8 @@ Migration 0009 found two more tables a purge must empty, and one weakness in the
 - **`purging` is one-way.** The exception is only as strong as the way into `purging`. Triggers allow it only from `deleting`, never allow leaving it, and refuse creating a workspace already `deleting` or `purging`. A CHECK requires `delete_after` and the requester exactly while a workspace is `deleting` or `purging`.
 
 UPDATE stays rejected on all three tables. Threats O10 and O13 in the [operations threat model](../security/operations-threat-model.md) depend on these triggers.
+
+## Amendment — account deletion details (Phase 6 T4)
+
+- **Customers are unlinked too.** Unlinking a subject from the user also unlinks the customers linked to that subject (`customer.linked` to none). This is what makes "old links do not come back" hold: a later sign-in could otherwise link the same subject again. It also keeps a refresh that read the old link from granting access again.
+- **The `users` row can outlive the account.** `connections.created_by_user_id` and `offer_versions.created_by_user_id` restrict deletes. While a connection or offer version names the user, for example in their own workspace that is still `deleting`, the account deletion keeps the `users` row. That row holds only an ID and timestamps. Everything else is deleted, including the profile, identities and sessions. Pruning removes the row once nothing names it, after a day.

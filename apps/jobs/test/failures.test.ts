@@ -147,18 +147,19 @@ describe("terminal failures", () => {
     expect(alerts()).toEqual([]);
   });
 
+  // A system-wide job (no workspace) whose key does not decode fails for good.
   it("records a system-wide job's failure as an account-scoped event", async () => {
     const outboxId = `sys-${crypto.randomUUID()}`;
     await enqueueOutbox(db, {
       id: outboxId,
-      kind: "prune_data",
-      subjectId: "daily",
+      kind: "rewrap_credentials",
+      subjectId: "not-a-rewrap-key",
       createdAt: clock.now(),
       availableAt: clock.now(),
       workspaceId: null,
     });
     await deliver(jobsWorker(createFakeGitHubApp()), [
-      { kind: "prune_data", subjectId: "daily", outboxId },
+      { kind: "rewrap_credentials", subjectId: "not-a-rewrap-key", outboxId },
     ]);
     expect(await jobEvents(outboxId)).toEqual([
       expect.objectContaining({ action: "job.failed", scope: "account", workspace_id: null }),

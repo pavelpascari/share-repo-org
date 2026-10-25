@@ -494,6 +494,9 @@ export async function connectPaddle(
     await deleteDestination(client, destination.id);
     return refused({ reason: "already_connected" });
   }
+  // Subscriptions stored from an earlier connection are read again: after a cancelled workspace
+  // deletion (decision 0015) their entitlements were withdrawn until Paddle could be read.
+  await repo.queueWorkspaceRefreshes(ctx.db, { workspaceId, sources: ["paddle"], now });
   let catalog: CatalogSyncSummary | null;
   try {
     catalog = await importCatalog(ctx, deps, row, asAuditActor(actor));
@@ -622,12 +625,26 @@ export async function disconnectPaddle(
 ): Promise<DisconnectPaddleResult> {
   const ctx = atOneInstant(context);
   const { scope } = await openWorkspace(ctx, actor, slug, "workspace.manage");
-  const { workspaceId } = scope;
+  return disconnectWorkspacePaddle(ctx, actor, scope.workspaceId, deps);
+}
+
+/**
+ * The disconnect itself, for a workspace the caller has authorized: also the Paddle step of a
+ * workspace deletion (decision 0015). Without the commerce configuration (`deps` null) the
+ * destination cannot be deleted, exactly as when the key cannot be opened or Paddle refuses:
+ * the credentials are erased anyway and the destination stays recorded for the creator.
+ */
+export async function disconnectWorkspacePaddle(
+  ctx: ServiceContext,
+  actor: UserActor,
+  workspaceId: string,
+  deps: CommerceDeps | null,
+): Promise<DisconnectPaddleResult> {
   const connection = await repo.getPaddleConnection(ctx.db, { workspaceId });
   if (connection === null) return { ok: false, reason: "not_connected" };
   const destinationId = connection.destinationId as string;
   const nextId = connection.destinationNextId;
-  const client = await clientFor(ctx, deps, connection).catch(() => null);
+  const client = deps === null ? null : await clientFor(ctx, deps, connection).catch(() => null);
   const deleted = async (id: string) => client !== null && deleteDestination(client, id);
   const currentDeleted = await deleted(destinationId);
   const nextDeleted = nextId === null || (await deleted(nextId));

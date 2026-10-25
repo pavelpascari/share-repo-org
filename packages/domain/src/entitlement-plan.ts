@@ -4,6 +4,7 @@ import {
   EntitlementValidity,
   entitlementValidity,
 } from "./entitlement.ts";
+import type { AccessWithdrawal } from "./lifecycle.ts";
 import type { OfferStatus } from "./offer.ts";
 import {
   type AccessDecision,
@@ -56,6 +57,11 @@ export interface EntitlementPlanInput {
   readonly offers: readonly PlanOffer[];
   /** The subscription's live entitlements; at most one per offer, resource and subject. */
   readonly live: readonly LiveEntitlement[];
+  /**
+   * Set when all access is withdrawn whatever the subscription says (decision 0015): nothing is
+   * desired, and every live entitlement is revoked with this reason. Absent or null otherwise.
+   */
+  readonly withdrawn?: AccessWithdrawal | null;
 }
 
 export interface NewEntitlementPlan {
@@ -131,7 +137,8 @@ interface Desired {
  * - Granted and not live: create. Granted and live: update when validity, reason, offer version
  *   or policy version differ; a changed access level ends the live one and creates a new one.
  * - Not granted and live: end, `expired` for time-based reasons and `revoked` otherwise.
- * - Live but no longer desired: revoke, with the most specific reason.
+ * - Live but no longer desired: revoke, with the most specific reason. A withdrawal (the workspace
+ *   is being deleted) desires nothing and is the reason for every revocation.
  * - Live but lapsed (`validUntil` at or before `now`, because the sweep that should have ended it
  *   ran late): it has already ended, whatever is desired now. End it `expired`, with the reason
  *   its own boundary implies (`cancel_scheduled` → `cancellation_effective`,
@@ -158,7 +165,7 @@ export function planEntitlements(input: EntitlementPlanInput): EntitlementPlan {
   const desired = new Map<string, Desired>();
   let nextEvaluationAt: Instant | null = null;
 
-  if (subscription !== null && subjectId !== null) {
+  if (subscription !== null && subjectId !== null && !input.withdrawn) {
     for (const offer of offers.values()) {
       if (offer.status !== "active" || !intersects(offer.items, subscription.items)) continue;
       const decision = decideAccess(subscription, offer.gracePeriodDays, now);
@@ -220,8 +227,9 @@ export function planEntitlements(input: EntitlementPlanInput): EntitlementPlan {
 /** Why a live entitlement no longer maps to desired access, most specific cause first. */
 function lostMapping(
   entitlement: LiveEntitlement,
-  { subscription, subjectId, offers }: EntitlementPlanInput,
+  { subscription, subjectId, offers, withdrawn }: EntitlementPlanInput,
 ): AccessDecisionReason {
+  if (withdrawn) return withdrawn;
   if (subscription === null) return "subscription_missing";
   if (entitlement.subjectId !== subjectId) return "customer_unlinked";
   const offer = offers.find((o) => o.offerId === entitlement.offerId);

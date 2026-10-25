@@ -259,6 +259,13 @@ export const AUDIT_ACTIONS = {
       .strictObject({ provider, externalSubjectId: text, previousLogin: text, login: text })
       .refine((d) => d.previousLogin !== d.login, { path: ["login"] }),
   },
+  // The ShareRepo user behind the subject deleted their account (decision 0015): the subject stays
+  // as the workspace's record of a GitHub account, linked to no user.
+  "subject.identity_unlinked": {
+    scope: "workspace",
+    targetType: "subject",
+    details: z.strictObject({ provider, externalSubjectId: text }),
+  },
   "customer.created": {
     scope: "workspace",
     targetType: "customer",
