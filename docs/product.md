@@ -33,7 +33,7 @@ A paying customer who links the source-control identity that should receive acce
 
 ### Operator
 
-The person running ShareRepo. During the private launch, the operator needs visibility into event processing, provisioning failures, drift, retries, and manual repair without manipulating database rows.
+The person running ShareRepo. During the private launch, the operator needs visibility into event processing, provisioning failures, drift, retries, and manual repair without manipulating database rows. The exceptions are a few last-resort procedures, each documented as a guarded statement in the runbooks (`docs/runbooks/`) and recorded in an incident note.
 
 ## Core creator journey
 
@@ -79,7 +79,7 @@ If neither works, the creator can link the purchase to your GitHub account by ha
 
 - A generic marketplace for arbitrary digital assets.
 - GitLab, Discord, package registries, documentation sites, downloads, or API keys.
-- Write or admin repository access as a product feature.
+- Admin repository access, or choosing the access level per offer. On personal-account repositories, the only kind v1 supports, every collaborator has write access; ShareRepo states that plainly ([decision 0008](decisions/0008-v1-personal-account-repositories.md)).
 - A public developer API.
 - A polished self-hosted edition.
 - Custom enterprise identity providers or SCIM.

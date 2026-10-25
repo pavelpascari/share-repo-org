@@ -1,6 +1,6 @@
 # Runbook — alerting setup
 
-How the operator learns that something needs a person: Workers Logs, Workers Issues, two hand-configured Monitors that email, and the daily `/ops` review as the fallback. Background: [decision 0014](../decisions/0014-failure-handling-and-alerting.md) § Alerts go to email, and [research](../research/cloudflare-durability.md) § Alerting options. What each alert means is in [failure triage](failure-triage.md#alert-lines).
+How the operator learns that something needs a person: Workers Logs, Workers Issues, three hand-configured Monitors that email (alert lines, errors, heartbeat), and the daily `/ops` review as the fallback. Background: [decision 0014](../decisions/0014-failure-handling-and-alerting.md) § Alerts go to email, and [research](../research/cloudflare-durability.md) § Alerting options. What each alert means is in [failure triage](failure-triage.md#alert-lines).
 
 **Status:** written in Phase 6 T7. Everything marked **(not verified)** needs a deployed environment and has not been checked yet. Monitors is a Cloudflare beta, so its screens may differ from this text. If they do, change this runbook, not the code: the code's contract is the log line.
 
@@ -17,7 +17,21 @@ For each Worker in each environment (`sharerepo-web`, `sharerepo-jobs`, `sharere
 
 1. In the Cloudflare dashboard, open the Worker's **Issues** and check it lists the Worker after the first deploy.
 2. Add an **automation**: notify on a new issue (an occurrence threshold of 1), and again when an issue recurs after a period of inactivity.
-3. Destination: email to the operator, as decision 0014 says. **(not verified)** The research found that Issues automations list webhook, chat, incident-tool and coding-agent destinations, and not email. If email is not offered, either send it to a chat or webhook the operator watches, or add a third Monitor on `error`-level lines from the four Workers (same shape as § 2, condition on `level`). Record the choice in decision 0014 as an amendment.
+3. Destination: Issues automations offer webhook, chat, incident-tool and coding-agent destinations, not email (research; **not verified** in the dashboard). If email is offered, use it. Otherwise leave the automation without a destination and rely on the **error-line Monitor** below, which emails the operator ([decision 0014 amendment](../decisions/0014-failure-handling-and-alerting.md#amendment--error-emails-come-from-a-monitor-2026-10-25)).
+
+**Error-line Monitor.** Create it next to the two in § 2 and § 3:
+
+| Setting | Value |
+|---|---|
+| Dataset | `logs.workersLogs` |
+| Workers | the same as § 2 |
+| Query | Count of log lines whose `level` is `error`, plus invocations whose outcome is an exception, as the editor exposes them |
+| Schedule | Every 5 minutes, over the last 5 minutes |
+| Condition | Threshold: count `> 0` |
+| Destination | Email to the operator |
+| Name | `sharerepo errors (<env>)` |
+
+Check in the editor which field holds the invocation outcome **(not verified)**; if none does, count `error` lines only and rely on Issues (checked in the daily `/ops` review) for uncaught exceptions. Keep the default hourly repeat.
 
 ## 2. Monitor: any alert line
 

@@ -50,7 +50,7 @@ Cloudflare has no built-in alert for Worker errors, queue backlog or dead letter
 
 ### Alerts go to email
 
-- **Workers Issues** is enabled on both Workers (`observability.issues.enabled`). Its automation emails the operator about new error groups.
+- **Workers Issues** is enabled on both Workers (`observability.issues.enabled`). Its automation emails the operator about new error groups. (Superseded: Issues cannot email; a Monitor does, see the amendment of 2026-10-25.)
 - **Alert lines.** Code logs one structured line with `alert: "<name>"` for each condition that needs a person:
   - `job_failed`: a job failed for good or was dead-lettered;
   - `reconcile_failing`: a repository reached 3 consecutive reconcile failures;
@@ -89,3 +89,11 @@ A webhook's processing job then needed an operator, although the provider had re
 - **The drain backs off.** A retryable failure (`transient`, `rate_limited`, an unavailable Paddle connection, a concurrent writer) moves the row's `available_at` by `outboxRetryDelayMs`: 1 minute doubling per attempt, at most 2 hours, or the provider's reset when that is later. The waits before the 10th attempt add up to just over 6 hours, longer than the expiry confirmation window ([0013](0013-database-timers-and-expiry-confirmation.md)).
 - **The queue hands over.** From the queue's last retry on (`QUEUE_MAX_RETRIES`, the events queue's `max_retries`), a retryable failure acknowledges the message and defers the row in the same way, so the drain takes it over. The dead-letter queue now receives only messages whose consumer crashed or timed out, and those are still failed with `dead_lettered`.
 - A non-retryable failure is still recorded at once.
+
+## Amendment — error emails come from a Monitor (2026-10-25)
+
+The research found that Workers Issues automations do not offer email as a destination, so the decision above ("its automation emails the operator") cannot be met as written. The user, who is the operator, confirmed that email to them is enough for now.
+
+- **A third Monitor emails on errors:** `error`-level log lines, and failed invocations where Workers Logs exposes them, from both Workers. It has the same shape and hourly repeat as the alert-line Monitor ([alerting setup](../runbooks/alerting-setup.md) § 1).
+- **Workers Issues stays on** for grouping and history. If its automations offer email later, it may email too.
+- All three Monitors send to the one operator address. The daily `/ops` review remains the fallback, and it includes a look at Issues.

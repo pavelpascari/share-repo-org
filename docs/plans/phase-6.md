@@ -315,7 +315,7 @@ Where the build differs from, or adds to, the design above.
   - After the drain, each minute tick logs `sweep.heartbeat` with `evaluationsQueued`, `reconcilesQueued`, `outboxClaimed`, `outboxSent` (null for a step that failed), `oldestEvaluationDueAt`, `oldestReconcileDueAt`, `oldestOutboxDueAt` and `lagMs`. It is logged even when the drain throws.
   - The oldest due instants come from `readSweepBacklog` (`packages/db/src/sweep-repository.ts`). It excludes rate-limited connections' repositories, which wait on purpose, and outbox rows out of attempts, which are failures (T3), not lag. T3's `/ops` sweep-health panel can reuse it.
   - `sweep_lagging` is raised by `checkSweepHealth` (application) through `claimSweepLagAlert`: one conditional upsert of `system_state` key `sweep.lag_alerted`, so replays and concurrent ticks raise it once per 15 minutes. The policy constants are `SWEEP_LAG_ALERT_MS` and `SWEEP_LAG_ALERT_INTERVAL_MS`, with `sweepLag()`, in `packages/domain/src/sweep.ts`.
-  - **Alert helper.** T1 defined only the names, so T2 added `alert(logger, name, ids)` to `packages/platform`. It logs one warn line `{"msg":"alert","alert":"<name>",…}`, and `ids` may hold only strings, numbers, booleans and nulls. The platform does not depend on the domain, so callers pass an `AlertName`. T3 reuses it.
+  - **Alert helper.** T1 defined only the names, so T2 added `alert(logger, name, ids)` to `packages/platform`. It logs one warn line `{"msg":"alert: <name>","alert":"<name>",…}`, and `ids` may hold only strings, numbers, booleans and nulls. The platform does not depend on the domain, so callers pass an `AlertName`. T3 reuses it.
 - **Partitioning:**
   - `dailyOffsetMs(kind, subjectId)` is a 32-bit FNV-1a hash of `kind:subject` modulo 24 hours. The daily resync (now `queueDailyResyncs` in the application) and `queuePaddleSweeps` set `available_at = now + offset`, each with its own kind as the salt. Both deduplicate on a pending row.
   - **Delayed rows and urgent work.** A delayed daily resync would have swallowed a resync that a reconcile asks for at once, because `enqueueOutboxOnce` deduplicated on any pending row. It now brings a pending, never-claimed (`attempts = 0`) row forward to the new row's `available_at`. A claimed row's `available_at` is its lease, and is left alone.
@@ -498,7 +498,7 @@ Where the build differs from, or adds to, the design above.
 - **CI:** `CURRENT_PHASE` is 6.
 - **Conflicts and corrections found:**
   - Decision 0014 says the Issues automation emails the operator, but the research found email is not an Issues destination. `alerting-setup.md` flags it and offers a Monitor on error lines as the fallback; if chosen, it needs a 0014 amendment.
-  - The T2 notes above say an alert line is `{"msg":"alert",…}`. The code logs `"msg":"alert: <name>"` with an `alert` field (`packages/platform/src/alert.ts`). The runbooks follow the code.
+  - The T2 notes above said an alert line is `{"msg":"alert",…}`. The code logs `"msg":"alert: <name>"` with an `alert` field (`packages/platform/src/alert.ts`). The T2 note and the runbooks now follow the code.
   - `/ops` sweep health counts every due row, rate-limited repositories included; the `sweep_lagging` alert leaves those out. `failure-triage.md` explains the difference.
   - `product.md` says operators repair "without manipulating database rows"; the waiting-purge last resort and the runbooks' hand-queued jobs are D1 statements.
   - `failure-messages.ts` still explains `not_implemented`, which no job produces any more. Harmless.

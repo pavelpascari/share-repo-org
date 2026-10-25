@@ -210,6 +210,7 @@ Potential work includes public GitHub App distribution, self-service Paddle conn
 ### Future development (parked)
 
 - **Workspace team management.** The `owner` and `member` roles and `addWorkspaceMember` exist, but no product path uses them, so every workspace has only its creator as owner. Parked by the user on 2026-10-25 for after the current work. It needs: inviting a member by GitHub login, changing a member's role (promote to owner, demote to member), removing a member, never leaving a workspace without an owner (account deletion already refuses while the user owns a live workspace), and an audit event with correlation ID for each change.
+- **Contingency for a purge stuck on an uninstalled GitHub App.** If an owner uninstalls the App on GitHub before their workspace's purge, ShareRepo cannot remove the collaborators it added and the purge waits for ever when the owner cannot be reached (accepted risk, operations threat model, 2026-10-25). Options to weigh later: purge after a long period and tell the owner which logins may still have access, keep a minimal record of those grants beyond the purge, or warn before the uninstall more strongly.
 
 ## Cross-phase test matrix
 
