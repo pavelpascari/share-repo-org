@@ -159,7 +159,7 @@ export async function pruneExpiredData(
  * that has none pending, built in SQL so any number of subscriptions costs one statement. The key
  * is `encodeRefreshKey`'s `<workspaceId>:<source>:<externalSubscriptionId>`; IDs are random.
  */
-function refreshAllInsert(
+export function refreshAllInsert(
   db: Db,
   input: { workspaceId: string; sources: readonly string[]; now: Instant; when: SQL },
 ): Statement {
@@ -538,10 +538,15 @@ export interface LinkedSubject {
   readonly externalSubjectId: string;
 }
 
-/** Every subject, in any workspace, linked to the identity. */
-export async function listSubjectsLinkedToIdentity(
+/**
+ * Every subject, in any workspace, of the identity's GitHub account: those linked to the identity,
+ * and those of the same GitHub account that name no user (created by a simulated subscription or
+ * a manual link before any claim, or left by an earlier account deletion). Account deletion
+ * clears both: a customer may be linked to either (decision 0015).
+ */
+export async function listSubjectsOfIdentity(
   db: Db,
-  identityId: string,
+  identity: { id: string; provider: string; externalUserId: string },
 ): Promise<LinkedSubject[]> {
   const rows = await db.all<{
     workspace_id: string;
@@ -549,13 +554,28 @@ export async function listSubjectsLinkedToIdentity(
     provider: string;
     external_subject_id: string;
   }>(sql`SELECT workspace_id, id, provider, external_subject_id FROM subjects
-    WHERE external_identity_id = ${identityId} ORDER BY workspace_id, id`);
+    WHERE provider = ${identity.provider} AND external_subject_id = ${identity.externalUserId}
+      AND (external_identity_id = ${identity.id} OR external_identity_id IS NULL)
+    ORDER BY workspace_id, id`);
   return rows.map((r) => ({
     workspaceId: r.workspace_id,
     id: r.id,
     provider: r.provider,
     externalSubjectId: r.external_subject_id,
   }));
+}
+
+/** The subjects among `subjectIds` still linked to the identity, in the workspace. */
+export async function subjectsLinkedToIdentity(
+  db: Db,
+  input: { workspaceId: string; identityId: string; subjectIds: readonly string[] },
+): Promise<string[]> {
+  const rows = await db.all<{ id: string }>(
+    sql`SELECT id FROM subjects WHERE workspace_id = ${input.workspaceId}
+      AND id IN ${jsonList(input.subjectIds)} AND external_identity_id = ${input.identityId}
+      ORDER BY id`,
+  );
+  return rows.map((row) => row.id);
 }
 
 /** What unlinking a workspace's subjects from a deleted account changes, read before it does. */

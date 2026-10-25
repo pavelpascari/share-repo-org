@@ -4,6 +4,7 @@ import { type AuditEvents, auditInserts, conditionalAuditInserts } from "./audit
 import { insertWhere, runBatch, type Statement } from "./batch.ts";
 import type { Db } from "./client.ts";
 import { isUniqueViolation } from "./errors.ts";
+import { refreshAllInsert } from "./lifecycle-repository.ts";
 import { paddleConnections, paddlePrices } from "./schema/index.ts";
 
 /**
@@ -53,6 +54,15 @@ export async function createPaddleConnection(
     await runBatch(db, [
       db.insert(paddleConnections).values(connection),
       ...auditInserts(db, audit),
+      // Subscriptions stored from an earlier connection are read again, in the same batch, so a
+      // crash cannot leave the connection without them: after a cancelled workspace deletion
+      // (decision 0015) their entitlements were withdrawn until Paddle could be read.
+      refreshAllInsert(db, {
+        workspaceId: connection.workspaceId,
+        sources: ["paddle"],
+        now: connection.createdAt,
+        when: sql`1`,
+      }),
     ]);
   } catch (error) {
     if (isUniqueViolation(error, LIVE_KEY)) return { ok: false, reason: "already_connected" };

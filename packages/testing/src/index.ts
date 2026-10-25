@@ -14,6 +14,8 @@ export {
   withSecretCanaries,
 } from "./canaries.ts";
 export { DEFAULT_FAKE_NOW, FakeClock } from "./clock.ts";
+export type { CrashingD1, CrashPlan, CrashWhen } from "./crash.ts";
+export { crashingD1, InjectedCrash } from "./crash.ts";
 export { formatLogArgs, safeStringify } from "./format.ts";
 export type { FreshWorkspaceIds, SequentialIdsOptions } from "./ids.ts";
 export { freshWorkspaceIds, SequentialIds } from "./ids.ts";

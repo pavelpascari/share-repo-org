@@ -448,13 +448,16 @@ export type DeleteAccountResult =
 /**
  * Deletes the signed-in user's own account (decision 0015), confirmed by typing their GitHub
  * login, and refused while they own a workspace that is not being deleted. First, workspace by
- * workspace, every subject linked to their GitHub identity is unlinked from it: its customers are
- * unlinked, its live entitlements end (`account_deleted`), and reconciles of the repositories and
- * refreshes of the customers' subscriptions are queued, so reconciliation revokes managed access.
- * Then one batch deletes their claims, claim requests and consumed claim tokens, connection
- * intents, memberships, sessions, Better Auth accounts and profile, identities and `users` row,
- * with `user.deleted` (counts only). Re-running after a failure part-way continues: unlinked
- * subjects are no longer found, and the last batch is atomic. The caller signs the user out.
+ * workspace, every subject of their GitHub account (linked to their identity, or naming no user,
+ * as a simulated subscription, a manual link or an earlier deletion leaves it) is cleared: it is
+ * unlinked from the identity, its customers are unlinked, its live entitlements end
+ * (`account_deleted`), and reconciles of the repositories and refreshes of the customers'
+ * subscriptions are queued, so reconciliation revokes managed access. Then one batch deletes
+ * their claims, claim requests and consumed claim tokens, connection intents, memberships,
+ * sessions, Better Auth accounts and profile, identities and `users` row, with `user.deleted`
+ * (counts only; `unlinkedSubjects` is the account's subjects, all unlinked now). Re-running after
+ * a failure part-way continues: a workspace with nothing left to clear is skipped, and the last
+ * batch is atomic. The caller signs the user out.
  */
 export async function deleteAccount(
   context: ServiceContext,
@@ -474,7 +477,7 @@ export async function deleteAccount(
   const blocking = await blockingWorkspaces(ctx, userId);
   if (blocking.length > 0) return { ok: false, reason: "owns_workspaces", workspaces: blocking };
 
-  const subjects = await repo.listSubjectsLinkedToIdentity(ctx.db, identity.id);
+  const subjects = await repo.listSubjectsOfIdentity(ctx.db, identity);
   const byWorkspace = new Map<string, repo.LinkedSubject[]>();
   for (const subject of subjects) {
     byWorkspace.set(subject.workspaceId, [
@@ -483,9 +486,19 @@ export async function deleteAccount(
     ]);
   }
   const now = ctx.clock.now();
-  for (const [workspaceId, linked] of byWorkspace) {
-    const subjectIds = linked.map((subject) => subject.id);
+  for (const [workspaceId, ofAccount] of byWorkspace) {
+    const subjectIds = ofAccount.map((subject) => subject.id);
     const access = await repo.readSubjectAccess(ctx.db, { workspaceId, subjectIds });
+    const stillLinked = new Set(
+      await repo.subjectsLinkedToIdentity(ctx.db, {
+        workspaceId,
+        identityId: identity.id,
+        subjectIds,
+      }),
+    );
+    const linked = ofAccount.filter((subject) => stillLinked.has(subject.id));
+    // Nothing left to clear here (an earlier run, or a crash after this workspace's batch).
+    if (linked.length + access.customers.length + access.liveEntitlements.length === 0) continue;
     const event = (action: Parameters<typeof auditEvent>[0], targetId: string, details: object) =>
       auditEvent(action, { workspaceId, actor: by, targetId, details } as never, ctx);
     const audit: AuditEvent[] = [

@@ -216,7 +216,7 @@ describe("deferOutboxRow", () => {
     await enqueueOutbox(db, sent);
     await enqueueOutbox(db, failed);
     await markOutboxSent(db, [sent.id], at);
-    await failOutboxRow(db, { id: failed.id, now: at, errorCode: "rejected" }, []);
+    await failOutboxRow(db, { id: failed.id, now: at, errorCode: "rejected" }, [accountEvent()]);
     for (const row of [sent, failed]) {
       expect(
         await deferOutboxRow(db, {

@@ -907,6 +907,8 @@ export async function confirmClaim(
   const actor = asAuditActor(input.user);
   const resolved = await resolveToken(ctx, input.token);
   if (!resolved.ok) {
+    const repeated = await repeatedConfirmation(ctx, resolved, input.user.userId);
+    if (repeated !== null) return repeated;
     if (resolved.token !== null) {
       await repo.appendAuditEvents(ctx.db, [
         workspaceEvent(ctx, "claim.rejected", {
@@ -983,6 +985,39 @@ export async function confirmClaim(
         ? "linked"
         : "relinked";
   return { ok: true, workspaceId: workspace.id, workspaceSlug: workspace.slug, outcome };
+}
+
+/**
+ * The claimant confirming again a claim they already completed, as after a lost response or a
+ * double submit: the token is used up by them and the customer is still linked to their subject.
+ * That is the same success again, with nothing written; anything else is still refused.
+ */
+async function repeatedConfirmation(
+  ctx: ServiceContext,
+  resolved: Extract<ResolvedToken, { ok: false }>,
+  userId: string,
+): Promise<ConfirmClaimResult | null> {
+  const { token } = resolved;
+  if (
+    token === null ||
+    resolved.reason !== ClaimRejectionReason.AlreadyUsed ||
+    token.consumedByUserId !== userId
+  ) {
+    return null;
+  }
+  const { workspaceId, customerId } = token;
+  const customer = await repo.getCustomer(ctx.db, { workspaceId, customerId });
+  const claimant = await claimantIn(ctx, workspaceId, userId);
+  if (
+    customer === null ||
+    claimant.subject === null ||
+    customer.subjectId !== claimant.subject.id
+  ) {
+    return null;
+  }
+  // An active workspace: `resolveToken` reports any other as unknown.
+  const workspace = (await repo.getWorkspace(ctx.db, workspaceId)) as repo.Workspace;
+  return { ok: true, workspaceId, workspaceSlug: workspace.slug, outcome: "already_linked" };
 }
 
 // Path 3: the owner's manual link -----------------------------------------------------------

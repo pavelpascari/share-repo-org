@@ -109,7 +109,7 @@ export {
   type LinkedSubject,
   listDuePurges,
   listPurgeBlocks,
-  listSubjectsLinkedToIdentity,
+  listSubjectsOfIdentity,
   PRUNABLE,
   PURGE_ORDER,
   type PurgeBlocked,
@@ -124,6 +124,7 @@ export {
   recordPurgeBlocked,
   type SubjectAccess,
   scheduleWorkspaceDeletion,
+  subjectsLinkedToIdentity,
   unlinkSubjectsFromIdentity,
   type WorkspaceDeletionState,
 } from "./lifecycle-repository.ts";

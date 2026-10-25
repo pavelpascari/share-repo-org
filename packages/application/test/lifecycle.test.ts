@@ -14,10 +14,12 @@ import { expectAuditedChange } from "@sharerepo/testing";
 import { describe, expect, it } from "vitest";
 import {
   cancelWorkspaceDeletion,
+  confirmClaim,
   createOffer,
   deleteAccount,
   getAccountView,
   getWorkspaceSettings,
+  linkCustomerManually,
   purgeWorkspace,
   queueLifecycleJobs,
   reconcileResource,
@@ -40,7 +42,16 @@ import {
   subscribe,
 } from "./support/commerce.ts";
 import { clock, db, githubProfile, serviceContext, signedUpUser } from "./support/context.ts";
-import { paddleShop } from "./support/paddle.ts";
+import {
+  claimLinkToken,
+  deliverSubscription,
+  directSubscription,
+  drainPaddle,
+  liveFor,
+  type PaddleShop,
+  paddleCustomer,
+  paddleShop,
+} from "./support/paddle.ts";
 
 // The data lifecycle (decision 0015): workspace deletion and its purge, and account deletion,
 // through the services, against local D1 and the in-memory GitHub App.
@@ -596,6 +607,89 @@ describe("queueLifecycleJobs", { timeout: 60_000 }, () => {
     expect((await pending("purge_workspace", notYet.workspaceId)).results).toEqual([]);
     expect((await pending("prune_data", "retention")).results).toHaveLength(1);
   });
+});
+
+describe("account deletion finds every subject of the GitHub account", { timeout: 60_000 }, () => {
+  /** A buyer who claims the shop's unclaimed Paddle subscription by email, with live access. */
+  async function claimed(
+    p: PaddleShop,
+    user: Awaited<ReturnType<typeof signedUpUser>>,
+    email: string,
+  ) {
+    const token = await claimLinkToken(p, user, email);
+    expect((await confirmClaim(serviceContext(), { token, user })).ok).toBe(true);
+    await drainPaddle(p);
+  }
+
+  const customerSubject = async (p: PaddleShop, externalCustomerId: string) =>
+    (
+      await env.DB.prepare(
+        "SELECT subject_id FROM customers WHERE workspace_id = ? AND external_customer_id = ?",
+      )
+        .bind(p.workspaceId, externalCustomerId)
+        .first<{ subject_id: string | null }>()
+    )?.subject_id;
+
+  it("revokes access claimed again after a re-sign-up, on the second deletion", async () => {
+    const p = await paddleShop();
+    const customer = paddleCustomer(p);
+    await deliverSubscription(p, "subscription.created", directSubscription(p, customer.id).id);
+    const first = await signedUpUser();
+    await claimed(p, first, customer.email);
+    const githubId = first.profile.externalUserId;
+    expect(await liveFor(p.workspaceId, githubId)).toHaveLength(1);
+    const login = first.profile.username;
+    expect(await deleteAccount(serviceContext(), first, { confirmation: login })).toMatchObject({
+      ok: true,
+    });
+    expect(await liveFor(p.workspaceId, githubId)).toEqual([]);
+
+    // The same GitHub account signs up again and claims again: the subject is the old one, which
+    // names no user.
+    const again = await signedUpUser(githubProfile({ externalUserId: githubId, username: login }));
+    await claimed(p, again, customer.email);
+    expect(await liveFor(p.workspaceId, githubId)).toHaveLength(1);
+
+    const deleted = await deleteAccount(serviceContext(), again, { confirmation: login });
+    expect(deleted).toMatchObject({ ok: true, unlinkedSubjects: 1 });
+    expect(await liveFor(p.workspaceId, githubId)).toEqual([]);
+    expect(await customerSubject(p, customer.id)).toBeNull();
+  });
+
+  it("revokes access a creator linked by hand to the account's GitHub login", async () => {
+    const p = await paddleShop();
+    const customer = paddleCustomer(p);
+    await deliverSubscription(p, "subscription.created", directSubscription(p, customer.id).id);
+    const user = await signedUpUser();
+    p.github.addUser({
+      id: user.profile.externalUserId,
+      login: user.profile.username,
+      type: "User",
+    });
+    const stored = await customerSubjectRow(p, customer.id);
+    const linked = await linkCustomerManually(
+      serviceContext(),
+      p,
+      p.slug,
+      { customerId: stored.id, githubLogin: user.profile.username, reason: "Support ticket 42" },
+      { github: p.github },
+    );
+    expect(linked).toMatchObject({ ok: true });
+    await drainPaddle(p);
+    expect(await liveFor(p.workspaceId, user.profile.externalUserId)).toHaveLength(1);
+
+    await deleteAccount(serviceContext(), user, { confirmation: user.profile.username });
+    expect(await liveFor(p.workspaceId, user.profile.externalUserId)).toEqual([]);
+    expect(await customerSubject(p, customer.id)).toBeNull();
+  });
+
+  async function customerSubjectRow(p: PaddleShop, externalCustomerId: string) {
+    return (await env.DB.prepare(
+      "SELECT id FROM customers WHERE workspace_id = ? AND external_customer_id = ?",
+    )
+      .bind(p.workspaceId, externalCustomerId)
+      .first<{ id: string }>()) as { id: string };
+  }
 });
 
 describe("deletion/account-revokes-and-removes-identity", { timeout: 60_000 }, () => {

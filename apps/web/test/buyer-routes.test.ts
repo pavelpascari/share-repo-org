@@ -389,8 +389,15 @@ describe("claim link (/claim/:token)", () => {
       outcome: "linked",
       error: null,
     });
+    // Submitting again (a double click, a lost response) is the same success, linking nothing
+    // more; the token is used up for anyone else.
     const again = await claim.action(call(post(`/claim/${token}`, buyer, {}), context, params));
-    expect(again.data).toEqual({ ok: false, error: CLAIM_ERRORS.already_used });
+    expect(again.data).toEqual({
+      ok: true,
+      workspaceSlug: s.slug,
+      outcome: "already_linked",
+      error: null,
+    });
     // The link's refresh goes straight to the queue, once.
     await settle();
     expect(sent).toEqual([

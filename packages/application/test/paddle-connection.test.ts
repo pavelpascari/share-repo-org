@@ -1,6 +1,7 @@
 import { env } from "cloudflare:workers";
-import { getPaddleConnection, listPaddlePrices } from "@sharerepo/db";
+import { createDb, getPaddleConnection, listPaddlePrices } from "@sharerepo/db";
 import { ForbiddenError, NotFoundError, openSecret } from "@sharerepo/platform";
+import { crashingD1, InjectedCrash } from "@sharerepo/testing";
 import { describe, expect, it } from "vitest";
 import {
   checkPaddleConnection,
@@ -287,6 +288,43 @@ describe("connectPaddle", () => {
     await expect(
       connectPaddle(serviceContext(), member, s.slug, { apiKey: key, apiKeyExpiresOn: null }, deps),
     ).rejects.toBeInstanceOf(ForbiddenError);
+  });
+});
+
+describe("connectPaddle after a crash", () => {
+  it("keeps the destination of a connection whose write committed before the crash", async () => {
+    const { s, fake, key, deps } = await unconnected();
+    const crashing = crashingD1(env.DB, { at: 1, when: "after" });
+    await expect(
+      connectPaddle(
+        { ...serviceContext(), db: createDb(crashing.binding) },
+        s,
+        s.slug,
+        { apiKey: key, apiKeyExpiresOn: EXPIRES() },
+        deps,
+      ),
+    ).rejects.toBeInstanceOf(InjectedCrash);
+    const stored = await getPaddleConnection(db, { workspaceId: s.workspaceId });
+    // The stored connection's destination still delivers: it was not deleted as an orphan.
+    expect(fake.notificationSettings()).toEqual([
+      expect.objectContaining({ id: stored?.destinationId, active: true }),
+    ]);
+  });
+
+  it("deletes the destination when the connection was never stored", async () => {
+    const { s, fake, key, deps } = await unconnected();
+    const crashing = crashingD1(env.DB, { at: 1, when: "before" });
+    await expect(
+      connectPaddle(
+        { ...serviceContext(), db: createDb(crashing.binding) },
+        s,
+        s.slug,
+        { apiKey: key, apiKeyExpiresOn: EXPIRES() },
+        deps,
+      ),
+    ).rejects.toBeInstanceOf(InjectedCrash);
+    expect(await getPaddleConnection(db, { workspaceId: s.workspaceId })).toBeNull();
+    expect(fake.notificationSettings().filter((setting) => setting.active)).toEqual([]);
   });
 });
 

@@ -486,7 +486,10 @@ export async function connectPaddle(
       ),
     ]);
   } catch (error) {
-    await deleteDestination(client, destination.id);
+    // The write may have committed before the error (a lost response): then the stored
+    // connection uses this destination, which must stay.
+    const stored = await repo.getPaddleConnection(ctx.db, { workspaceId }).catch(() => null);
+    if (stored?.id !== connectionId) await deleteDestination(client, destination.id);
     throw error;
   }
   if (!created.ok) {
@@ -494,9 +497,6 @@ export async function connectPaddle(
     await deleteDestination(client, destination.id);
     return refused({ reason: "already_connected" });
   }
-  // Subscriptions stored from an earlier connection are read again: after a cancelled workspace
-  // deletion (decision 0015) their entitlements were withdrawn until Paddle could be read.
-  await repo.queueWorkspaceRefreshes(ctx.db, { workspaceId, sources: ["paddle"], now });
   let catalog: CatalogSyncSummary | null;
   try {
     catalog = await importCatalog(ctx, deps, row, asAuditActor(actor));
@@ -789,7 +789,10 @@ export async function rotatePaddleWebhookSecret(
         [rotated("started", created.id)],
       );
     } catch (error) {
-      await discard();
+      // The write may have committed before the error (a lost response): then the stored
+      // rotation uses this destination, and a re-run resumes with it.
+      const stored = await repo.getPaddleConnection(ctx.db, { workspaceId }).catch(() => null);
+      if (stored?.destinationNextId !== created.id) await discard();
       throw error;
     }
     if (!started.ok) {
