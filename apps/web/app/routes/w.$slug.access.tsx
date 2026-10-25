@@ -233,7 +233,13 @@ function AccessTableRow({
   const planned =
     row.planned === null
       ? null
-      : plannedActionText(row.planned.action, row.planned.reason, row.grant?.nextAttemptAt ?? null);
+      : plannedActionText(
+          row.planned.action,
+          row.planned.reason,
+          row.grant?.nextAttemptAt ?? null,
+          // The live entitlements come first; an expiry waits for their source.
+          current?.source ?? null,
+        );
   const observed = observedAccessText({ ...row, entitled: current?.state === "active" }, now);
   return (
     <tr className="border-b border-gray-200 align-top">

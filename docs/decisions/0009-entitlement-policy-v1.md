@@ -31,3 +31,7 @@ Phase 3 must turn commercial facts into desired access and settle a deferred dec
 - Creators choose their own trade-off between churn and goodwill. The access view shows the grace deadline.
 - Changing an offer's grace period applies to future decisions. The next recompute re-evaluates existing past-due subscriptions against the new version, and their entitlements record which version they were decided under.
 - Phase 5 adds a Paddle implementation of the port and the claim flow. Neither requires a change to the policy, the planner or the schema for entitlements.
+
+## Amendment — expiry is confirmed before revocation (Phase 6 T2)
+
+[Decision 0013](0013-database-timers-and-expiry-confirmation.md) replaces "the planner treats `valid_until <= now` as not desired". An `active` entitlement past `valid_until` is **expiry pending** for `EXPIRY_CONFIRMATION_WINDOW_MS` (6 hours): reconciliation neither grants nor revokes for it while the subscription's refresh re-reads the source. It is not desired once the window has passed or once it is `expired`. Time-based changes still use `next_evaluation_at` and the minute sweep; Workflows are not used.

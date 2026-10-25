@@ -141,6 +141,7 @@ export {
   beginMutation,
   claimDueReconciles,
   claimReconcileLease,
+  deferConnectionReconciles,
   enqueueReconcile,
   type FinishMutation,
   finishMutation,
@@ -158,6 +159,7 @@ export {
   type ProviderMutation,
   type ReleaseReconcileLease,
   type ResetGrantRetryResult,
+  rateLimitedConnection,
   reconcileKey,
   reconcileKeyOfRow,
   reconcileRequest,
@@ -214,6 +216,12 @@ export {
   type SubscriptionRefresh,
   type SubscriptionWithItems,
 } from "./subscription-repository.ts";
+export {
+  claimSweepLagAlert,
+  readSweepBacklog,
+  SWEEP_LAG_ALERT_STATE_KEY,
+  type SweepBacklog,
+} from "./sweep-repository.ts";
 export { createUser, type User } from "./user-repository.ts";
 export {
   type AddWorkspaceMemberResult,

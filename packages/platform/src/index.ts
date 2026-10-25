@@ -1,3 +1,5 @@
+export type { AlertIds } from "./alert.ts";
+export { alert } from "./alert.ts";
 export type { ClaimReferenceBinding, ParsedClaimReference } from "./claims.ts";
 export {
   CLAIM_REFERENCE_MAX_LENGTH,

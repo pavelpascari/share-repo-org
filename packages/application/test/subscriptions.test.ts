@@ -630,15 +630,43 @@ describe("time-based evaluation", () => {
     expect(live(await entitlementsOf(s.workspaceId))).toHaveLength(1);
 
     clock.set(effective);
-    // Before the sweep, the access view already treats the access as over.
-    const [row] = (await listAccess(serviceContext(), s, s.slug)).rows;
-    expect(row?.planned).toBeNull();
+    // Before the sweep, the access view shows the end as waiting for confirmation (0013).
+    const planned = async () => (await listAccess(serviceContext(), s, s.slug)).rows[0]?.planned;
+    expect(await planned()).toEqual({ action: "wait", reason: "expiry_pending" });
     const { queued, ours } = await sweep(s);
     expect([queued >= 1, ours]).toEqual([true, 1]);
     expect(await entitlementsOf(s.workspaceId)).toMatchObject([
       { state: "expired", decisionReason: "cancellation_effective" },
     ]);
     expect((await stored(s, sub.id))?.nextEvaluationAt).toBeNull();
+    // Confirmed: nothing is desired any more (and nothing was granted to revoke).
+    expect(await planned()).toBeNull();
+  });
+
+  it("timing/expiry-confirmed-before-revoke: the refresh, not the clock, ends access within the window", async () => {
+    const { shop: s, sub } = await subscribed({ periodDays: 30 });
+    const scheduled = await act(s, sub.id, "cancel_at_period_end");
+    await drain(s.workspaceId);
+    const effective = scheduled.cancelAt as number;
+    const [entitlement] = live(await entitlementsOf(s.workspaceId));
+    const planned = async () => (await listAccess(serviceContext(), s, s.slug)).rows[0];
+
+    // Past the end, while nothing has re-read the source: waiting, up to the window's end.
+    for (const at of [effective, effective + DAY / 4 - 1]) {
+      clock.set(at);
+      expect(await planned()).toMatchObject({
+        planned: { action: "wait", reason: "expiry_pending" },
+        entitlements: [{ id: entitlement?.id, state: "active", source: "simulated" }],
+      });
+    }
+    // The window ends: not desired any more, even before the refresh.
+    clock.set(effective + DAY / 4);
+    expect((await planned())?.planned).toBeNull();
+    // The refresh confirms the end.
+    await sweep(s);
+    expect(await entitlementsOf(s.workspaceId)).toMatchObject([
+      { id: entitlement?.id, state: "expired", decisionReason: "cancellation_effective" },
+    ]);
   });
 
   it("timing/past-due-within-grace-keeps-access", async () => {

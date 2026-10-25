@@ -464,7 +464,9 @@ export async function claimDueEvaluations(
     .where(isDue)
     .orderBy(asc(subscriptions.nextEvaluationAt), asc(subscriptions.id))
     .limit(input.limit);
-  const lapsed = sql`EXISTS (SELECT 1 FROM ${entitlements} WHERE ${entitlements.workspaceId} = ${subscriptions.workspaceId} AND ${entitlements.sourceId} = ${subscriptions.id} AND ${entitlements.state} = 'active' AND ${entitlements.validUntil} <= ${input.now})`;
+  // Driven by `entitlements_state_valid_until_idx`: the few live entitlements past their end,
+  // rather than a probe per subscription (decision 0013).
+  const lapsed = sql`(${subscriptions.workspaceId}, ${subscriptions.id}) IN (SELECT ${entitlements.workspaceId}, ${entitlements.sourceId} FROM ${entitlements} WHERE ${entitlements.state} = 'active' AND ${entitlements.validUntil} <= ${input.now})`;
   const repair =
     due.length < input.limit
       ? await db

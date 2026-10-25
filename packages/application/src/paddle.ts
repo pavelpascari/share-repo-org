@@ -3,6 +3,7 @@ import {
   type AuditEvent,
   auditEvent,
   ConnectionCallOutcome,
+  dailyOffsetMs,
   type Instant,
   nextConnectionStatus,
   OutboxKind,
@@ -1062,7 +1063,11 @@ export async function sweepPaddleSubscriptions(
   return { queued, truncated: list.truncated };
 }
 
-/** The daily cron: queues a `sweep_paddle_subscriptions` for each active connection, once. */
+/**
+ * The daily cron: queues a `sweep_paddle_subscriptions` for each active connection, once. Each
+ * becomes available at its connection's own offset into the day (`dailyOffsetMs`), so the sweeps
+ * spread over the day instead of all calling Paddle at once (phase-6 plan § Partitioning).
+ */
 export async function queuePaddleSweeps(context: ServiceContext): Promise<number> {
   const ctx = atOneInstant(context);
   const now = ctx.clock.now();
@@ -1076,7 +1081,7 @@ export async function queuePaddleSweeps(context: ServiceContext): Promise<number
         connectionId: connection.id,
       }),
       createdAt: now,
-      availableAt: now,
+      availableAt: now + dailyOffsetMs(OutboxKind.SweepPaddleSubscriptions, connection.id),
       workspaceId: connection.workspaceId,
     };
     if (await repo.enqueueOutboxOnce(ctx.db, row)) queued += 1;

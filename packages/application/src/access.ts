@@ -1,6 +1,7 @@
 import * as repo from "@sharerepo/db";
 import {
   type AccessLevel,
+  type CommercialSource,
   type EntitlementState,
   type GrantState,
   INVITATION_WINDOW_MS,
@@ -30,6 +31,8 @@ export interface AccessEntitlement {
   readonly state: EntitlementState;
   readonly accessLevel: AccessLevel;
   readonly subscriptionId: string;
+  /** Where the subscription comes from: Paddle, or the simulator outside production. */
+  readonly source: CommercialSource;
   readonly offerId: string;
   readonly offerName: string;
   readonly offerVersion: number;
@@ -91,9 +94,10 @@ const pairKey = (subjectId: string, resourceId: string) => [subjectId, resourceI
 
 /**
  * The workspace's access, one row per subscriber and repository, for any member. Planned actions
- * are computed at the current instant, so an entitlement whose validity has passed is shown as no
- * longer desired even before its subscription is re-evaluated, and provisioning that waits for
- * a repository's invitation budget is shown as waiting.
+ * are computed at the current instant, so an entitlement whose validity has passed is shown as
+ * expiry pending (waiting for its source to confirm) even before its subscription is
+ * re-evaluated, and as no longer desired once the confirmation window has passed (decision
+ * 0013); provisioning that waits for a repository's invitation budget is shown as waiting.
  */
 export async function listAccess(
   context: ServiceContext,
@@ -171,6 +175,7 @@ export async function listAccess(
       state: entitlement.state,
       accessLevel: entitlement.accessLevel,
       subscriptionId: entitlement.sourceId,
+      source: entitlement.source,
       offerId: entitlement.offerId,
       offerName: offerNames.get(entitlement.offerId) as string,
       offerVersion: entitlement.offerVersion,

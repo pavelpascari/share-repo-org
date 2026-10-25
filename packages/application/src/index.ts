@@ -150,6 +150,11 @@ export {
   refreshSubscription,
 } from "./subscriptions.ts";
 export {
+  checkSweepHealth,
+  queueDailyResyncs,
+  type SweepHealth,
+} from "./sweeps.ts";
+export {
   addWorkspaceMember,
   createWorkspace,
   listMyWorkspaces,
