@@ -114,6 +114,12 @@ const SPOT_CHECKS: { since: string; table: string; where: string; expected: Row 
     where: "id = 'pc2'",
     expected: { status: "disconnected", api_key_envelope: null },
   },
+  {
+    since: "0011",
+    table: "users",
+    where: "id = 'u4'",
+    expected: { deleted_at: 1760097200000 },
+  },
 ];
 
 describe("migration/upgrade-from-each-release-keeps-data", () => {

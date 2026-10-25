@@ -16,6 +16,7 @@ import {
   cancelWorkspaceDeletion,
   confirmClaim,
   createOffer,
+  createUserForSignIn,
   deleteAccount,
   getAccountView,
   getWorkspaceSettings,
@@ -23,6 +24,7 @@ import {
   purgeWorkspace,
   queueLifecycleJobs,
   reconcileResource,
+  recordSignIn,
   refreshSubscription,
   renameWorkspace,
   requestWorkspaceDeletion,
@@ -828,6 +830,49 @@ describe("deletion/account-revokes-and-removes-identity", { timeout: 60_000 }, (
     expect(
       await count("SELECT count(*) AS n FROM external_identities WHERE user_id = ?", s.userId),
     ).toBe(0);
+    clock.advance(WORKSPACE_DELETION_DELAY_MS);
+    expect(await purgeToEnd(s.workspaceId)).toBe("purged");
+  });
+
+  it("deletion/sign-in-racing-account-deletion-attaches-cleanly", async () => {
+    const s = await shop();
+    const login = (await getAccountView(serviceContext(), s)).login as string;
+    const identity = await env.DB.prepare(
+      "SELECT external_user_id AS id FROM external_identities WHERE user_id = ?",
+    )
+      .bind(s.userId)
+      .first<{ id: string }>();
+    const profile = githubProfile({
+      externalUserId: identity?.id as never,
+      username: login as never,
+    });
+    await requestDeletion(s);
+    expect(await deleteAccount(serviceContext(), s, { confirmation: login })).toMatchObject({
+      ok: true,
+      deleted: { users: 0 },
+    });
+    // The ID-only row the deletion keeps is marked deleted in its final batch.
+    const kept = await env.DB.prepare("SELECT deleted_at FROM users WHERE id = ?")
+      .bind(s.userId)
+      .first<{ deleted_at: number | null }>();
+    expect(kept?.deleted_at).toBe(clock.now());
+
+    // A sign-in that Better Auth started for the old user before the deletion ran records its
+    // identity only now. It is refused, and links nothing to the deleted user.
+    const raced = await recordSignIn(serviceContext(), { userId: s.userId }, profile).catch(
+      (error: unknown) => error,
+    );
+    expect(raced).toMatchObject({ name: "ConflictError", code: "account_deleted" });
+    expect(
+      await count("SELECT count(*) AS n FROM external_identities WHERE user_id = ?", s.userId),
+    ).toBe(0);
+
+    // So the next sign-in with the same GitHub account creates a new user and links cleanly,
+    // instead of failing for ever with identity_conflict.
+    const { userId } = await createUserForSignIn(serviceContext());
+    expect(await recordSignIn(serviceContext(), { userId }, profile)).toMatchObject({
+      outcome: "linked",
+    });
     clock.advance(WORKSPACE_DELETION_DELAY_MS);
     expect(await purgeToEnd(s.workspaceId)).toBe("purged");
   });

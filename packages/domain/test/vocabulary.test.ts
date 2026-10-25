@@ -78,7 +78,11 @@ describe("persisted vocabularies", () => {
     expect(AUDIT_ACTOR_TYPES).toEqual(["user", "system", "operator", "provider"]));
   it("identity providers", () => expect(IDENTITY_PROVIDERS).toEqual(["github"]));
   it("sign-in refusal reasons", () =>
-    expect(SIGN_IN_REFUSAL_REASONS).toEqual(["identity_conflict", "internal_error"]));
+    expect(SIGN_IN_REFUSAL_REASONS).toEqual([
+      "identity_conflict",
+      "internal_error",
+      "account_deleted",
+    ]));
   it("connection statuses", () =>
     expect(CONNECTION_STATUSES).toEqual(["active", "suspended", "deleted"]));
   it("connectable account types", () => expect(CONNECTABLE_ACCOUNT_TYPES).toEqual(["user"]));

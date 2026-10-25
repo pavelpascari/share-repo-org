@@ -131,7 +131,12 @@ const resourceChanges = z
   .refine((changes) => Object.keys(changes).length > 0);
 
 /** Why a sign-in that authenticated with the provider was refused anyway. */
-export const SIGN_IN_REFUSAL_REASONS = ["identity_conflict", "internal_error"] as const;
+export const SIGN_IN_REFUSAL_REASONS = [
+  "identity_conflict",
+  "internal_error",
+  // The user's account was deleted while the sign-in ran (decision 0015).
+  "account_deleted",
+] as const;
 export type SignInRefusalReason = (typeof SIGN_IN_REFUSAL_REASONS)[number];
 
 // Details schemas are strict: an unknown key is rejected rather than stored, so a secret cannot
