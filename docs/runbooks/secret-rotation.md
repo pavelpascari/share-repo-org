@@ -2,7 +2,7 @@
 
 Every ShareRepo and tenant secret can be rotated without downtime. This runbook takes each row of the [Phase 6 plan](../plans/phase-6.md) § Secret rotation in turn. Background: [decision 0011](../decisions/0011-paddle-connection-and-tenant-credentials.md) (`CREDENTIAL_KEYS`, Paddle secrets), [decision 0012](../decisions/0012-purchase-claims.md) and its rotation amendment (`CLAIM_SIGNING_KEY`), the [operations threat model](../security/operations-threat-model.md) (O15–O17), and [deployment](../deployment.md) § One-time setup for how each secret was first set.
 
-**Status:** draft from Phase 6 T5. The code paths are tested; no step has been rehearsed against a deployed environment yet. T7 rehearses them in dev.
+**Status:** draft from Phase 6 T5. The code paths are tested, and the Paddle webhook secret rotation runs end to end against the fake Paddle (`rotation/old-and-new-secret-both-accepted` in `apps/web/e2e/paddle.spec.ts`). No step has been rehearsed against a deployed environment yet: T7 had none. Rehearse every section in dev before the founder launch (a first-deploy check in [deployment](../deployment.md)).
 
 ## Before any rotation
 
@@ -43,7 +43,28 @@ The keyring is `{"current":"k1","keys":{"k1":"<base64 of 32 bytes>"}}`. `current
 
 3. **Make the new key current on both Workers** (`keyring-b.json`: the same keys, `"current":"k2"`), with the same loop. Between the two `put`s one Worker seals under `k2` and the other under `k1`; both Workers can open both, so nothing breaks. Do not skip step 2: a Worker that seals under a key the other Worker lacks writes envelopes the other cannot open.
 4. **Move every envelope off the old key.** Envelopes are re-wrapped lazily when they are used, and the jobs Worker's daily cron (`17 3 * * *`) queues a `rewrap_credentials` run whenever an envelope is still under a listed key other than `current`. Each run re-wraps up to 50 envelopes (Paddle API keys, webhook secrets, a rotation's next webhook secret, pending claim request emails) and queues the next run while work remains. Each run writes an account-scoped audit event `credentials.rewrapped` with `rewrapped`, `failed` and `remaining`.
-5. **Confirm that nothing references the old key.** Wait for a `credentials.rewrapped` event with `remaining: 0`, then check directly:
+5. **Check the rewrap runs' `failed` count.** The runs are account-scoped audit events; no page shows them. Read the latest:
+
+   ```sh
+   pnpm --filter @sharerepo/db exec wrangler d1 execute DB --remote -c ../../apps/web/wrangler.jsonc --command "
+     SELECT occurred_at, target_id,
+            json_extract(details, '$.rewrapped') AS rewrapped,
+            json_extract(details, '$.failed') AS failed,
+            json_extract(details, '$.remaining') AS remaining
+     FROM audit_events WHERE action = 'credentials.rewrapped'
+     ORDER BY occurred_at DESC LIMIT 10"
+   ```
+
+   `target_id` is the run (`rewrap:<generation>`). Each run reports how many envelopes it moved to the current key (`rewrapped`), how many would not open (`failed`) and how many are still under a non-current listed key (`remaining`). A run that moved nothing stops, so a run with `rewrapped: 0` and `failed` equal to `remaining` is the end: those envelopes will never move.
+
+   - **`failed: 0` and `remaining: 0`:** go on to step 6.
+   - **`failed` above 0:** an envelope did not open under the key it names. **Do not remove the old key yet.**
+     - If many or all failed, suspect the keyring before the data: compare the old key's value in the keyring with the password manager. A wrong value for `k1` fails every envelope sealed under it. Fix the keyring (step 2's loop) and let the next run move them.
+     - Otherwise the envelope was tampered with, or copied from another row: it is bound to its own row and purpose, and opens nowhere else. Treat it as an incident ([incident response](incident-response.md)), and find the rows with the step 6 query (select `workspace_id, id` instead of `count(*)`).
+     - An envelope that never opens is already unreadable, and stays so whether or not its key is listed. For a Paddle connection, the owner disconnects and connects Paddle again on the Billing page: disconnecting erases both envelopes even when they cannot be opened (if Paddle cannot be asked, the page lists the destination IDs to delete by hand). A pending claim email cannot be sent; the buyer asks again.
+     - Once every failed row is replaced or erased, the next run reports `failed: 0`.
+     - If 50 or more envelopes never open, every run reads only those and stops: an accepted risk in the [operations threat model](../security/operations-threat-model.md) (Accepted risks, Phase 6 T6). Replace or erase them first; the runs then move the rest.
+6. **Confirm that nothing references the old key.** Wait for a `credentials.rewrapped` event with `remaining: 0`, then check directly:
 
    ```sh
    pnpm --filter @sharerepo/db exec wrangler d1 execute <database> --remote --command "
@@ -53,9 +74,9 @@ The keyring is `{"current":"k1","keys":{"k1":"<base64 of 32 bytes>"}}`. `current
      UNION ALL SELECT 'claim emails', count(*) FROM claim_requests WHERE json_extract(email_envelope, '$.kid') = 'k1'"
    ```
 
-   Every count must be 0. If `failed` was above 0, an envelope did not open under its own key: it was tampered with or copied to another row. Do not remove the key; treat it as an incident and find the row with the query above.
-6. **Remove the old key** from both Workers (`{"current":"k2","keys":{"k2":"<new>"}}`), with the same loop. Removing it early makes the envelopes it sealed unreadable: those creators must reconnect Paddle, and pending claim emails are lost.
-7. Delete the old key from the password manager only after the next daily cron logs `credential rewrap check` with `queued: false`.
+   Every count must be 0. If one is not, go back to step 5.
+7. **Remove the old key** from both Workers (`{"current":"k2","keys":{"k2":"<new>"}}`), with the same loop. Removing it early makes the envelopes it sealed unreadable: those creators must reconnect Paddle, and pending claim emails are lost.
+8. Delete the old key from the password manager only after the next daily cron logs `credential rewrap check` with `queued: false`.
 
 To start step 4 before the next daily cron, queue the first run by hand; the minute's outbox drain picks it up:
 
@@ -63,10 +84,10 @@ To start step 4 before the next daily cron, queue the first run by hand; the min
 pnpm --filter @sharerepo/db exec wrangler d1 execute <database> --remote --command "
   INSERT INTO outbox (id, kind, subject_id, created_at, available_at, attempts)
   VALUES (lower(hex(randomblob(16))), 'rewrap_credentials', 'rewrap:0',
-          unixepoch('subsec') * 1000, unixepoch('subsec') * 1000, 0)"
+          CAST(unixepoch('subsec') * 1000 AS INTEGER), CAST(unixepoch('subsec') * 1000 AS INTEGER), 0)"
 ```
 
-If the old key **leaked**, do steps 1–6 at once, starting step 4 by hand. The leaked key alone opens nothing without a copy of the database, but if both may have leaked, treat every tenant credential as compromised: ask creators to reconnect with new Paddle API keys (§ 6) and rotate their webhook secrets (§ 5).
+If the old key **leaked**, do steps 1–7 at once, starting step 4 by hand. The leaked key alone opens nothing without a copy of the database, but if both may have leaked, treat every tenant credential as compromised: ask creators to reconnect with new Paddle API keys (§ 6) and rotate their webhook secrets (§ 5).
 
 ## 2. `CLAIM_SIGNING_KEY` (claim references, email and IP hashes)
 

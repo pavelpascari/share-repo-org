@@ -97,6 +97,14 @@ ShareRepo uses GitHub in two independent flows:
 
 Do not attach an installation to whichever user happens to receive a callback without verifying the installation setup state, workspace intent, and caller authorization.
 
+### Webhooks
+
+- **Route:** `POST /webhooks/github`, before React Router, with no session.
+- The body is read up to a size limit (`413` above it), and `X-Hub-Signature-256` is checked on the raw bytes, in constant time, against `GITHUB_WEBHOOK_SECRET`. While `GITHUB_WEBHOOK_SECRET_PREVIOUS` is set, a delivery signed with either secret is accepted; it is set only during a rotation ([secret rotation](runbooks/secret-rotation.md) § 3). A failure gets `401` and nothing is stored.
+- The event is stored with a `process_external_event` outbox row in one batch, then `202`; a redelivery gets `200` and changes nothing. Its outbox row has no workspace: the workspace is known only once the event is processed.
+- An event is a hint: processing an `installation`, `installation_repositories` or `repository` event of a connected installation resyncs the connection from GitHub, and other events are ignored. A missed delivery is repaired by the daily resync.
+- **Connection status.** A resync that finds the installation suspended or gone moves the connection to `suspended` or `deleted` and logs the `connection_lost` alert line ([decision 0014](decisions/0014-failure-handling-and-alerting.md)). Unsuspending makes it `active` again. `deleted` is final: a reinstall is a new installation and a new connection. ShareRepo cannot observe or revoke access on a deleted connection's repositories, which is why a workspace being deleted needs the App installed until its purge ([incident response](runbooks/incident-response.md)).
+
 ### Initial responsibilities
 
 The GitHub adapter should:
@@ -137,8 +145,8 @@ On personal repositories, provisioning works through the collaborator and invita
 
 | Adapter failure | Grant result |
 |---|---|
-| `transient` (including a request aborted after its 20-second timeout), `malformed_response` | Retryable `provider_unavailable`, backoff of 1, 5, 15, then 60 minutes |
-| `rate_limited` | `rate_limited` until `retryAfter`, minimum 1 minute. The run stops. |
+| `transient` (including a request aborted after its 20-second timeout, and a `2xx` body that could not be read before it), `malformed_response` | Retryable `provider_unavailable`, backoff of 1, 5, 15, then 60 minutes |
+| `rate_limited` | `rate_limited` until `retryAfter`, minimum 1 minute. The run stops, and the installation's other repositories wait too (below). |
 | `rejected` 422 on invite | `invitation_rejected`: the owner must act, then press "Retry" |
 | `rejected` 403 | `app_permission_missing`: Administration write is not granted |
 | `not_found` account | `account_not_found` |
@@ -146,7 +154,9 @@ On personal repositories, provisioning works through the collaborator and invita
 | `suspended` | The run stops, and the planner blocks with `connection_inactive` |
 | `not_found` installation (minting its token) | The run stops as `installation_missing`, and the connection is resynced |
 
-A failed observation leaves the grants alone. The repository records the classified code (`last_reconcile_error`, shown on the access page) and its consecutive failures, and backs off by them with the same 1, 5, 15 and 60 minutes (a rate limit waits at least `retryAfter`). A suspended or missing installation, or a missing repository, queues a resync.
+A failed observation leaves the grants alone. The repository records the classified code (`last_reconcile_error`, shown on the access page) and its consecutive failures, and backs off by them with the same 1, 5, 15 and 60 minutes (a rate limit waits at least `retryAfter`). A suspended or missing installation, or a missing repository, queues a resync. At the third failure in a row the repository is listed as failing on the Access page and `/ops`, and the `reconcile_failing` alert line is logged once.
+
+**Rate limits are per installation.** A `rate_limited` observation or mutation sets `connections.rate_limited_until` to GitHub's reset (or the repository's retry time when GitHub gave none). It only ever moves later. Until then the minute sweep queues none of that installation's due repositories; the others are unaffected. The sweep also queues at most 10 repositories per installation per minute. An owner's "Check now" is not deferred.
 
 ### GitHub risks to test
 
@@ -178,8 +188,9 @@ Paddle is the commercial source. It reports who paid for what; the entitlement e
   4. The key and the secret are stored as envelopes bound to the row. If storing fails, the destination is deleted again.
   5. The catalog is imported (`GET /prices?include=product`). A failed import leaves the connection active, and the page asks for "Refresh catalog".
 - **Reconnect** replaces the key. The new key must belong to the same seller. A destination deleted outside ShareRepo is created again.
-- **Disconnect** deletes the destination (best effort) and erases both envelopes. If Paddle could not be asked, the page shows the `ntfset_…` ID to delete by hand.
-- **Status.** A `401` or `403` on any call marks the connection `unauthorized`, audited, and the billing page shows "Needs a new API key". Processing keeps the last known facts; nothing is revoked because Paddle cannot be read. An `api_key.*` event queues a probe (`GET /`), because its payload does not say which key it concerns.
+- **Disconnect** deletes the destination (best effort) and erases both envelopes. If Paddle could not be asked, the page shows the `ntfset_…` ID to delete by hand. During a webhook secret rotation it deletes both destinations and erases both secrets.
+- **Rotate webhook secret** (Billing page; Paddle has no rotation call). ShareRepo creates a second destination for the connection, at the same URL with a `?v=<id>` marker because Paddle refuses two destinations with the same URL, and stores its secret as the next secret (`webhook_secret_next_envelope`, sealed for its own purpose). Deliveries signed with either secret are then accepted; Paddle sends each event to both destinations, and the second copy is a duplicate by event ID. ShareRepo then deletes the old destination and promotes the new one and its secret. Each stage is audited (`paddle.webhook_secret_rotated`, `stage` `started` or `completed`). Every step leaves one destination delivering, and pressing the button again resumes a rotation that stopped ([secret rotation](runbooks/secret-rotation.md) § 5).
+- **Status.** A `401` or `403` on any call marks the connection `unauthorized`, audited, logs the `connection_lost` alert line, and the billing page shows "Needs a new API key". Processing keeps the last known facts; nothing is revoked because Paddle cannot be read, until the expiry confirmation window of an entitlement past its boundary runs out ([decision 0013](decisions/0013-database-timers-and-expiry-confirmation.md)). An `api_key.*` event queues a probe (`GET /`), because its payload does not say which key it concerns.
 
 ### Port
 
@@ -204,20 +215,22 @@ Every request sends `Paddle-Version: 1` and has a 20-second timeout. Every respo
 | `unauthorized` | `401` or `403`: the key is invalid, expired, revoked, or lacks a permission | The connection becomes `unauthorized`. The job fails as `PaddleUnavailableError` and is retried; stored facts stand |
 | `not_found` | `404` | A subscription Paddle does not know is `found: false`. Deleting a destination that is already gone succeeds |
 | `rate_limited` | `429` | Retried after `Retry-After` (seconds or a date; 60 s when absent) |
-| `transient` | `5xx`, a network failure, or the timeout | Retried with backoff |
-| `rejected` | Any other `4xx`, or input refused before sending | Final. Two codes are acted on: `notification_maximum_active_settings_reached` (the seller has 10 active destinations; connect fails with that reason) and `transaction_default_checkout_url_not_set` (no default payment link; the checkout page names the setup step) |
-| `malformed` | A `2xx` body of the wrong shape, or too many pages | Final |
+| `transient` | `5xx`, a network failure, the timeout, or a `2xx` body that could not be read before the timeout | Retried with backoff |
+| `rejected` | Any other `4xx`, or input refused before sending | Final. Two codes are acted on: `notification_maximum_active_settings_reached` (the seller has 10 active destinations; connect and rotation fail with that reason) and `transaction_default_checkout_url_not_set` (no default payment link; the checkout page names the setup step) |
+| `malformed` | A `2xx` body that is not JSON or has the wrong shape, or too many pages | Final |
 
 Errors carry the operation, the status and Paddle's `error.code`. They never carry the key, an email, custom data, or Paddle's `detail`, which may echo input.
 
+**Retrying a job.** On the queue a retryable job (`transient`, `rate_limited`, or a connection that cannot be read now) is retried with backoff, and from its fifth delivery it is handed to the outbox drain. The drain waits 1 minute doubling per attempt, at most 2 hours, or the provider's reset when later; the 10th attempt comes about 6 hours after the first, later than the expiry confirmation window. Only then, or at once for a final error, does the job fail for good ([failure triage](runbooks/failure-triage.md)).
+
 ### Webhooks
 
-- **Route:** `POST /webhooks/paddle/:connectionId`, before React Router.
+- **Route:** `POST /webhooks/paddle/:connectionId`, before React Router. Only the path is read: a rotation's `?v=` marker is ignored.
 - **Rules,** in order:
   1. Without the commerce secrets: `503`.
   2. An unknown or disconnected connection: `404`.
   3. A body over 1 MB: `413`.
-  4. The signature is checked on the raw bytes: `Paddle-Signature: ts=…;h1=…`, HMAC-SHA256 of `ts:body` under the connection's secret. Any `h1` may match. `ts` may be at most 5 minutes ahead and 72 hours old. A failure gets `401` and nothing is stored.
+  4. The signature is checked on the raw bytes: `Paddle-Signature: ts=…;h1=…`, HMAC-SHA256 of `ts:body` under the connection's secret, or, during a webhook secret rotation, its next secret. Any `h1` may match. `ts` may be at most 5 minutes ahead and 72 hours old. A failure gets `401` and nothing is stored.
   5. A signed body that is not an event envelope: `400`.
   6. The event ID, type, time and subscription are stored with a `process_external_event` outbox row in one batch, then `200`. A redelivery of the same `evt_` gets `200` and changes nothing.
 - **Deduplication** is scoped to the connection: one creator cannot suppress another's events by signing a colliding `evt_` ID.

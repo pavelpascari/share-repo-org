@@ -156,6 +156,8 @@ Replace the simulated commercial source with real Paddle facts while retaining t
 
 ## Phase 6 — Durable timing and operational hardening
 
+**Status:** delivered. What was built, and where it differs from the work list below, is in the [Phase 6 plan](plans/phase-6.md) and decisions [0013](decisions/0013-database-timers-and-expiry-confirmation.md), [0014](decisions/0014-failure-handling-and-alerting.md) and [0015](decisions/0015-data-lifecycle.md). In short: timers stay in the database and expiry is confirmed before revocation, instead of Workflows; failures are rows with owner and operator pages, a dead-letter queue and email alerts; data is pruned, exported and deleted on a schedule; every secret has a rotation procedure; and the runbooks are under `docs/runbooks/`. Live checks that need a deployed environment are listed in [deployment](deployment.md) § First-deploy checks.
+
 ### Goal
 
 Make delayed policy, retries, and recovery safe enough for the founder launch.
@@ -232,7 +234,7 @@ Resolve these with evidence at the named phase rather than guessing now:
 - access ownership policy for pre-existing or indirect grants — Phase 2–4 (resolved: ShareRepo manages only access it created, decision 0010);
 - fixed versus creator-configurable grace period — Phase 3 or private beta (resolved: per offer, decision 0009);
 - Paddle OAuth availability and approval path versus temporary credentials — Phase 5 (resolved: seller API keys now, OAuth after publisher-program approval, decision 0011);
-- Workflows versus database-scheduled jobs for each timer — Phase 6;
+- Workflows versus database-scheduled jobs for each timer — Phase 6 (resolved: database timers swept every minute, no Workflows, and expiry confirmed before revocation, decision 0013);
 - public pricing, quotas, and self-hosting — after private beta.
 
 ## First Codex task after adding this pack

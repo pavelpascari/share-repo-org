@@ -256,14 +256,14 @@ T1 decisions, migration 0009, vocabularies, config ──┬─ T2 timing: expir
 
 From `implementation-plan.md`, with how each is met:
 
-| Criterion | How it is met |
-|---|---|
-| Workflow replay/retry is idempotent | No Workflows (decision 0013). Sweep replay and queue redelivery are idempotent (`timing/sweep-replay-is-idempotent`, `queue/redelivery-is-idempotent`). |
-| A stale delayed workflow cannot revoke a renewed subscriber | Expiry confirmation (`timing/stale-workflow-cannot-revoke-renewed`). |
-| Exhausted failures are visible, actionable, and correlated to affected access | Failure rows, owner and operator pages with retry, and email alerts (`failure/*`). |
-| Scheduled reconciliation repairs missed events and external drift | Existing sweeps, now partitioned and observed (`partition/*`, `provider/outage-recovers-on-scheduled-reconcile`). |
-| Backup/restore and migration procedures are tested for D1 | `db:drill`, the upgrade test, and the runbooks (`migration/*`). |
-| Security review finds no secrets in logs, audit details, or stored raw payloads | Scans and review (`security/no-secrets-in-stored-rows-or-logs`). |
+| Criterion | How it is met | Status after T7 |
+|---|---|---|
+| Workflow replay/retry is idempotent | No Workflows (decision 0013). Sweep replay and queue redelivery are idempotent (`timing/sweep-replay-is-idempotent`, `queue/redelivery-is-idempotent`). | Met (entry-point tests) |
+| A stale delayed workflow cannot revoke a renewed subscriber | Expiry confirmation (`timing/stale-workflow-cannot-revoke-renewed`). | Met (entry-point tests and E2E) |
+| Exhausted failures are visible, actionable, and correlated to affected access | Failure rows, owner and operator pages with retry, and email alerts (`failure/*`). | Met locally (service, entry-point, E2E). Email delivery of alerts is a first-deploy check |
+| Scheduled reconciliation repairs missed events and external drift | Existing sweeps, now partitioned and observed (`partition/*`, `provider/outage-recovers-on-scheduled-reconcile`). | Met (service and entry-point tests) |
+| Backup/restore and migration procedures are tested for D1 | `db:drill`, the upgrade test, and the runbooks (`migration/*`). | Met locally: `db:drill` passes on the E2E database and on a 0008 database it upgrades. A remote drill and a Time Travel restore are first-deploy checks |
+| Security review finds no secrets in logs, audit details, or stored raw payloads | Scans and review (`security/no-secrets-in-stored-rows-or-logs`). | Met (T6) |
 
 ## Implementation notes
 
@@ -471,6 +471,37 @@ Where the build differs from, or adds to, the design above.
   - The incident runbook needs the operator procedure for a purge waiting on an uninstalled App. `/ops` now shows such purges.
   - The secret-rotation runbook should check `credentials.rewrapped.failed` before removing a key.
   - No E2E journey covers the outage backoff. The entry-point tests do.
+
+### T7
+
+- **E2E journeys** (each a scenario name where the catalog has one):
+  - `operations.spec.ts`: `failure/owner-sees-only-own-failures` (a refresh that Paddle refuses is listed under "Needs attention" on the owner's Access page and not on another owner's; Retry applies the cancellation it carried); an operator opens the workspace's read-only view from `/ops`, retries one failure and dismisses another with a reason, which removes it for the owner too; `operator/non-operator-gets-404` for a visitor and for a signed-in non-operator, also on their own workspace's `/ops/w/:slug`.
+  - `timing.spec.ts`: `timing/stale-workflow-cannot-revoke-renewed` and `timing/expiry-confirmed-before-revoke`. A cancellation is scheduled 20 seconds ahead, then the webhook that changes it (its removal, or the cancellation itself) is lost. After the end date the Access page shows "Ending: confirming with Paddle", a check removes nothing and schedules the next check at the end date plus 6 hours, and the collaborator stays. Paddle's retry of the webhook then triggers the refresh, which continues the same access or ends it ("Removed"). In production the minute sweep triggers that refresh; the dev server runs no crons.
+  - `paddle.spec.ts`: `rotation/old-and-new-secret-both-accepted`. Deleting the old destination fails once, so the rotation stops halfway: an event then arrives twice, once under each secret, both accepted and processed once. Rotating again finishes, leaving one `?v=` destination.
+  - `lifecycle.spec.ts`: T4's three journeys already covered export, delete then cancel, and account deletion (blocked, then allowed). T7 only adds the export's `formatVersion` 1.
+  - **Fakes.** The fake Paddle gains `sellers/<id>/fail-next` (any port operation and error kind) and `subscriptions/<id>/lose-webhooks` / `deliver-webhooks`. The E2E web Worker lists one operator, `OPERATOR_GITHUB_ID` (`3000000001`, above the random accounts' range), through `.dev.vars.e2e`, so the generated Wrangler types and the committed config are unchanged. `sellingCreator`, `buyThroughShareRepo` and a direct purchase moved to `support/selling.ts`; `connectedCreator` takes a workspace name, so `/ops` rows can be told apart.
+  - **A fixed wait.** The failure journeys wait 6 seconds after a purchase before arming the failure, so that the purchase's own queued refreshes (three webhooks) have run and the failure lands on the intended refresh. Nothing observable says the queue is empty; if this flakes, the symptom is the subscription reading "Canceled" before the Retry.
+  - **Not in E2E:**
+    - Workspace deletion revoking access (`deletion/workspace-revokes-before-purge` stays a service test). The deletion's refreshes go to the outbox without a queue hand-off, and the dev server runs no crons, so they never run in E2E. The catalog's layer column now says so.
+    - The provider-outage backoff (entry-point tests, T6).
+    - `GITHUB_WEBHOOK_SECRET_PREVIOUS`, `CREDENTIAL_KEYS` and `CLAIM_SIGNING_KEY` rotation: each needs the Workers restarted with new secrets mid-run, which the E2E stack cannot do. Their route, service and entry-point tests stand.
+  - **Observed, not changed.** Just after a successful rotation, the Billing page briefly showed the "rotated" notice and the "rotation in progress" notice together; the second goes once the loader data arrives. The journey waits for it to go.
+- **`pnpm db:drill`** (`scripts/db-drill.ts`, tested in `scripts/test/db-drill.test.ts`). It exports a copy of a local D1 (`--persist-to` for another state directory) or, with `--remote [--env]`, a deployed one; restores into a fresh local D1; applies pending migrations; and checks rows per table, index and trigger names, the migrations table against the repository, `PRAGMA quick_check` and `PRAGMA foreign_key_check`. Differences from the plan:
+  - `quick_check`, not `integrity_check`, which D1 refuses (T6).
+  - Row counts are compared with the export's own `INSERT`s, so the source is never queried.
+  - **Finding: a D1 export cannot be imported into D1 as written.** Migration 0009 rebuilt `workspaces`, so the export creates it after the tables that reference it, and D1 refuses those rows (`no such table: main.workspaces`) even with deferred foreign keys. Composite foreign keys also need the parent's unique index, which the export creates after the rows (`foreign key mismatch`). The drill writes `restore.sql` with tables, then indexes, before the rows; the triggers stay last. The backup runbook says to import that file, never the raw export.
+  - On 2026-10-25 it passed on the E2E database (35 tables, 882 rows, 67 indexes, 8 triggers) and on a database at migration 0008, applying 0009 and 0010.
+- **Runbooks:** `incident-response.md`, `failure-triage.md`, `alerting-setup.md` and `backup-and-restore.md` are new. `secret-rotation.md` gains the check of `credentials.rewrapped`'s `failed` count before an old key is removed, and its hand-queued rewrap now stores integer instants (`CAST(… AS INTEGER)`).
+  - **A purge that waits on an uninstalled GitHub App** (`managed_access_remaining`). Reinstalling the App does **not** unblock it: a `deleted` connection is final, a reinstall is a new connection whose repositories are new rows, and a workspace being deleted cannot connect GitHub. The procedure: the owner removes the collaborators and invitations on GitHub and confirms; then, as a last resort run by hand and recorded in an incident note, one guarded `UPDATE` clears the managed flag on that workspace's grants of `deleted` connections. **Open point:** with the owner unreachable there is no safe path, and whether to purge anyway after some time is a product decision.
+- **Docs** updated to what Phase 6 shipped: `deployment.md` (queues and dead-letter queues, operators, the optional previous webhook secret, the claim-key keyring, scheduled work, observability, first-deploy checks, runbooks), `architecture.md` (no Workflows; timers, failure handling, data lifecycle), `domain-model.md`, `integrations.md`, `testing-strategy.md` (stale Workflow rows; E2E layers), `implementation-plan.md` (Phase 6 delivered; the Workflows question resolved by decision 0013), the operations threat model's runbook links, `local-setup.md` (`db:drill`, the fake's new controls, `/ops` locally) and the jobs Worker's cron comment.
+- **CI:** `CURRENT_PHASE` is 6.
+- **Conflicts and corrections found:**
+  - Decision 0014 says the Issues automation emails the operator, but the research found email is not an Issues destination. `alerting-setup.md` flags it and offers a Monitor on error lines as the fallback; if chosen, it needs a 0014 amendment.
+  - The T2 notes above say an alert line is `{"msg":"alert",…}`. The code logs `"msg":"alert: <name>"` with an `alert` field (`packages/platform/src/alert.ts`). The runbooks follow the code.
+  - `/ops` sweep health counts every due row, rate-limited repositories included; the `sweep_lagging` alert leaves those out. `failure-triage.md` explains the difference.
+  - `product.md` says operators repair "without manipulating database rows"; the waiting-purge last resort and the runbooks' hand-queued jobs are D1 statements.
+  - `failure-messages.ts` still explains `not_implemented`, which no job produces any more. Harmless.
+  - `secret-rotation.md` said T7 would rehearse rotation in dev. There is no deployed environment yet; it is a first-deploy check.
 
 ## Risks and open points
 
