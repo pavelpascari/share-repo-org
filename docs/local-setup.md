@@ -81,14 +81,19 @@ The fake (`apps/web/e2e/support/fake-paddle.ts`) serves the API ShareRepo calls 
 | `POST /_control/sellers/<sellerId>/prices` (`product_name`, `description`, `amount` in minor units, `currency`, `interval`, `frequency`) | Adds a price to the seller's catalog |
 | `POST /_control/sellers/<sellerId>/transactions` (`price_id`, optional `custom_data` JSON) | A checkout as if shared from Paddle directly, without a ShareRepo reference. Returns `checkout_url` |
 | `POST /_control/sellers/<sellerId>/revoke-key`, `…/restore-key` | Every call with the key fails with `403`, until restored |
-| `POST /_control/sellers/<sellerId>/events` (`event_type`, and `subscription_id` or `data` JSON) | Sends any signed event to the seller's destination |
+| `POST /_control/sellers/<sellerId>/fail-next` (`operation`, `kind`) | The seller's next call of `operation` (a Paddle port operation such as `getSubscription` or `deleteNotificationSetting`) fails with `kind` (`rejected`, `transient`, `not_found`, `rate_limited`, `unauthorized`), doing nothing |
+| `POST /_control/sellers/<sellerId>/events` (`event_type`, and `subscription_id` or `data` JSON) | Sends any signed event to the seller's destinations; with `subscription_id`, carrying the subscription as it is now, as Paddle's retry of a lost delivery does |
 | `GET /_control/sellers/<sellerId>` | The seller's subscriptions (wire format), destinations and webhook deliveries with their status |
-| `POST /_control/subscriptions/<id>/<action>` | Changes a subscription and sends Paddle's event for it. Actions: `schedule-cancel` (`effective_at`, or `effective_in_seconds`; within 10 minutes the fake cancels by itself then), `remove-scheduled-change`, `cancel`, `past-due`, `renew`, `activate`, `pause`, `resume` |
+| `POST /_control/subscriptions/<id>/<action>` | Changes a subscription and sends Paddle's event for it. Actions: `schedule-cancel` (`effective_at`, or `effective_in_seconds`; within 10 minutes the fake cancels by itself then), `remove-scheduled-change`, `cancel`, `past-due`, `renew`, `activate`, `pause`, `resume`. Also `lose-webhooks` and `deliver-webhooks`: while lost, the subscription's changes apply (a scheduled cancellation too) but no webhook is delivered |
 | `GET /_control/mail?to=<address>` | The claim emails ShareRepo sent, captured at `POST /mail` |
 
 "Pay" on the payment link page creates the customer by email, or reuses the one with that exact email as Paddle does. It creates the subscription with the transaction's custom data, then sends signed `transaction.completed`, `subscription.created` and `subscription.activated` webhooks.
 
-Paddle's events reach ShareRepo through the queue, and so does the refresh each one asks for. The dev server runs no crons, so a reconciliation starts only when an owner presses **Check now**, as in Phase 4.
+Paddle's events reach ShareRepo through the queue, and so does the refresh each one asks for. The dev server runs no crons, so a reconciliation starts only when an owner presses **Check now**, as in Phase 4, and nothing the minute sweep or the outbox drain would do (a due subscription check, a workspace deletion's refreshes) happens by itself.
+
+### Operations pages (Phase 6)
+
+`/ops` answers 404 unless your GitHub account ID is listed in `OPERATOR_GITHUB_IDS`. For `pnpm dev`, add `OPERATOR_GITHUB_IDS=<your numeric GitHub ID>` to `apps/web/.dev.vars`. The E2E stack lists one operator, ID `3000000001` (`OPERATOR_GITHUB_ID` in `apps/web/e2e/support/ports.ts`): sign in through the fake GitHub with that ID to open `/ops`. To see a failure there, make the fake Paddle refuse a subscription read (`fail-next` with `getSubscription` and `rejected`), then send an event for the subscription.
 
 Tests never need these values. Workers-pool tests use test-only secrets from `apps/web/vitest.config.ts`, and `pnpm test:e2e` signs in through a local fake GitHub (`apps/web/e2e/support/fake-github.ts`) and sells through the fake Paddle, with the wrangler `e2e` environment, which is the only one that accepts provider endpoint overrides.
 
@@ -99,14 +104,14 @@ pnpm blocks dependency build scripts by default; `pnpm-workspace.yaml` allows on
 | Path | What it is |
 |---|---|
 | `apps/web` | React Router app and HTTP entry Worker (`workers/app.ts`) |
-| `apps/jobs` | Background Worker: cron now; queues and workflows later |
+| `apps/jobs` | Background Worker: crons, the events queue and its dead-letter queue |
 | `packages/domain` | Pure domain rules and ports (`Clock`, `IdGenerator`); mutation-tested |
 | `packages/db` | Drizzle schema, SQL migrations, workspace-scoped repositories |
 | `packages/platform` | Env parsing, structured logging with redaction, correlation IDs, error types |
 | `packages/application` | Application services: sign-in recording, workspaces, GitHub connections and resync, authorization, audit |
 | `packages/integrations` | GitHub App client (JWT, installation tokens, webhooks), Paddle client and webhook verification, the mail port; fakes under `@sharerepo/integrations/testing` |
 | `packages/testing` | Test helpers: fake clock, deterministic IDs, log capture, secret canaries, audit completeness |
-| `scripts` | Coverage ratchet and scenario-catalog checks |
+| `scripts` | Coverage ratchet, scenario-catalog check and the D1 backup and restore drill |
 
 ## Everyday commands
 
@@ -122,6 +127,7 @@ pnpm blocks dependency build scripts by default; `pnpm-workspace.yaml` allows on
 | `pnpm check:scenarios --phase <n>` | Fails if a scenario due by phase `n` in `docs/testing-strategy.md` has no test |
 | `pnpm db:generate` | Generate a SQL migration from schema changes in `packages/db/src/schema` |
 | `pnpm db:check` | Fails if the schema and committed migrations disagree |
+| `pnpm db:drill` | Backup and restore drill: exports a copy of the local D1, restores it into a fresh local D1, applies pending migrations, and checks rows, indexes, triggers, the migrations table, `PRAGMA quick_check` and `PRAGMA foreign_key_check`. `--persist-to .e2e/state` drills the last E2E run's database, which has data; `--keep` keeps the scratch directory. See [backup and restore](runbooks/backup-and-restore.md) |
 | `pnpm build` | Build both Workers |
 | `pnpm spike:github` | Live GitHub feasibility spike against your development App ([runbook](runbooks/github-app-setup.md) § 6); never runs in CI |
 
