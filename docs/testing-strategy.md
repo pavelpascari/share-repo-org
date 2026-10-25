@@ -120,6 +120,13 @@ Each scenario has a stable name used as the test title so coverage of the matrix
 | `partition/one-installation-cannot-starve-others` | Phase 6: partitioned reconciliation | Service | 6 |
 | `migration/upgrade-from-each-release-keeps-data` | Phase 6: migration procedures | DB | 6 |
 | `security/no-secrets-in-stored-rows-or-logs` | Phase 6 acceptance | Service, entry point | 6 |
+| `paddle/orphaned-destinations-swept` | [Operations threat model](security/operations-threat-model.md#status-after-phase-6-risk-fixes) R1 | Service, contract | 6 |
+| `rotation/rewrap-progresses-past-unopenable-envelopes` | Operations threat model R2 | Service | 6 |
+| `deletion/sign-in-racing-account-deletion-attaches-cleanly` | Operations threat model R3 | Service | 6 |
+| `security/blank-secret-fails-closed` | Operations threat model R4 | Unit | 6 |
+| `queue/outbox-ack-matches-kind-and-subject` | Operations threat model R5 | DB, entry point | 6 |
+| `operator/list-views-audited` | Operations threat model R6; decision 0014 | Service, entry point | 6 |
+| `operator/mutation-needs-fresh-session` | Operations threat model R7; decision 0014 | Service, entry point | 6 |
 | `resource/selection-removed-blocks-new-provisioning` | Matrix: resource removal | Service | 2, 4 |
 | `resource/rename-transfer-keeps-identity` | Integrations: GitHub risks | Contract, service | 2 |
 | `connection/suspended-installation-surfaces-error` | Matrix: connection suspension | Service | 2, 4 |

@@ -179,6 +179,7 @@ Paddle is the commercial source. It reports who paid for what; the entitlement e
   5. The catalog is imported (`GET /prices?include=product`). A failed import leaves the connection active, and the page asks for "Refresh catalog".
 - **Reconnect** replaces the key. The new key must belong to the same seller. A destination deleted outside ShareRepo is created again.
 - **Disconnect** deletes the destination (best effort) and erases both envelopes. If Paddle could not be asked, the page shows the `ntfset_…` ID to delete by hand.
+- **Orphaned destinations are swept** (Phase 6 risk fixes, [0011 amendment](decisions/0011-paddle-connection-and-tenant-credentials.md#amendment--orphaned-destinations-are-swept-rewrap-runs-move-past-failures-phase-6-risk-fixes)). Each destination is described `ShareRepo workspace <id> created <ISO instant>`. `listNotificationSettings` (`GET /notification-settings`) finds the workspace's own destinations that the stored connection does not name; those over an hour old are deleted daily, after connect, reconnect and rotation, and all of them on disconnect.
 - **Status.** A `401` or `403` on any call marks the connection `unauthorized`, audited, and the billing page shows "Needs a new API key". Processing keeps the last known facts; nothing is revoked because Paddle cannot be read. An `api_key.*` event queues a probe (`GET /`), because its payload does not say which key it concerns.
 
 ### Port
@@ -193,7 +194,7 @@ Paddle is the commercial source. It reports who paid for what; the entitlement e
 | `listCustomersByEmail` | `GET /customers?email=&per_page=200` | Claiming by email (path 2) |
 | `getCustomer` | `GET /customers/{id}` | Customer lookups |
 | `createTransaction` | `POST /transactions` with `custom_data.sharerepo_claim` | Starting a checkout (path 1) |
-| `createNotificationSetting`, `getNotificationSetting`, `deleteNotificationSetting` | `/notification-settings` | The webhook destination |
+| `createNotificationSetting`, `getNotificationSetting`, `listNotificationSettings`, `deleteNotificationSetting` | `/notification-settings` | The webhook destination, and the sweep of orphaned ones |
 
 Every request sends `Paddle-Version: 1` and has a 20-second timeout. Every response is parsed with Zod. Lists follow `meta.pagination.next` while `has_more`, up to 30 pages. The next-page URL must stay under the API base URL, because the request carries the seller's key. The sweep and the purchase rule accept a list cut short at the cap and say so; other lists fail as `malformed`.
 

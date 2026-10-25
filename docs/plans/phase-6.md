@@ -472,6 +472,17 @@ Where the build differs from, or adds to, the design above.
   - The secret-rotation runbook should check `credentials.rewrapped.failed` before removing a key.
   - No E2E journey covers the outage backoff. The entry-point tests do.
 
+### Risk fixes (after T6)
+
+Fixes for the risks the [operations threat model](../security/operations-threat-model.md#status-after-phase-6-risk-fixes) had accepted, R1–R8 there.
+
+- **Orphaned Paddle destinations (R1).** `destination-tag.ts` describes each destination with its workspace and creation instant. `PaddlePort.listNotificationSettings` is new (client, fake, E2E fake server, contract). `sweepDestinations` in `packages/application/src/paddle.ts` runs first in `sweepPaddleSubscriptions`, best effort after connect, reconnect and rotation, and before `destination_limit`; disconnect deletes all of the workspace's and its write is guarded on the destination IDs it read (`disconnectPaddleConnection`'s `expected`). Reconnect's re-created destination gets a `?v=` marker. New audit action `paddle.destinations_swept`; new crash-matrix case.
+- **Rewrap cursor (R2).** `listEnvelopesUnderKeys` takes `after`; the cursor is `system_state` `rewrap.cursor`. A run continues only after a full batch.
+- **Deleted users (R3, R8).** Migration 0011 adds `users.deleted_at` and the trigger `external_identities_user_not_deleted`, with upgrade fixture `at-0011.sql`. `insertExternalIdentity` reports `user_deleted`; the sign-in refusal reason `account_deleted` is new.
+- **Blank secrets (R4).** `secretText` and `optionalSecretText` in `packages/platform/src/env.ts`.
+- **Queue acknowledgement (R5).** `markQueuedJobSent` replaces `markOutboxSent` on the queue path; the drain keeps `markOutboxSent` for rows it claimed itself.
+- **Operator reads and sessions (R6, R7).** `operator.viewed_failures`; `/ops`'s loader returns `{ lists: null }` for a cross-site navigation. `OPERATOR_SESSION_MAX_AGE_MS`, `operatorSessionIsFresh` and `requireOperatorSession`; `SignedInUser.sessionCreatedAt`.
+
 ## Risks and open points
 
 - **Monitors is a beta.** Alerting has a manual fallback, a daily `/ops` review, until it is stable.

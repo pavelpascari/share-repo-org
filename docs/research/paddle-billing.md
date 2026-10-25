@@ -360,6 +360,15 @@ Sources:
 - https://developer.paddle.com/api-reference/customers/list-customers
 - https://developer.paddle.com/api-reference/subscriptions/list-subscriptions
 
+## 9. Listing notification settings (Phase 6 risk fixes, from the API reference, 2026-10-25)
+
+- `GET /notification-settings` takes `after`, `per_page` (default and maximum 200), `order_by` (`id[ASC]` or `id[DESC]`, default `id[DESC]`), `active` and `traffic_source`. Its response has `meta.pagination` like the other lists.
+- Each item has `id`, `description` (1–500 characters, "shown in the Paddle dashboard"), `type`, `destination`, `active`, `api_version`, `include_sensitive_fields`, `subscribed_events`, `endpoint_secret_key` and `traffic_source`. **There is no creation time**, so ShareRepo writes its own into the description.
+- The list includes `endpoint_secret_key` for every setting, other apps' too. The client's schema drops it; it is never stored or logged.
+
+Sources:
+- https://developer.paddle.com/api-reference/notification-settings/list-notification-settings
+
 Still **UNCONFIRMED**, for the live sandbox check:
 
 - whether a retried delivery carries a fresh `ts` (ShareRepo accepts up to 72 hours old);
@@ -367,7 +376,9 @@ Still **UNCONFIRMED**, for the live sandbox check:
 - whether case differs in the email filter (ShareRepo hands Paddle the address as typed, trimmed);
 - which statuses `GET /subscriptions` returns without a `status` filter (the sweep sends none; the purchase rule names every status);
 - the exact `error.code` values for a revoked key and a missing permission (ShareRepo acts on the status alone);
-- whether `GET /` lists `transaction.read` for a key that has `transaction.write` (ShareRepo requires both names).
+- whether `GET /` lists `transaction.read` for a key that has `transaction.write` (ShareRepo requires both names);
+- that `GET /notification-settings` returns each `description` exactly as created and includes inactive settings, and that a key with `notification_setting.write` may list them;
+- that a destination whose create response was lost appears in the list straight away.
 
 ## Product implications
 
