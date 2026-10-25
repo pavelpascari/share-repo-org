@@ -207,6 +207,10 @@ Operate the complete loop for one real creator, then a small invited cohort.
 
 Potential work includes public GitHub App distribution, self-service Paddle connection, ShareRepo's own billing, quotas, abuse controls, support tooling, legal/privacy material, service objectives, and public onboarding. This phase is intentionally not designed in detail before private validation.
 
+### Future development (parked)
+
+- **Workspace team management.** The `owner` and `member` roles and `addWorkspaceMember` exist, but no product path uses them, so every workspace has only its creator as owner. Parked by the user on 2026-10-25 for after the current work. It needs: inviting a member by GitHub login, changing a member's role (promote to owner, demote to member), removing a member, never leaving a workspace without an owner (account deletion already refuses while the user owns a live workspace), and an audit event with correlation ID for each change.
+
 ## Cross-phase test matrix
 
 Every production mechanism should accumulate adversarial coverage for:
