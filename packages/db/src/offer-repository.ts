@@ -277,7 +277,7 @@ export async function listSubscriptionsForOffer(
 ): Promise<OfferSubscriptionRef[]> {
   const { workspaceId, offerId } = key;
   const carriesItem = sql`EXISTS (SELECT 1 FROM ${subscriptionItems} INNER JOIN ${offerItems} ON ${offerItems.workspaceId} = ${subscriptionItems.workspaceId} AND ${offerItems.externalItemId} = ${subscriptionItems.externalItemId} WHERE ${subscriptionItems.workspaceId} = ${workspaceId} AND ${subscriptionItems.subscriptionId} = ${subscriptions.id} AND ${offerItems.offerId} = ${offerId} AND ${offerItems.source} = ${subscriptions.source})`;
-  const hasLiveEntitlement = sql`EXISTS (SELECT 1 FROM ${entitlements} WHERE ${entitlements.workspaceId} = ${workspaceId} AND ${entitlements.sourceId} = ${subscriptions.id} AND ${entitlements.offerId} = ${offerId} AND ${entitlements.state} = 'active')`;
+  const hasLiveEntitlement = sql`EXISTS (SELECT 1 FROM ${entitlements} WHERE ${entitlements.workspaceId} = ${workspaceId} AND ${entitlements.subscriptionId} = ${subscriptions.id} AND ${entitlements.offerId} = ${offerId} AND ${entitlements.state} = 'active')`;
   return db
     .select({
       id: subscriptions.id,

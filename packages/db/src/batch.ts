@@ -15,19 +15,24 @@ export async function runBatch(db: Db, statements: readonly Statement[]): Promis
   return results.map((result) => (result as D1Result).meta.changes);
 }
 
+/** A complete row to store: every column but the generated ones, which SQLite computes. */
+export type StoredRow<T extends SQLiteTable> = {
+  [K in keyof Required<T["$inferInsert"]>]: Exclude<T["$inferInsert"][K], undefined>;
+};
+
 /**
  * `INSERT … SELECT <row> WHERE <condition>`: inserts the full row only if `condition` holds when
  * the statement runs, so a batch can make an insert depend on an earlier guard. Drizzle lists
- * every column in table order for INSERT … SELECT; the values are selected in that order.
+ * every stored column in table order for INSERT … SELECT; the values are selected in that order.
  */
 export function insertWhere<T extends SQLiteTable>(
   db: Db,
   table: T,
-  row: T["$inferSelect"],
+  row: StoredRow<T>,
   condition: SQL,
 ) {
-  const values = Object.keys(getTableColumns(table)).map(
-    (key) => sql`${(row as Record<string, unknown>)[key]}`,
-  );
+  const values = Object.entries(getTableColumns(table))
+    .filter(([, column]) => column.generated === undefined)
+    .map(([key]) => sql`${(row as Record<string, unknown>)[key]}`);
   return db.insert(table).select(sql`SELECT ${sql.join(values, sql`, `)} WHERE ${condition}`);
 }

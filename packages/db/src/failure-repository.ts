@@ -393,7 +393,7 @@ export async function subscriptionAccessNames(
     .where(
       and(
         eq(entitlements.workspaceId, key.workspaceId),
-        eq(entitlements.sourceId, subscription.id),
+        eq(entitlements.subscriptionId, subscription.id),
       ),
     );
   return {

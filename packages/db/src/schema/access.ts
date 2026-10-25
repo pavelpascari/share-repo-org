@@ -28,6 +28,7 @@ import {
 } from "drizzle-orm/sqlite-core";
 import { offerVersions, subjects, subscriptions } from "./commerce.ts";
 import { connections } from "./connections.ts";
+import { manualAccesses } from "./manual.ts";
 import { resources } from "./resources.ts";
 import { literalList } from "./sql.ts";
 import { workspaces } from "./workspaces.ts";
@@ -50,8 +51,18 @@ export const entitlements = sqliteTable(
     sourceType: text("source_type", { enum: ENTITLEMENT_SOURCE_TYPES })
       .$type<EntitlementSourceType>()
       .notNull(),
-    // v1: the subscription the entitlement derives from.
+    // The subscription or manual access the entitlement derives from, by `source_type`.
     sourceId: text("source_id").notNull(),
+    // `source_id` again, under the name of its source's table, so a foreign key per source type
+    // can check it (decision 0016). Generated, so no writer sets them and they cannot disagree.
+    subscriptionId: text("subscription_id").generatedAlwaysAs(
+      sql`CASE WHEN source_type = 'subscription' THEN source_id END`,
+      { mode: "virtual" },
+    ),
+    manualAccessId: text("manual_access_id").generatedAlwaysAs(
+      sql`CASE WHEN source_type = 'manual' THEN source_id END`,
+      { mode: "virtual" },
+    ),
     offerId: text("offer_id").notNull(),
     offerVersion: integer("offer_version").notNull(),
     policyVersion: integer("policy_version").notNull(),
@@ -84,8 +95,13 @@ export const entitlements = sqliteTable(
     }).onDelete("restrict"),
     foreignKey({
       name: "entitlements_subscription_fk",
-      columns: [t.workspaceId, t.sourceId],
+      columns: [t.workspaceId, t.subscriptionId],
       foreignColumns: [subscriptions.workspaceId, subscriptions.id],
+    }).onDelete("restrict"),
+    foreignKey({
+      name: "entitlements_manual_access_fk",
+      columns: [t.workspaceId, t.manualAccessId],
+      foreignColumns: [manualAccesses.workspaceId, manualAccesses.id],
     }).onDelete("restrict"),
     foreignKey({
       name: "entitlements_offer_version_fk",

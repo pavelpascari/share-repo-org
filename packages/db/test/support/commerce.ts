@@ -3,6 +3,7 @@ import {
   type Customer,
   createOffer,
   type Entitlement,
+  type NewEntitlement,
   type NewOffer,
   type NewOutboxRow,
   type OfferAccess,
@@ -178,8 +179,8 @@ export function entitlementRow(
     subscriptionId: string;
     offerId: string;
   },
-  overrides: Partial<Entitlement> = {},
-): Entitlement {
+  overrides: Partial<NewEntitlement> = {},
+): NewEntitlement {
   return {
     id: uniqueId("ent"),
     workspaceId: input.workspaceId,
@@ -199,6 +200,15 @@ export function entitlementRow(
     createdAt: T0,
     updatedAt: T0,
     ...overrides,
+  };
+}
+
+/** A stored entitlement as a read returns it: with its generated source columns (decision 0016). */
+export function asRead(row: NewEntitlement): Entitlement {
+  return {
+    ...row,
+    subscriptionId: row.sourceType === "subscription" ? row.sourceId : null,
+    manualAccessId: row.sourceType === "manual" ? row.sourceId : null,
   };
 }
 

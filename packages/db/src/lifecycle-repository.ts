@@ -4,11 +4,13 @@ import type { SQLiteTable } from "drizzle-orm/sqlite-core";
 import { type AuditEvents, auditInserts, conditionalAuditInserts } from "./audit-repository.ts";
 import { runBatch, type Statement } from "./batch.ts";
 import type { Db } from "./client.ts";
+import { manualAccessesDue } from "./manual-access-repository.ts";
 import { type NewOutboxRow, outboxInsert } from "./outbox-repository.ts";
 import * as schema from "./schema/index.ts";
 import {
   customers,
   entitlements,
+  manualAccesses,
   outbox,
   subjects,
   systemState,
@@ -208,7 +210,8 @@ export async function queueWorkspaceRefreshes(
  * Schedules an active workspace's deletion (decision 0015) in one batch: it becomes `deleting`
  * until `deleteAfter`, a refresh is queued for each of its subscriptions (the refresh ends their
  * entitlements, because the workspace is being deleted, and reconciliation then revokes managed
- * access), and the audit events are written. Nothing is written unless the workspace was active.
+ * access), its open manual accesses become due for evaluation (which withdraws theirs, decision
+ * 0016), and the audit events are written. Nothing is written unless the workspace was active.
  */
 export async function scheduleWorkspaceDeletion(
   db: Db,
@@ -229,6 +232,7 @@ export async function scheduleWorkspaceDeletion(
       .where(sql`id = ${workspaceId} AND status = 'active'`),
     ...inserts,
     refreshAllInsert(db, { workspaceId, sources: ["paddle", "simulated"], now, when: written }),
+    manualAccessesDue(db, { workspaceId, now, when: written }),
   ]);
   return { ok: changed === 1 };
 }
@@ -244,7 +248,8 @@ export const purgeBlockedKey = (workspaceId: string) => `purge_blocked:${workspa
 
 /**
  * Cancels a workspace's deletion in one batch: it becomes `active` again, a refresh is queued for
- * each subscription from `sources` (those whose source can be read now), any recorded purge
+ * each subscription from `sources` (those whose source can be read now), its open manual
+ * accesses become due for evaluation (which grants their access again), any recorded purge
  * block is removed, and the audit events are written. Nothing is written unless it was
  * `deleting`.
  */
@@ -262,6 +267,7 @@ export async function cancelWorkspaceDeletion(
       .where(sql`id = ${workspaceId} AND status = 'deleting'`),
     ...inserts,
     refreshAllInsert(db, { workspaceId, sources: input.sources, now, when: written }),
+    manualAccessesDue(db, { workspaceId, now, when: written }),
     db.delete(systemState).where(sql`key = ${purgeBlockedKey(workspaceId)} AND ${written}`),
   ]);
   return { ok: changed === 1 };
@@ -384,6 +390,7 @@ export const PURGE_ORDER: readonly string[] = [
   "provider_mutations",
   "grants",
   "entitlements",
+  "manual_accesses",
   "claim_tokens",
   "checkout_claims",
   "claim_requests",
@@ -586,6 +593,12 @@ export interface SubjectAccess {
     readonly source: string;
     readonly externalSubscriptionId: string;
   }[];
+  /** The subjects' open (not revoked) manual accesses (decision 0016). */
+  readonly manualAccesses: readonly {
+    readonly id: string;
+    readonly offerId: string;
+    readonly subjectId: string;
+  }[];
 }
 
 export async function readSubjectAccess(
@@ -607,6 +620,10 @@ export async function readSubjectAccess(
       WHERE workspace_id = ${workspaceId} AND customer_id IN ${jsonList(customers.map((c) => c.id))}
       ORDER BY id`,
   );
+  const manualAccesses = await db.all<{ id: string; offer_id: string; subject_id: string }>(
+    sql`SELECT id, offer_id, subject_id FROM manual_accesses WHERE workspace_id = ${workspaceId}
+      AND subject_id IN ${subjects} AND revoked_at IS NULL ORDER BY id`,
+  );
   return {
     customers: customers.map((c) => ({ id: c.id, subjectId: c.subject_id })),
     liveEntitlements: liveEntitlements.map((e) => ({ id: e.id, resourceId: e.resource_id })),
@@ -614,15 +631,21 @@ export async function readSubjectAccess(
       source: s.source,
       externalSubscriptionId: s.external_subscription_id,
     })),
+    manualAccesses: manualAccesses.map((m) => ({
+      id: m.id,
+      offerId: m.offer_id,
+      subjectId: m.subject_id,
+    })),
   };
 }
 
 /**
  * Unlinks one workspace's subjects from a deleted account's identity in one batch (decision
- * 0015): their customers are unlinked, their live entitlements end `revoked` with reason
- * `account_deleted`, the subjects keep their GitHub record but name no user, and the work that
- * follows (refreshes of the customers' subscriptions, reconciles of the repositories) is queued
- * with the audit events.
+ * 0015): their customers are unlinked, their open manual accesses are revoked (cause
+ * `account_deleted`, decision 0016) so no later evaluation grants them again, their live
+ * entitlements end `revoked` with reason `account_deleted`, the subjects keep their GitHub record
+ * but name no user, and the work that follows (refreshes of the customers' subscriptions,
+ * reconciles of the repositories) is queued with the audit events.
  */
 export async function unlinkSubjectsFromIdentity(
   db: Db,
@@ -645,6 +668,18 @@ export async function unlinkSubjectsFromIdentity(
       .update(customers)
       .set({ subjectId: null, updatedAt: sql`max(updated_at, ${now})` })
       .where(sql`workspace_id = ${workspaceId} AND subject_id IN ${subjectIds}`),
+    db
+      .update(manualAccesses)
+      .set({
+        revokedAt: sql`max(created_at, ${now})`,
+        revokeCause: "account_deleted",
+        nextEvaluationAt: null,
+        version: sql`version + 1`,
+        updatedAt: sql`max(updated_at, ${now})`,
+      })
+      .where(
+        sql`workspace_id = ${workspaceId} AND subject_id IN ${subjectIds} AND revoked_at IS NULL`,
+      ),
     db
       .update(entitlements)
       .set({

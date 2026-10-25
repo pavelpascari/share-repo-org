@@ -57,7 +57,22 @@ async function snapshot(db: D1Database): Promise<Map<string, Row[]>> {
   return result;
 }
 
-/** The value SQLite gives an existing row for a column added later: its default, or null. */
+/**
+ * Generated columns added by a later migration, with the value each must take for an existing
+ * row (`PRAGMA table_info` does not list them; `SELECT *` returns them). 0011: an entitlement's
+ * source ID under the name of its source's table (decision 0016).
+ */
+const GENERATED: Record<string, Record<string, (row: Row) => unknown>> = {
+  entitlements: {
+    subscription_id: (row) => (row.source_type === "subscription" ? row.source_id : null),
+    manual_access_id: (row) => (row.source_type === "manual" ? row.source_id : null),
+  },
+};
+
+/**
+ * The value SQLite gives an existing row for a column added later: its default, or null; for a
+ * generated column, the value {@link GENERATED} names.
+ */
 async function addedColumnValues(db: D1Database, table: string, existing: Row) {
   const values: Row = {};
   for (const column of await columnsOf(db, table)) {
@@ -66,6 +81,15 @@ async function addedColumnValues(db: D1Database, table: string, existing: Row) {
       column.dflt_value === null
         ? null
         : (await db.prepare(`SELECT ${column.dflt_value} AS v`).first<{ v: unknown }>())?.v;
+  }
+  const generated = (
+    await db.prepare(`PRAGMA table_xinfo("${table}")`).all<{ name: string; hidden: number }>()
+  ).results.filter((column) => column.hidden === 2 || column.hidden === 3);
+  for (const { name } of generated) {
+    if (name in existing) continue;
+    const value = GENERATED[table]?.[name];
+    if (value === undefined) throw new Error(`no expectation for generated ${table}.${name}`);
+    values[name] = value(existing);
   }
   return values;
 }
@@ -114,6 +138,18 @@ const SPOT_CHECKS: { since: string; table: string; where: string; expected: Row 
     where: "id = 'pc2'",
     expected: { status: "disconnected", api_key_envelope: null },
   },
+  {
+    since: "0004",
+    table: "entitlements",
+    where: "id = 'en1'",
+    expected: { source_id: "sub1", subscription_id: "sub1", manual_access_id: null },
+  },
+  {
+    since: "0011",
+    table: "entitlements",
+    where: "id = 'en4'",
+    expected: { source_type: "manual", subscription_id: null, manual_access_id: "ma1" },
+  },
 ];
 
 describe("migration/upgrade-from-each-release-keeps-data", () => {
@@ -153,10 +189,11 @@ describe("migration/upgrade-from-each-release-keeps-data", () => {
 
       const after = await snapshot(db);
       for (const [table, rows] of before) {
-        const [first] = rows;
-        if (first === undefined) continue;
-        const added = await addedColumnValues(db, table, first);
-        expect(after.get(table), table).toEqual(rows.map((row) => ({ ...row, ...added })));
+        const expected: Row[] = [];
+        for (const row of rows) {
+          expected.push({ ...row, ...(await addedColumnValues(db, table, row)) });
+        }
+        expect(after.get(table), table).toEqual(expected);
       }
 
       for (const check of SPOT_CHECKS.filter((spot) => spot.since <= at)) {

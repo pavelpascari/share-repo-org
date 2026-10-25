@@ -6,6 +6,9 @@ import type { Grant } from "./grant-repository.ts";
 import { entitlements, grants, resources, subjects, subscriptions } from "./schema/index.ts";
 import type { Entitlement } from "./subscription-repository.ts";
 
+/** Where an entitlement in the access view comes from. */
+export type AccessSource = CommercialSource | "manual";
+
 /** A subscriber and repository the access view has a row for, with their display names. */
 export interface AccessPair {
   subjectId: string;
@@ -28,9 +31,10 @@ export interface AccessState {
   pairs: AccessPair[];
   /**
    * Live entitlements and those that ended at or after `endedSince`: live first, newest first.
-   * Each with its subscription's source, which the view names (an expiry waits for Paddle).
+   * Each with its source, which the view names (an expiry waits for Paddle): its subscription's
+   * commercial source, or `manual` for an owner's manual access (decision 0016).
    */
-  entitlements: (Entitlement & { source: CommercialSource })[];
+  entitlements: (Entitlement & { source: AccessSource })[];
   /** All grants, oldest first. */
   grants: Grant[];
 }
@@ -82,14 +86,18 @@ export async function readAccessState(
       sql`${sql.identifier("resource_id")}`,
     ),
     db
-      .select({ ...getTableColumns(entitlements), source: subscriptions.source })
+      .select({
+        ...getTableColumns(entitlements),
+        source: sql<AccessSource>`coalesce(${subscriptions.source}, 'manual')`,
+      })
       .from(entitlements)
-      // An entitlement's source is a subscription of its own workspace (composite foreign key).
-      .innerJoin(
+      // A subscription source is one of its own workspace (composite foreign key); a manual
+      // access has none.
+      .leftJoin(
         subscriptions,
         and(
           eq(subscriptions.workspaceId, entitlements.workspaceId),
-          eq(subscriptions.id, entitlements.sourceId),
+          eq(subscriptions.id, entitlements.subscriptionId),
         ),
       )
       .where(and(eq(entitlements.workspaceId, workspaceId), visible))

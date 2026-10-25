@@ -22,7 +22,7 @@ import {
   resetGrantRetry,
 } from "../src/index.ts";
 import { auditCount, workspaceEvent } from "./support/audit.ts";
-import { outboxRow, seedSubject } from "./support/commerce.ts";
+import { asRead, outboxRow, seedSubject } from "./support/commerce.ts";
 import { count, db } from "./support/connections.ts";
 import {
   grantRow,
@@ -234,7 +234,9 @@ describe("reconcile reads", () => {
 
   it("lists the resource's live entitlements only, scoped to the workspace", async () => {
     const ws = await leasedWorkspace();
-    await expect(listLiveEntitlementsForResource(db, ws.lease)).resolves.toEqual([ws.entitlement]);
+    await expect(listLiveEntitlementsForResource(db, ws.lease)).resolves.toEqual([
+      asRead(ws.entitlement),
+    ]);
     const other = await leasedWorkspace();
     await expect(
       listLiveEntitlementsForResource(db, {
