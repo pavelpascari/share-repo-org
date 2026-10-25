@@ -1,7 +1,6 @@
 import * as repo from "@sharerepo/db";
 import {
   type AccessLevel,
-  type CommercialSource,
   type EntitlementState,
   type GrantState,
   INVITATION_WINDOW_MS,
@@ -30,9 +29,15 @@ export interface AccessEntitlement {
   readonly id: string;
   readonly state: EntitlementState;
   readonly accessLevel: AccessLevel;
-  readonly subscriptionId: string;
-  /** Where the subscription comes from: Paddle, or the simulator outside production. */
-  readonly source: CommercialSource;
+  /** The subscription it derives from, or null for a manual access. */
+  readonly subscriptionId: string | null;
+  /** The owner's manual access it derives from (decision 0016), or null for a subscription. */
+  readonly manualAccessId: string | null;
+  /**
+   * Where it comes from: Paddle or the simulator (outside production), through a subscription; or
+   * `manual`, an owner's manual access.
+   */
+  readonly source: repo.AccessSource;
   readonly offerId: string;
   readonly offerName: string;
   readonly offerVersion: number;
@@ -187,7 +192,8 @@ export async function accessViewOf(
       id: entitlement.id,
       state: entitlement.state,
       accessLevel: entitlement.accessLevel,
-      subscriptionId: entitlement.sourceId,
+      subscriptionId: entitlement.subscriptionId,
+      manualAccessId: entitlement.manualAccessId,
       source: entitlement.source,
       offerId: entitlement.offerId,
       offerName: offerNames.get(entitlement.offerId) as string,

@@ -18,6 +18,7 @@ export {
   listCustomers,
   type ManualLinkError,
   type ManualLinkResult,
+  type ManualUnlinkResult,
   myAccess,
   type RequestClaimResult,
   requestClaim,
@@ -25,6 +26,7 @@ export {
   type StartCheckoutResult,
   sendClaimEmail,
   startCheckout,
+  unlinkCustomerManually,
   type ViewClaimResult,
   viewClaim,
 } from "./claims.ts";
@@ -103,6 +105,7 @@ export {
   startGitHubConnection,
   type WebhookIngestResult,
 } from "./github.ts";
+export { type GitHubAccountError, resolveGitHubAccount } from "./github-accounts.ts";
 export {
   createUserForSignIn,
   type ProviderProfile,
@@ -133,6 +136,21 @@ export {
   type WorkspaceExport,
   type WorkspaceSettings,
 } from "./lifecycle.ts";
+export {
+  evaluateDueManualAccesses,
+  evaluateManualAccess,
+  type GrantManualAccessError,
+  type GrantManualAccessResult,
+  grantManualAccess,
+  listManualAccess,
+  type ManualAccessRef,
+  type ManualAccessSummary,
+  type ManualAccessView,
+  type ManualSweepSummary,
+  revokeManualAccess,
+  type UpdateManualAccessResult,
+  updateManualAccessEnd,
+} from "./manual-access.ts";
 export {
   archiveOffer,
   createOffer,

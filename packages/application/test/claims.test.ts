@@ -34,6 +34,7 @@ import {
   sendClaimEmail,
   startCheckout,
   type UserActor,
+  unlinkCustomerManually,
   viewClaim,
 } from "../src/index.ts";
 import { entitlementsOf, githubUser, live, memberOf, shop } from "./support/commerce.ts";
@@ -1578,6 +1579,8 @@ describe("listCustomers and myAccess", () => {
             subjectId: linked?.subjectId,
             login: user.profile.username,
             externalSubjectId: user.profile.externalUserId,
+            // Linked by its checkout reference (path 1), as its audit trail says.
+            via: "checkout",
           },
           subscriptions: [
             expect.objectContaining({ externalSubscriptionId: subscription.id, state: "active" }),
@@ -1656,5 +1659,92 @@ describe("isolation/cross-workspace-mutation-denied (claims)", () => {
       workspaceSlug: a.slug,
     });
     expect(await listCustomersWithLinks(db, { workspaceId: b.workspaceId })).toEqual([]);
+  });
+});
+
+// Decision 0016: whichever path made a link (a creator's checkout reference included, threat
+// T12), the owner sees how it was made and can remove it; the payer can claim by email.
+describe("claim/owner-unlink-removes-access", () => {
+  it("claim/owner-unlink-removes-access: the owner removes a checkout link; its reference never links the customer again", async () => {
+    const s = await paddleShop();
+    const user = await signedUp();
+    const { customer, subscription } = await purchase(s, user);
+    await drainPaddle(s);
+    expect(await liveFor(s.workspaceId, user.profile.externalUserId)).toHaveLength(1);
+    const linked = (await customerRow(s, customer.id)) as { id: string; subjectId: string };
+    const ctx = serviceContext();
+    await expect(
+      unlinkCustomerManually(ctx, s, s.slug, { customerId: linked.id, reason: " not this buyer " }),
+    ).resolves.toEqual({ ok: true, outcome: "unlinked" });
+    await drainPaddle(s);
+    expect(await liveFor(s.workspaceId, user.profile.externalUserId)).toEqual([]);
+    expect(await auditOf(s.workspaceId, "customer.unlinked_manually")).toEqual([
+      {
+        actor_type: "user",
+        actor_id: s.userId,
+        target_id: linked.id,
+        reason: "not this buyer",
+        details: { previousSubjectId: linked.subjectId },
+      },
+    ]);
+    // A later event re-reads the subscription, which still carries the reference: nothing links.
+    const claims = (await auditOf(s.workspaceId, "claim.completed")).length;
+    await deliverSubscription(s, "subscription.updated", subscription.id);
+    await drainPaddle(s);
+    expect(await customerRow(s, customer.id)).toMatchObject({ subjectId: null });
+    expect(await auditOf(s.workspaceId, "claim.completed")).toHaveLength(claims);
+    expect(await auditOf(s.workspaceId, "claim.rejected")).toEqual([]);
+    const [summary] = (await listCustomers(serviceContext(), s, s.slug)).filter(
+      (c) => c.id === linked.id,
+    );
+    expect(summary?.linked).toBeNull();
+    // Unlinking again is a no-op.
+    await expect(
+      unlinkCustomerManually(serviceContext(), s, s.slug, { customerId: linked.id, reason: "r" }),
+    ).resolves.toEqual({ ok: true, outcome: "already_unlinked" });
+  });
+
+  it("requires a reason and the owner role, within the workspace", async () => {
+    const s = await paddleShop();
+    const other = await paddleShop();
+    const user = await signedUp();
+    const { customer } = await purchase(other, user);
+    const theirs = (await customerRow(other, customer.id)) as { id: string };
+    await expect(
+      unlinkCustomerManually(serviceContext(), s, s.slug, { customerId: theirs.id, reason: " " }),
+    ).resolves.toEqual({ ok: false, error: "reason_required" });
+    await expect(
+      unlinkCustomerManually(serviceContext(), s, s.slug, {
+        customerId: theirs.id,
+        reason: "x".repeat(501),
+      }),
+    ).resolves.toEqual({ ok: false, error: "reason_required" });
+    // isolation/cross-workspace-mutation-denied: another workspace's customer is not found.
+    await expect(
+      unlinkCustomerManually(serviceContext(), s, s.slug, { customerId: theirs.id, reason: "r" }),
+    ).rejects.toBeInstanceOf(NotFoundError);
+    const member = await memberOf(other);
+    await expect(
+      unlinkCustomerManually(serviceContext(), member, other.slug, {
+        customerId: theirs.id,
+        reason: "r",
+      }),
+    ).rejects.toBeInstanceOf(ForbiddenError);
+  });
+
+  it("is a conflict when the link changed while it was being removed", async () => {
+    const s = await paddleShop();
+    const user = await signedUp();
+    const { customer } = await purchase(s, user);
+    const linked = (await customerRow(s, customer.id)) as { id: string };
+    const racing = beforeFirstBatch(() =>
+      env.DB.prepare("UPDATE customers SET subject_id = NULL WHERE id = ?").bind(linked.id).run(),
+    );
+    await expect(
+      unlinkCustomerManually(racing, s, s.slug, {
+        customerId: linked.id,
+        reason: "r",
+      }),
+    ).rejects.toBeInstanceOf(ConflictError);
   });
 });

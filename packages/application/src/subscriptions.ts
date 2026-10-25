@@ -517,10 +517,13 @@ export function refreshOutboxRow(ctx: ServiceContext, ref: SubscriptionRef): rep
  * Queues a `refresh_subscription` for every subscription an offer change affects: those carrying
  * the offer's items and those with a live entitlement from it. One query finds them and the rows
  * are inserted in bounded batches, so a large fan-out costs a few D1 calls. Duplicates are
- * harmless because a refresh is idempotent. Returns how many it queued.
+ * harmless because a refresh is idempotent. The offer's open manual accesses become due for
+ * evaluation too (decision 0016), so they follow its new version within a sweep tick. Returns how
+ * many refreshes it queued.
  */
 export async function recomputeOffer(context: ServiceContext, ref: OfferRef): Promise<number> {
   const ctx = atOneInstant(context);
+  await repo.markManualAccessesDue(ctx.db, { ...ref, now: ctx.clock.now() });
   const subscriptions = await repo.listSubscriptionsForOffer(ctx.db, ref);
   const rows = subscriptions.map((subscription) =>
     refreshOutboxRow(ctx, {
