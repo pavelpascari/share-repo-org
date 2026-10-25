@@ -24,6 +24,8 @@ export interface GitHubAppOptions {
   readonly apiBaseUrl: string;
   readonly fetch: typeof fetch;
   readonly clock: Clock;
+  /** Overrides {@link REQUEST_TIMEOUT_MS}; tests use a short one. */
+  readonly requestTimeoutMs?: number;
   /** Needed only for `installUrl`. */
   readonly install?: { readonly slug: string; readonly webBaseUrl: string };
 }
@@ -169,7 +171,7 @@ export function createGitHubApp(options: GitHubAppOptions): GitHubAppClient {
         {
           method,
           headers,
-          signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+          signal: AbortSignal.timeout(options.requestTimeoutMs ?? REQUEST_TIMEOUT_MS),
           ...(body === undefined ? {} : { body: JSON.stringify(body) }),
         },
       );
@@ -453,7 +455,28 @@ function parse<T>(operation: string, schema: z.ZodType<T>, body: unknown): T {
   return result.data;
 }
 
+/**
+ * A successful response's JSON body, or undefined when it is not JSON (the caller's schema then
+ * calls it malformed). A body that cannot be read — the connection dropped, or the request's
+ * timeout aborted it while the body was still arriving — is `transient`, like a request that
+ * never got its headers: the call may succeed if retried.
+ */
 async function json(response: Response): Promise<unknown> {
+  let text: string;
+  try {
+    text = await response.text();
+  } catch {
+    throw new GitHubApiError("transient", "GitHub response body could not be read");
+  }
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    return undefined;
+  }
+}
+
+/** An error response's JSON body, or undefined: its status classifies it either way. */
+async function errorJson(response: Response): Promise<unknown> {
   try {
     return await response.json();
   } catch {
@@ -491,7 +514,7 @@ async function classify(
   const { status } = response;
   const message = `GitHub ${operation} failed with status ${status}`;
   const details = { status };
-  const parsed = errorBody.safeParse(await json(response));
+  const parsed = errorBody.safeParse(await errorJson(response));
   const body = parsed.success ? parsed.data : {};
 
   const retryAfter = retryAfterMs(response.headers, clock);

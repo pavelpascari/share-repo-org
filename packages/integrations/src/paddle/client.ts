@@ -38,6 +38,8 @@ export interface PaddleClientOptions {
   readonly fetch: typeof fetch;
   /** Reads an HTTP-date `Retry-After`. */
   readonly clock: Clock;
+  /** Overrides {@link PADDLE_REQUEST_TIMEOUT_MS}; tests use a short one. */
+  readonly requestTimeoutMs?: number;
 }
 
 /** How long one Paddle request may take before it is aborted and classified `transient`. */
@@ -80,7 +82,7 @@ export function createPaddleClient(options: PaddleClientOptions): PaddlePort {
         {
           method,
           headers,
-          signal: AbortSignal.timeout(PADDLE_REQUEST_TIMEOUT_MS),
+          signal: AbortSignal.timeout(options.requestTimeoutMs ?? PADDLE_REQUEST_TIMEOUT_MS),
           ...(body === undefined ? {} : { body: JSON.stringify(body) }),
         },
       );
@@ -254,7 +256,28 @@ function parse<T extends z.ZodType>(operation: string, schema: T, body: unknown)
   return result.data;
 }
 
+/**
+ * A successful response's JSON body, or undefined when it is not JSON (the caller's schema then
+ * calls it malformed). A body that cannot be read — the connection dropped, or the request's
+ * timeout aborted it while the body was still arriving — is `transient`, like a request that
+ * never got its headers: the call may succeed if retried.
+ */
 async function json(response: Response): Promise<unknown> {
+  let text: string;
+  try {
+    text = await response.text();
+  } catch {
+    throw new PaddleApiError("transient", "Paddle response body could not be read");
+  }
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    return undefined;
+  }
+}
+
+/** An error response's JSON body, or undefined: its status classifies it either way. */
+async function errorJson(response: Response): Promise<unknown> {
   try {
     return await response.json();
   } catch {
@@ -276,7 +299,7 @@ export function nextPage(next: string | null, apiBaseUrl: string): string {
 async function classify(operation: string, response: Response, clock: Clock) {
   const { status } = response;
   const message = `Paddle ${operation} failed with status ${status}`;
-  const parsed = errorSchema.safeParse(await json(response));
+  const parsed = errorSchema.safeParse(await errorJson(response));
   const details = parsed.success ? { status, paddleCode: parsed.data.error.code } : { status };
   if (status === 401 || status === 403) return new PaddleApiError("unauthorized", message, details);
   if (status === 404) return new PaddleApiError("not_found", message, details);

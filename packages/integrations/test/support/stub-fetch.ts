@@ -51,3 +51,33 @@ export function tokenRoute(installationId: string, expiresAt = "2099-01-01T00:00
     jsonResponse(201, { token: `ghs_token_${installationId}`, expires_at: expiresAt }),
   );
 }
+
+/**
+ * A `fetch` that hangs as a stalled server would, until the request's own signal aborts it:
+ * at `headers`, no response ever arrives; at `body`, the 200 headers and the first bytes arrive,
+ * then the body stalls. Like the real `fetch`, aborting the signal rejects the pending promise,
+ * or errors the body stream, with the signal's reason. A request without a signal hangs for ever,
+ * which is the bug this exists to catch.
+ */
+export function hangingFetch(stage: "headers" | "body") {
+  const signals: AbortSignal[] = [];
+  const fetch = ((_input: RequestInfo | URL, init?: RequestInit) => {
+    const signal = init?.signal ?? undefined;
+    if (signal) signals.push(signal);
+    if (stage === "headers") {
+      return new Promise<Response>((_resolve, reject) => {
+        signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+      });
+    }
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('{"data":'));
+        signal?.addEventListener("abort", () => controller.error(signal.reason), { once: true });
+      },
+    });
+    return Promise.resolve(
+      new Response(body, { status: 200, headers: { "content-type": "application/json" } }),
+    );
+  }) as typeof globalThis.fetch;
+  return { fetch, signals };
+}
