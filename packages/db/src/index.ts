@@ -162,6 +162,7 @@ export {
   enqueueOutboxOnce,
   enqueueOutboxRows,
   markOutboxSent,
+  markQueuedJobSent,
   type NewOutboxRow,
   type OutboxRow,
   outboxInsert,

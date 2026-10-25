@@ -10,6 +10,7 @@ import {
   listExternalEventsByState,
   markExternalEvent,
   markOutboxSent,
+  markQueuedJobSent,
   type NewExternalEvent,
   type NewOutboxRow,
   outboxInsert,
@@ -228,6 +229,30 @@ describe("deferOutboxRow", () => {
       ).toBe(false);
       expect(await availableAt(row.id)).toBe(at);
     }
+  });
+});
+
+describe("markQueuedJobSent", () => {
+  const sentAt = async (id: string) =>
+    (
+      await env.DB.prepare("SELECT sent_at AS at FROM outbox WHERE id = ?")
+        .bind(id)
+        .first<{ at: number | null }>()
+    )?.at;
+
+  it("queue/outbox-ack-matches-kind-and-subject: marks only the row whose kind and subject match", async () => {
+    const at = T0 + 7_000_000;
+    const row = work(uniqueId("ack"), { availableAt: at });
+    await enqueueOutbox(db, row);
+    const key = { id: row.id, kind: row.kind, subjectId: row.subjectId, now: at };
+    expect(await markQueuedJobSent(db, { ...key, subjectId: "other" })).toBe(false);
+    expect(await markQueuedJobSent(db, { ...key, kind: "recompute_offer" })).toBe(false);
+    expect(await sentAt(row.id)).toBeNull();
+    expect(await markQueuedJobSent(db, key)).toBe(true);
+    expect(await sentAt(row.id)).toBe(at);
+    // A replay marks nothing again and keeps the first delivery's instant.
+    expect(await markQueuedJobSent(db, { ...key, now: at + 1 })).toBe(false);
+    expect(await sentAt(row.id)).toBe(at);
   });
 });
 
