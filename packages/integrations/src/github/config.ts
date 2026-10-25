@@ -1,4 +1,4 @@
-import { ConfigurationError, parseEnv } from "@sharerepo/platform";
+import { ConfigurationError, optionalSecretText, parseEnv, secretText } from "@sharerepo/platform";
 import { z } from "zod";
 
 export const GITHUB_API_BASE_URL = "https://api.github.com";
@@ -43,15 +43,18 @@ const baseSchema = z
   });
 
 const present = z.string().min(1);
+/** A secret must have a visible character: whitespace only fails closed. */
+const secret = secretText();
 
 function requiredSchema(options: GitHubAppConfigOptions) {
   return z.object({
     GITHUB_APP_ID: z.string().regex(/^[1-9]\d{0,15}$/),
-    GITHUB_APP_PRIVATE_KEY: present,
+    GITHUB_APP_PRIVATE_KEY: secret,
     GITHUB_APP_SLUG: options.requireSlug ? present : present.optional(),
-    GITHUB_WEBHOOK_SECRET: options.requireWebhookSecret ? present : present.optional(),
-    // Optional everywhere; an empty value counts as unset.
-    GITHUB_WEBHOOK_SECRET_PREVIOUS: z.string().optional(),
+    GITHUB_WEBHOOK_SECRET: options.requireWebhookSecret ? secret : secret.optional(),
+    // Optional everywhere; an empty value counts as unset, and a value of only whitespace fails
+    // closed (a paste mistake must not become an accepted signing secret).
+    GITHUB_WEBHOOK_SECRET_PREVIOUS: optionalSecretText(),
   });
 }
 
