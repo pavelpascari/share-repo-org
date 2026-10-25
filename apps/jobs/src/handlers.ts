@@ -2,6 +2,7 @@ import {
   type CommerceDeps,
   checkSweepHealth,
   type EntitlementSourcePort,
+  evaluateDueManualAccesses,
   PaddleUnavailableError,
   queueCredentialRewrap,
   queueDailyResyncs,
@@ -99,6 +100,8 @@ export const QUEUE_MAX_RETRIES = 5;
 export const DUE_EVALUATION_BATCH = 100;
 /** Repositories due for reconciliation, queued per minute (phase-4 plan § Reconciliation job). */
 export const DUE_RECONCILE_BATCH = 100;
+/** Manual accesses evaluated per minute, in the tick (decision 0016). */
+export const DUE_MANUAL_ACCESS_BATCH = 100;
 /**
  * Due repositories queued per minute for one GitHub installation (phase-6 plan § Partitioning),
  * so one large installation cannot starve the others or spend its rate limit in one minute.
@@ -326,6 +329,26 @@ export function createJobsWorker(deps: JobsWorkerDeps) {
   }
 
   /**
+   * Manual access timers (decision 0016): evaluates the manual accesses whose end date passed or
+   * that an offer change or a deletion made due, in the tick itself (the work is local), before
+   * the drain runs the reconciles they request. Accesses that fail stay due; a failing sweep is
+   * logged by its classification only and stops nothing else.
+   */
+  async function sweepDueManualAccesses(db: Db, logger: Logger): Promise<number | null> {
+    try {
+      const { evaluated, failed } = await evaluateDueManualAccesses(services(db), {
+        limit: DUE_MANUAL_ACCESS_BATCH,
+      });
+      if (failed > 0) logger.warn("manual access evaluations failed", { failed });
+      logger.info("due manual accesses evaluated", { evaluated });
+      return evaluated;
+    } catch (error) {
+      logger.error("manual access sweep failed", classify(error));
+      return null;
+    }
+  }
+
+  /**
    * Scheduled reconciliation: queues a `reconcile_resource` for every repository that is due (or
    * has live access and nothing scheduled), for the drain that follows in the same tick, at most
    * {@link DUE_RECONCILES_PER_INSTALLATION} per GitHub installation and none of a rate-limited
@@ -358,6 +381,7 @@ export function createJobsWorker(deps: JobsWorkerDeps) {
     logger: Logger,
     claimed: {
       evaluations: number | null;
+      manualAccesses: number | null;
       reconciles: number | null;
       outbox: { claimed: number; sent: number } | null;
     },
@@ -372,6 +396,7 @@ export function createJobsWorker(deps: JobsWorkerDeps) {
       };
       logger.info("sweep.heartbeat", {
         evaluationsQueued: claimed.evaluations,
+        manualAccessesEvaluated: claimed.manualAccesses,
         reconcilesQueued: claimed.reconciles,
         outboxClaimed: claimed.outbox?.claimed ?? null,
         outboxSent: claimed.outbox?.sent ?? null,
@@ -530,13 +555,14 @@ export function createJobsWorker(deps: JobsWorkerDeps) {
         return;
       }
       const evaluations = await sweepDueEvaluations(db, logger);
+      const manualAccesses = await sweepDueManualAccesses(db, logger);
       const reconciles = await sweepDueReconciles(db, logger);
       let outbox: { claimed: number; sent: number } | null = null;
       try {
         outbox = await drainOutbox(db, jobDeps(config, config.github), logger);
       } finally {
         // Even when the drain failed: the heartbeat then shows nothing drained.
-        await reportSweepHealth(db, logger, { evaluations, reconciles, outbox });
+        await reportSweepHealth(db, logger, { evaluations, manualAccesses, reconciles, outbox });
       }
     },
 
