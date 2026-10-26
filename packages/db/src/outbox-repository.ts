@@ -281,3 +281,28 @@ export async function markOutboxSent(db: Db, ids: readonly string[], now: Instan
     .set({ sentAt: now })
     .where(and(inArray(outbox.id, [...ids]), isNull(outbox.sentAt)));
 }
+
+/**
+ * Marks the row a queue message names delivered, only if the row's kind and subject match the
+ * message (as the dead-letter consumer requires): a message that names one row but carries
+ * another job's kind or subject must not settle that row. Returns whether a row was marked; a
+ * replay of a delivered message marks nothing again.
+ */
+export async function markQueuedJobSent(
+  db: Db,
+  input: { id: string; kind: OutboxKind; subjectId: string; now: Instant },
+): Promise<boolean> {
+  const changed = await db
+    .update(outbox)
+    .set({ sentAt: input.now })
+    .where(
+      and(
+        eq(outbox.id, input.id),
+        eq(outbox.kind, input.kind),
+        eq(outbox.subjectId, input.subjectId),
+        isNull(outbox.sentAt),
+      ),
+    )
+    .returning({ id: outbox.id });
+  return changed.length === 1;
+}

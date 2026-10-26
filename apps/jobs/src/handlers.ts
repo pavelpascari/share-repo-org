@@ -19,6 +19,7 @@ import {
   type Db,
   deferOutboxRow,
   markOutboxSent,
+  markQueuedJobSent,
   type OutboxRow,
   pendingOutboxSince,
 } from "@sharerepo/db";
@@ -609,7 +610,16 @@ export function createJobsWorker(deps: JobsWorkerDeps) {
         const startedAt = deps.clock.now();
         try {
           const outcome = await runJob(ctx, job, jobs);
-          await markOutboxSent(db, [job.outboxId], deps.clock.now());
+          const marked = await markQueuedJobSent(db, {
+            id: job.outboxId,
+            kind: job.kind,
+            subjectId: job.subjectId,
+            now: deps.clock.now(),
+          });
+          // A message whose kind or subject does not match its row (or a replay of a delivered
+          // one) settles nothing: the row stays for the drain, which runs its own job.
+          if (!marked)
+            logger.info("job message matched no open outbox row", { outboxId: job.outboxId });
           logOutcome(logger, outcome, { outboxId: job.outboxId });
           await handOff(env, db, startedAt, logger);
           message.ack();

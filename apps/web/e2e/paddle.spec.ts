@@ -1,17 +1,18 @@
-import type { APIRequestContext, Browser, Page } from "@playwright/test";
+import type { APIRequestContext } from "@playwright/test";
 import { connectedCreator } from "./support/github.ts";
 import { expect, signIn, test } from "./support/journeys.ts";
 import {
-  authorizeOnFakeGitHub,
   buyerEmail,
   buyerPage,
   claimLinkFor,
   connectPaddle,
-  createPaddleOffer,
+  destinations,
   directCheckoutUrl,
   type FakeSeller,
+  failNextPaddleCall,
   fakeSeller,
   payOnFakePaddle,
+  redeliver,
   revokeKey,
   sellerSubscriptions,
   subscriptionControl,
@@ -22,10 +23,17 @@ import {
   registeredAccount,
   repositoryAccess,
 } from "./support/provisioning.ts";
+import {
+  buyThroughShareRepo,
+  directPurchase,
+  expectCustomerSubscription,
+  sellingCreator,
+} from "./support/selling.ts";
 
 // Phase 5 journeys against the fake Paddle (support/fake-paddle.ts): connecting Paddle, buying
 // through ShareRepo's checkout page (decision 0012, path 1), claiming a purchase made through a
-// link shared from Paddle by email (path 2), a cancellation scheduled in Paddle, and a revoked key.
+// link shared from Paddle by email (path 2), a cancellation scheduled in Paddle, a revoked key, and
+// rotating the webhook secret (Phase 6).
 // Paddle's signed webhooks reach the web Worker; the dev server runs no crons, so reconciliation
 // starts from "Check now" (support/provisioning.ts).
 
@@ -33,32 +41,6 @@ import {
 test.describe.configure({ timeout: 120_000 });
 
 const WORKSPACE = "Creator Studio";
-
-/** A creator with GitHub and Paddle connected and an offer selling `course-code`. */
-async function sellingCreator(page: Page, request: APIRequestContext) {
-  const { account, slug } = await connectedCreator(page);
-  const repository = `${account.login}/course-code`;
-  const seller = await fakeSeller(request);
-  await connectPaddle(page, slug, seller);
-  const offerId = await createPaddleOffer(page, slug, repository, seller);
-  return { slug, repository, seller, offerId };
-}
-
-/** A registered GitHub account buys the offer through `/buy/<offerId>`, signing in on the way. */
-async function buyThroughShareRepo(browser: Browser, request: APIRequestContext, offerId: string) {
-  const buyer = await registeredAccount(request);
-  const page = await buyerPage(browser);
-  await page.goto(`/buy/${offerId}`);
-  await page.getByRole("button", { name: "Sign in with GitHub" }).click();
-  await authorizeOnFakeGitHub(page, buyer);
-  // Back on the checkout page after signing in.
-  await expect(page.getByRole("heading", { level: 1, name: "Course access" })).toBeVisible();
-  await expect(page.getByText(`Access goes to the GitHub account @${buyer.login}`)).toBeVisible();
-  await expect(page.getByRole("radiogroup", { name: "Price" })).toContainText("12.00 USD");
-  await page.getByRole("button", { name: "Continue to checkout" }).click();
-  const subscriptionId = await payOnFakePaddle(page, buyerEmail());
-  return { buyer, page, subscriptionId };
-}
 
 test("an owner connects Paddle and the catalog shows its prices", async ({ page, request }) => {
   const { slug } = await connectedCreator(page);
@@ -234,6 +216,47 @@ test("connection/revoked-key-keeps-last-facts: a revoked key shows that Paddle n
   // The catalog stays as last imported.
   await expect(page.getByRole("region", { name: "Catalog" })).toContainText(seller.price.id);
   await expect(page.getByRole("region", { name: "Reconnect" })).toBeVisible();
+});
+
+test("rotation/old-and-new-secret-both-accepted: an owner rotates the Paddle webhook secret without missing an event", async ({
+  page,
+  request,
+  browser,
+}) => {
+  const { slug, seller } = await sellingCreator(page, request);
+  const { subscriptionId, customerId } = await directPurchase(page, request, browser, slug, seller);
+  const active = async () =>
+    (await destinations(request, seller)).filter((destination) => destination.active);
+  const [original] = await active();
+
+  // Deleting the old destination fails once, so the rotation stops halfway: Paddle has the old
+  // and the new destination, each with its own secret.
+  await failNextPaddleCall(request, seller, "deleteNotificationSetting", "transient");
+  await page.goto(`/w/${slug}/billing`);
+  await page.getByRole("button", { name: "Rotate webhook secret" }).click();
+  await expect(page.getByText("Paddle didn't respond. Try again in a moment.")).toBeVisible();
+  await page.goto(`/w/${slug}/billing`);
+  await expect(page.getByText("A rotation is in progress")).toBeVisible();
+  const halfway = await active();
+  expect(halfway).toHaveLength(2);
+  expect(halfway.map((destination) => destination.id)).toContain(original?.id);
+
+  // An event now arrives twice, signed with the old and with the new secret: both are accepted,
+  // and it is processed once.
+  await subscriptionControl(request, subscriptionId, "cancel", {}, { destinations: 2 });
+  await expectCustomerSubscription(page, slug, customerId, `${subscriptionId}: Canceled`);
+
+  // Rotating again finishes: the old destination is deleted and the new secret promoted.
+  await page.goto(`/w/${slug}/billing`);
+  await page.getByRole("button", { name: "Rotate webhook secret" }).click();
+  await expect(page.getByText("The webhook secret is rotated.")).toBeVisible();
+  await expect(page.getByText("A rotation is in progress")).toHaveCount(0);
+  const rotated = await active();
+  expect(rotated).toHaveLength(1);
+  expect(rotated[0]?.id).not.toBe(original?.id);
+  expect(rotated[0]?.destination).toMatch(/\/webhooks\/paddle\/[^/?]+\?v=/);
+  // Events signed with the new secret alone are accepted.
+  expect(await redeliver(request, seller, subscriptionId, "subscription.updated")).toEqual([200]);
 });
 
 async function subscriptionIn(

@@ -59,7 +59,7 @@ async function snapshot(db: D1Database): Promise<Map<string, Row[]>> {
 
 /**
  * Generated columns added by a later migration, with the value each must take for an existing
- * row (`PRAGMA table_info` does not list them; `SELECT *` returns them). 0011: an entitlement's
+ * row (`PRAGMA table_info` does not list them; `SELECT *` returns them). 0012: an entitlement's
  * source ID under the name of its source's table (decision 0016).
  */
 const GENERATED: Record<string, Record<string, (row: Row) => unknown>> = {
@@ -145,10 +145,16 @@ const SPOT_CHECKS: { since: string; table: string; where: string; expected: Row 
     expected: { source_id: "sub1", subscription_id: "sub1", manual_access_id: null },
   },
   {
-    since: "0011",
+    since: "0012",
     table: "entitlements",
     where: "id = 'en4'",
     expected: { source_type: "manual", subscription_id: null, manual_access_id: "ma1" },
+  },
+  {
+    since: "0011",
+    table: "users",
+    where: "id = 'u4'",
+    expected: { deleted_at: 1760097200000 },
   },
 ];
 

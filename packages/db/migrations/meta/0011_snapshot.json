@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "e48f4fe0-43d4-4b80-9d97-27fb692b791d",
+  "id": "e9a3874b-fcb2-4acc-b168-2496a0e54f5d",
   "prevId": "86cb90c8-48cd-4e73-a215-762fe791591b",
   "tables": {
     "audit_events": {
@@ -1578,28 +1578,6 @@
           "notNull": true,
           "autoincrement": false
         },
-        "subscription_id": {
-          "name": "subscription_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false,
-          "generated": {
-            "as": "(CASE WHEN source_type = 'subscription' THEN source_id END)",
-            "type": "virtual"
-          }
-        },
-        "manual_access_id": {
-          "name": "manual_access_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false,
-          "generated": {
-            "as": "(CASE WHEN source_type = 'manual' THEN source_id END)",
-            "type": "virtual"
-          }
-        },
         "offer_id": {
           "name": "offer_id",
           "type": "text",
@@ -1760,22 +1738,7 @@
           "tableTo": "subscriptions",
           "columnsFrom": [
             "workspace_id",
-            "subscription_id"
-          ],
-          "columnsTo": [
-            "workspace_id",
-            "id"
-          ],
-          "onDelete": "restrict",
-          "onUpdate": "no action"
-        },
-        "entitlements_manual_access_fk": {
-          "name": "entitlements_manual_access_fk",
-          "tableFrom": "entitlements",
-          "tableTo": "manual_accesses",
-          "columnsFrom": [
-            "workspace_id",
-            "manual_access_id"
+            "source_id"
           ],
           "columnsTo": [
             "workspace_id",
@@ -1811,7 +1774,7 @@
         },
         "entitlements_source_type_valid": {
           "name": "entitlements_source_type_valid",
-          "value": "source_type IN ('subscription', 'manual')"
+          "value": "source_type IN ('subscription')"
         },
         "entitlements_state_valid": {
           "name": "entitlements_state_valid",
@@ -2384,199 +2347,6 @@
         },
         "grants_updated_after_created": {
           "name": "grants_updated_after_created",
-          "value": "updated_at >= created_at"
-        }
-      }
-    },
-    "manual_accesses": {
-      "name": "manual_accesses",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "workspace_id": {
-          "name": "workspace_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "offer_id": {
-          "name": "offer_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "subject_id": {
-          "name": "subject_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "ends_at": {
-          "name": "ends_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "note": {
-          "name": "note",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "revoked_at": {
-          "name": "revoked_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "revoke_cause": {
-          "name": "revoke_cause",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "next_evaluation_at": {
-          "name": "next_evaluation_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "version": {
-          "name": "version",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        }
-      },
-      "indexes": {
-        "manual_accesses_open_unique": {
-          "name": "manual_accesses_open_unique",
-          "columns": [
-            "workspace_id",
-            "offer_id",
-            "subject_id"
-          ],
-          "isUnique": true,
-          "where": "revoked_at IS NULL"
-        },
-        "manual_accesses_next_evaluation_idx": {
-          "name": "manual_accesses_next_evaluation_idx",
-          "columns": [
-            "next_evaluation_at"
-          ],
-          "isUnique": false
-        },
-        "manual_accesses_workspace_id_id_unique": {
-          "name": "manual_accesses_workspace_id_id_unique",
-          "columns": [
-            "workspace_id",
-            "id"
-          ],
-          "isUnique": true
-        }
-      },
-      "foreignKeys": {
-        "manual_accesses_workspace_id_workspaces_id_fk": {
-          "name": "manual_accesses_workspace_id_workspaces_id_fk",
-          "tableFrom": "manual_accesses",
-          "tableTo": "workspaces",
-          "columnsFrom": [
-            "workspace_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "restrict",
-          "onUpdate": "no action"
-        },
-        "manual_accesses_offer_fk": {
-          "name": "manual_accesses_offer_fk",
-          "tableFrom": "manual_accesses",
-          "tableTo": "offers",
-          "columnsFrom": [
-            "workspace_id",
-            "offer_id"
-          ],
-          "columnsTo": [
-            "workspace_id",
-            "id"
-          ],
-          "onDelete": "restrict",
-          "onUpdate": "no action"
-        },
-        "manual_accesses_subject_fk": {
-          "name": "manual_accesses_subject_fk",
-          "tableFrom": "manual_accesses",
-          "tableTo": "subjects",
-          "columnsFrom": [
-            "workspace_id",
-            "subject_id"
-          ],
-          "columnsTo": [
-            "workspace_id",
-            "id"
-          ],
-          "onDelete": "restrict",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "checkConstraints": {
-        "manual_accesses_ends_after_created": {
-          "name": "manual_accesses_ends_after_created",
-          "value": "ends_at IS NULL OR ends_at > created_at"
-        },
-        "manual_accesses_note_bounds": {
-          "name": "manual_accesses_note_bounds",
-          "value": "note IS NULL OR (length(trim(note)) > 0 AND length(note) <= 500)"
-        },
-        "manual_accesses_revoke_cause_valid": {
-          "name": "manual_accesses_revoke_cause_valid",
-          "value": "revoke_cause IS NULL OR revoke_cause IN ('owner', 'account_deleted')"
-        },
-        "manual_accesses_revoked_pair": {
-          "name": "manual_accesses_revoked_pair",
-          "value": "(revoked_at IS NULL) = (revoke_cause IS NULL) AND (revoked_at IS NULL OR revoked_at >= created_at)"
-        },
-        "manual_accesses_revoked_not_scheduled": {
-          "name": "manual_accesses_revoked_not_scheduled",
-          "value": "revoked_at IS NULL OR next_evaluation_at IS NULL"
-        },
-        "manual_accesses_version_positive": {
-          "name": "manual_accesses_version_positive",
-          "value": "version >= 1"
-        },
-        "manual_accesses_updated_after_created": {
-          "name": "manual_accesses_updated_after_created",
           "value": "updated_at >= created_at"
         }
       }
@@ -4732,6 +4502,13 @@
           "type": "integer",
           "primaryKey": false,
           "notNull": true,
+          "autoincrement": false
+        },
+        "deleted_at": {
+          "name": "deleted_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
           "autoincrement": false
         }
       },

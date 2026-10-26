@@ -159,6 +159,15 @@ describe("parseCommerceSecrets", () => {
     ]);
   });
 
+  it.each([" ".repeat(32), "\n".repeat(40), " \t".repeat(20)])(
+    "security/blank-secret-fails-closed: rejects a plain-text signing key of only whitespace (%j)",
+    (raw) => {
+      expect(issuesOf({ ...base, CLAIM_SIGNING_KEY: raw })).toEqual([
+        { path: "CLAIM_SIGNING_KEY", code: "custom" },
+      ]);
+    },
+  );
+
   it("counts the signing key in bytes, not characters", () => {
     // 16 two-byte characters are 32 bytes.
     expect(parseCommerceSecrets({ ...base, CLAIM_SIGNING_KEY: "é".repeat(16) })).not.toBeNull();

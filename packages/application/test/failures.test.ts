@@ -25,6 +25,8 @@ import {
   encodeRefreshKey,
   listAllOpenFailures,
   listOpenFailures,
+  OPERATOR_SESSION_MAX_AGE_MS,
+  operatorSessionIsFresh,
   RECONCILE_FAILING_THRESHOLD,
   reconcileResource,
   recordJobFailure,
@@ -232,6 +234,52 @@ describe("listOpenFailures", () => {
   });
 });
 
+describe("operator/list-views-audited", () => {
+  it("operator/list-views-audited: each read of the /ops lists is an operator read with counts", async () => {
+    const s = await shop();
+    await failedJob(s.workspaceId, "resync_connection", "subject-1");
+    const user = await signedUpUser();
+    const operator = await operatorFor(user);
+    const ctx = serviceContext();
+    const lists = await listAllOpenFailures(ctx, operator);
+    const events = await listAuditEventsByCorrelationId(db, ctx.correlationId);
+    expect(events).toEqual([
+      {
+        id: expect.any(String),
+        scope: "account",
+        workspaceId: null,
+        actor: { type: "operator", id: user.userId },
+        action: "operator.viewed_failures",
+        target: { type: "ops_page", id: "ops" },
+        reason: null,
+        correlationId: ctx.correlationId,
+        occurredAt: expect.any(Number),
+        details: {
+          jobs: lists.jobs.length,
+          repositories: lists.repositories.length,
+          connections: lists.connections.length,
+          purgesBlocked: lists.purgesBlocked.length,
+        },
+      },
+    ]);
+    expect(lists.jobs.length).toBeGreaterThan(0);
+    // Every view is recorded, not only the first.
+    const again = serviceContext();
+    await listAllOpenFailures(again, operator);
+    expect(await listAuditEventsByCorrelationId(db, again.correlationId)).toHaveLength(1);
+  });
+});
+
+describe("operator/mutation-needs-fresh-session", () => {
+  it("operator/mutation-needs-fresh-session: a session is fresh for two hours after sign-in", () => {
+    expect(OPERATOR_SESSION_MAX_AGE_MS).toBe(7_200_000);
+    const signedInAt = 1_760_000_000_000;
+    expect(operatorSessionIsFresh(signedInAt, signedInAt)).toBe(true);
+    expect(operatorSessionIsFresh(signedInAt, signedInAt + 7_200_000)).toBe(true);
+    expect(operatorSessionIsFresh(signedInAt, signedInAt + 7_200_001)).toBe(false);
+  });
+});
+
 describe("affected access", () => {
   async function affectedOf(workspaceId: string | null, kind: OutboxKind, subjectId: string) {
     const id = await failedJob(workspaceId, kind, subjectId);
@@ -381,6 +429,7 @@ describe("operators", () => {
       "oldestDueEvaluationAt",
       "oldestDueOutboxAt",
       "oldestDueReconcileAt",
+      "rateLimitedReconciles",
     ]);
   });
 

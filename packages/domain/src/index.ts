@@ -296,6 +296,8 @@ export {
 export type { SweepLag } from "./sweep.ts";
 export {
   dailyOffsetMs,
+  excusedReconcileDueAt,
+  RATE_LIMIT_EXCUSE_MS,
   SWEEP_LAG_ALERT_INTERVAL_MS,
   SWEEP_LAG_ALERT_MS,
   sweepLag,

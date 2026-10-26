@@ -1,4 +1,5 @@
 import { env } from "cloudflare:workers";
+import { excusedReconcileDueAt, sweepLag } from "@sharerepo/domain";
 import { beforeEach, describe, expect, it } from "vitest";
 import {
   claimDueReconciles,
@@ -187,14 +188,132 @@ describe("readSweepBacklog", () => {
     expect(backlog.outboxDueAt).toBe(NOW - 2 * MINUTE);
     expect(backlog.evaluationDueAt).toBe(NOW - 7 * MINUTE);
 
-    // A rate-limited connection's repositories wait on purpose: they are not lag.
+    // A rate-limited connection's repositories wait on purpose: until the reset they are not late.
     await deferConnectionReconciles(db, {
       workspaceId: ws.workspaceId,
       connectionId: ws.connection.id,
       until: NOW + MINUTE,
     });
     expect((await read()).reconcileDueAt).toBeNull();
-    expect((await read(NOW + MINUTE)).reconcileDueAt).toBe(NOW - 5 * MINUTE);
+    // From the reset on, they are late from the reset, not from their old schedule.
+    expect((await read(NOW + MINUTE)).reconcileDueAt).toBe(NOW + MINUTE);
+  });
+});
+
+// Decision 0014, amended: a GitHub rate limit excuses a reconcile from lag for at most an hour.
+describe("readSweepBacklog and GitHub rate limits", () => {
+  const HOUR = 60 * MINUTE;
+  const lagAt = async (now: number) => {
+    const { reconcileDueAt } = await readSweepBacklog(db, { now, maxAttempts: 10 });
+    return sweepLag([reconcileDueAt], now);
+  };
+  const rateLimit = (ws: { workspaceId: string; connection: { id: string } }, until: number) =>
+    deferConnectionReconciles(db, {
+      workspaceId: ws.workspaceId,
+      connectionId: ws.connection.id,
+      until,
+    });
+
+  it("timing/sweep-lag-excuses-rate-limits: a rate limit within the hour is not lag, nor just after its reset", async () => {
+    const ws = await dueWorkspace(1, () => NOW);
+    await rateLimit(ws, NOW + 40 * MINUTE);
+    // Waiting for the reset, however long past its schedule.
+    expect(await lagAt(NOW + 39 * MINUTE)).toEqual({ lagMs: 0, lagging: false });
+    // Just after the reset, the sweep gets the alert's 15 minutes to work through it.
+    expect(
+      (await readSweepBacklog(db, { now: NOW + 41 * MINUTE, maxAttempts: 10 })).reconcileDueAt,
+    ).toBe(NOW + 40 * MINUTE);
+    expect(await lagAt(NOW + 41 * MINUTE)).toEqual({ lagMs: MINUTE, lagging: false });
+    expect((await lagAt(NOW + 55 * MINUTE)).lagging).toBe(false);
+    // Still unprocessed more than 15 minutes after its excused time: lag.
+    expect(await lagAt(NOW + 55 * MINUTE + 1)).toEqual({ lagMs: 15 * MINUTE + 1, lagging: true });
+  });
+
+  it("timing/sweep-lag-excuses-rate-limits: a connection rate-limited past the hour is lag", async () => {
+    const ws = await dueWorkspace(1, () => NOW);
+    await rateLimit(ws, NOW + 3 * HOUR);
+    expect((await lagAt(NOW + HOUR)).lagging).toBe(false);
+    expect(await lagAt(NOW + HOUR + 15 * MINUTE + 1)).toEqual({
+      lagMs: 15 * MINUTE + 1,
+      lagging: true,
+    });
+    // GitHub keeps pushing the reset later: still lag, measured from the end of the excuse.
+    await rateLimit(ws, NOW + 9 * HOUR);
+    expect(await lagAt(NOW + 2 * HOUR)).toEqual({ lagMs: HOUR, lagging: true });
+  });
+
+  it("ignores a stale rate limit, which is never cleared, for a later schedule", async () => {
+    const ws = await dueWorkspace(1, () => NOW - 20 * MINUTE);
+    // Rate-limited until an hour ago; the repository was rescheduled since.
+    await rateLimit(ws, NOW - HOUR);
+    expect((await readSweepBacklog(db, { now: NOW, maxAttempts: 10 })).reconcileDueAt).toBe(
+      NOW - 20 * MINUTE,
+    );
+    expect(await lagAt(NOW)).toEqual({ lagMs: 20 * MINUTE, lagging: true });
+  });
+
+  it("matches the domain's excused due instant", async () => {
+    const cases: [number, number | null][] = [
+      [NOW - HOUR, null],
+      [NOW - HOUR, NOW - 2 * HOUR],
+      [NOW - HOUR, NOW - 30 * MINUTE],
+      [NOW - 2 * HOUR, NOW + HOUR],
+      [NOW - HOUR, NOW - HOUR],
+    ];
+    for (const [next, until] of cases) {
+      await env.DB.prepare("UPDATE resources SET next_reconcile_at = NULL").run();
+      const ws = await dueWorkspace(1, () => next);
+      if (until !== null) await rateLimit(ws, until);
+      const expected = excusedReconcileDueAt(next, until);
+      const { reconcileDueAt } = await readSweepBacklog(db, { now: NOW, maxAttempts: 10 });
+      expect(reconcileDueAt).toBe(expected <= NOW ? expected : null);
+    }
+  });
+
+  it("is scoped to the repository's own connection and workspace", async () => {
+    const limited = await dueWorkspace(1, () => NOW - 20 * MINUTE);
+    const other = await dueWorkspace(1, () => NOW - 30 * MINUTE);
+    await rateLimit(limited, NOW + 30 * MINUTE);
+    // Naming the limited connection's ID under the other workspace changes nothing there.
+    await deferConnectionReconciles(db, {
+      workspaceId: other.workspaceId,
+      connectionId: limited.connection.id,
+      until: NOW + 30 * MINUTE,
+    });
+    // One workspace's rate limit does not excuse another workspace's repository.
+    expect((await readSweepBacklog(db, { now: NOW, maxAttempts: 10 })).reconcileDueAt).toBe(
+      NOW - 30 * MINUTE,
+    );
+  });
+});
+
+describe("readSweepHealth and GitHub rate limits", () => {
+  it("shows the alert's oldest late reconcile, and those waiting on a rate limit apart", async () => {
+    const limited = await dueWorkspace(2, (i) => NOW - 50 * MINUTE + i);
+    const stuck = await dueWorkspace(1, () => NOW - 3 * 60 * MINUTE);
+    // Not rate-limited: due, and not counted as waiting.
+    await dueWorkspace(1, () => NOW - 5 * MINUTE);
+    await deferConnectionReconciles(db, {
+      workspaceId: limited.workspaceId,
+      connectionId: limited.connection.id,
+      until: NOW + 5 * MINUTE,
+    });
+    await deferConnectionReconciles(db, {
+      workspaceId: stuck.workspaceId,
+      connectionId: stuck.connection.id,
+      until: NOW + 60 * MINUTE,
+    });
+    const health = await readSweepHealth(db, NOW);
+    const backlog = await readSweepBacklog(db, { now: NOW, maxAttempts: 10 });
+    // The stuck connection's excuse ended two hours after its schedule.
+    expect(health.oldestDueReconcileAt).toBe(NOW - 2 * 60 * MINUTE);
+    expect(health.oldestDueReconcileAt).toBe(backlog.reconcileDueAt);
+    expect(health.rateLimitedReconciles).toBe(3);
+
+    // Once every limit resets, nothing waits; the limited ones are late from their reset.
+    const later = await readSweepHealth(db, NOW + 60 * MINUTE);
+    expect(later.rateLimitedReconciles).toBe(0);
+    expect(later.oldestDueReconcileAt).toBe(NOW - 2 * 60 * MINUTE);
   });
 });
 

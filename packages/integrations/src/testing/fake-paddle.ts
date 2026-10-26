@@ -68,6 +68,7 @@ const REQUIRED_PERMISSION: Record<FakePaddleOperation, string | null> = {
   createTransaction: "transaction.write",
   createNotificationSetting: "notification_setting.write",
   getNotificationSetting: "notification_setting.read",
+  listNotificationSettings: "notification_setting.read",
   deleteNotificationSetting: "notification_setting.write",
 };
 
@@ -201,9 +202,12 @@ export interface FakePaddle extends PaddlePort {
 
   // Notifications.
 
-  /** Every destination ShareRepo created, active or not. */
+  /** Every destination created through the port (ShareRepo's), active or not. */
   notificationSettings(): PaddleNotificationSetting[];
-  /** Other apps' active destinations, which count towards the limit of 10. */
+  /**
+   * Other apps' active destinations, which count towards the limit of 10 and are listed by
+   * `listNotificationSettings`, with their own descriptions and URLs.
+   */
   addForeignDestinations(count: number): void;
   deactivateNotificationSetting(settingId: string): void;
   /** The destination's secret, as Paddle holds it. */
@@ -292,6 +296,8 @@ type WireSubscription = {
 interface Setting {
   setting: PaddleNotificationSetting;
   secret: string;
+  /** Another app's destination (`addForeignDestinations`). */
+  foreign?: true;
 }
 
 const iso = (at: Instant) => new Date(at).toISOString();
@@ -322,7 +328,6 @@ export function createFakePaddle(options: FakePaddleOptions = {}): FakePaddle {
       ? "https://seller.example/pay"
       : options.defaultPaymentLink;
   let revoked = false;
-  let foreignDestinations = 0;
   const calls: string[] = [];
   const failures = new Map<FakePaddleOperation, PaddleApiError>();
   const lostResponses = new Set<FakePaddleOperation>();
@@ -484,8 +489,7 @@ export function createFakePaddle(options: FakePaddleOptions = {}): FakePaddle {
     return found;
   }
 
-  const activeCount = () =>
-    foreignDestinations + [...settings.values()].filter(({ setting }) => setting.active).length;
+  const activeCount = () => [...settings.values()].filter(({ setting }) => setting.active).length;
 
   async function deliver(
     settingId: string,
@@ -603,7 +607,7 @@ export function createFakePaddle(options: FakePaddleOptions = {}): FakePaddle {
       return settle(operation, { id, checkoutUrl });
     },
 
-    async createNotificationSetting({ destination, events }) {
+    async createNotificationSetting({ description, destination, events }) {
       const operation = "createNotificationSetting";
       begin(operation);
       if (activeCount() >= DESTINATION_LIMIT) {
@@ -614,7 +618,10 @@ export function createFakePaddle(options: FakePaddleOptions = {}): FakePaddle {
       }
       const id = nextId("ntfset");
       const secret = `pdl_ntfset_${randomText(26)}_${randomText(32)}`;
-      settings.set(id, { setting: { id, destination, active: true, events: [...events] }, secret });
+      settings.set(id, {
+        setting: { id, description, destination, active: true, events: [...events] },
+        secret,
+      });
       return settle(operation, { id, secret });
     },
 
@@ -624,6 +631,14 @@ export function createFakePaddle(options: FakePaddleOptions = {}): FakePaddle {
       const found = settings.get(settingId);
       if (found === undefined) throw notFound("get notification setting");
       return structuredClone(found.setting);
+    },
+
+    async listNotificationSettings() {
+      begin("listNotificationSettings");
+      // Paddle's default order is `id[DESC]`.
+      return [...settings.values()]
+        .map(({ setting }) => structuredClone(setting))
+        .sort((a, b) => b.id.localeCompare(a.id));
     },
 
     async deleteNotificationSetting(settingId) {
@@ -789,11 +804,27 @@ export function createFakePaddle(options: FakePaddleOptions = {}): FakePaddle {
     },
 
     notificationSettings() {
-      return [...settings.values()].map(({ setting }) => structuredClone(setting));
+      return [...settings.values()]
+        .filter(({ foreign }) => foreign === undefined)
+        .map(({ setting }) => structuredClone(setting));
     },
 
     addForeignDestinations(count) {
-      foreignDestinations += count;
+      for (let i = 0; i < count; i += 1) {
+        const id = nextId("ntfset");
+        const setting = {
+          id,
+          description: "Another app",
+          destination: `https://other-app.example/paddle/${id}`,
+          active: true,
+          events: ["transaction.completed"],
+        };
+        settings.set(id, {
+          setting,
+          secret: `pdl_ntfset_${randomText(26)}_${randomText(32)}`,
+          foreign: true,
+        });
+      }
     },
 
     deactivateNotificationSetting(settingId) {

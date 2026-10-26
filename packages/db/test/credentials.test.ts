@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
   countEnvelopesUnderKeys,
+  type EnvelopeCursor,
   listEnvelopesUnderKeys,
+  readRewrapCursor,
   rewrapClaimRequestEmail,
+  saveRewrapCursor,
   schema,
 } from "../src/index.ts";
 import { db, workspaceWithOwner } from "./support/connections.ts";
@@ -65,6 +68,46 @@ describe("envelopes under retired master keys", () => {
     // Bounded: the first ones only.
     const first = await listEnvelopesUnderKeys(db, { keyIds: [old, older], limit: 2 });
     expect(first.map((e) => e.field)).toEqual(["api_key", "webhook_secret_next"]);
+  });
+
+  it("continues after a cursor: later fields, then later rows of the same field", async () => {
+    const { old, older, connection, pending } = await seeded();
+    const keyIds = [old, older];
+    const fields = async (after: EnvelopeCursor | null) =>
+      (await listEnvelopesUnderKeys(db, { keyIds, limit: 10, after })).map((e) => e.field);
+    expect(await fields(null)).toEqual(["api_key", "webhook_secret_next", "email"]);
+    expect(await fields({ field: "api_key", rowId: connection.id })).toEqual([
+      "webhook_secret_next",
+      "email",
+    ]);
+    // An earlier row of the same field still comes after; the same row does not.
+    expect(await fields({ field: "api_key", rowId: "" })).toEqual([
+      "api_key",
+      "webhook_secret_next",
+      "email",
+    ]);
+    expect(await fields({ field: "webhook_secret_next", rowId: connection.id })).toEqual(["email"]);
+    expect(await fields({ field: "email", rowId: pending.id })).toEqual([]);
+  });
+
+  it("keeps the rewrap cursor for one generation, and clears it", async () => {
+    await saveRewrapCursor(db, {
+      generation: 3,
+      cursor: { field: "email", rowId: "clr-1" },
+      now: T0,
+    });
+    expect(await readRewrapCursor(db, 3)).toEqual({ field: "email", rowId: "clr-1" });
+    // Another generation's run starts at the beginning.
+    expect(await readRewrapCursor(db, 2)).toBeNull();
+    await saveRewrapCursor(db, {
+      generation: 4,
+      cursor: { field: "api_key", rowId: "pcon-2" },
+      now: T0 + 1,
+    });
+    expect(await readRewrapCursor(db, 4)).toEqual({ field: "api_key", rowId: "pcon-2" });
+    await saveRewrapCursor(db, { generation: 5, cursor: null, now: T0 + 2 });
+    expect(await readRewrapCursor(db, 4)).toBeNull();
+    expect(await readRewrapCursor(db, 5)).toBeNull();
   });
 
   it("finds the webhook secret's envelope too, and nothing without key IDs", async () => {

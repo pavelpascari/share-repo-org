@@ -1,6 +1,7 @@
 import { env } from "cloudflare:workers";
 import { createDb, enqueueOutbox } from "@sharerepo/db";
 import { WORKSPACE_DELETION_DELAY_MS } from "@sharerepo/domain";
+import { destinationDescription } from "@sharerepo/integrations";
 import { createFakeGitHubApp } from "@sharerepo/integrations/testing";
 import { type CrashWhen, crashingD1, InjectedCrash } from "@sharerepo/testing";
 import { describe, expect, it } from "vitest";
@@ -22,6 +23,7 @@ import {
   rotatePaddleWebhookSecret,
   type ServiceContext,
   startCheckout,
+  sweepPaddleSubscriptions,
   syncPaddleCatalog,
 } from "../src/index.ts";
 import {
@@ -474,6 +476,36 @@ describe("crash/every-batch-boundary-converges", { timeout: TIMEOUT }, () => {
         if (destinationId === f.destinationId) {
           await rotatePaddleWebhookSecret(ctx(), f.p, f.p.slug, f.p.deps);
         }
+      },
+    });
+  });
+
+  it("the daily Paddle sweep deleting orphaned destinations", async () => {
+    await expectEveryBoundaryConverges({
+      name: "destination sweep",
+      setup: async () => {
+        const f = await paddleFixture();
+        // A destination a crashed rotation created two hours ago and never stored.
+        await f.p.paddle.createNotificationSetting({
+          description: destinationDescription({
+            workspaceId: f.p.workspaceId,
+            createdAt: clock.now() - 2 * 60 * 60 * 1000,
+          }),
+          destination: `https://sharerepo.test/webhooks/paddle/${f.p.connectionId}?v=lost`,
+          events: ["subscription.updated"],
+        });
+        return f;
+      },
+      run: (f, ctx) =>
+        sweepPaddleSubscriptions(
+          ctx,
+          { workspaceId: f.p.workspaceId, connectionId: f.p.connectionId },
+          f.p.deps,
+        ),
+      // The sweep is audited before it deletes: a crash after that write leaves the record, and
+      // the queue's retry deletes the destination, recording the sweep again.
+      recovery: {
+        audit_events: { added: (row) => row.action === "paddle.destinations_swept" },
       },
     });
   });

@@ -65,7 +65,7 @@ export interface RewrapRunSummary {
   readonly failed: number;
   /** Envelopes still under another listed key after the run. */
   readonly remaining: number;
-  /** Whether the next run was queued. */
+  /** Whether the next run of the pass was queued. */
   readonly continued: boolean;
 }
 
@@ -75,8 +75,16 @@ export interface RewrapRunSummary {
  * secret, pending claim request emails). Each write is guarded on the envelope it replaces, so a
  * concurrent lazy re-wrap, reconnect, rotation or erasure wins. A Paddle envelope is audited like
  * a lazy re-wrap (`paddle.credentials_rewrapped`); the run is audited `credentials.rewrapped`
- * with its counts. A run that moved something and left work queues the next run; one that moved
- * nothing stops, so envelopes that never open cannot keep the job alive. Idempotent.
+ * with its counts.
+ *
+ * The runs of one pass walk every envelope once, in a stable order: run 0 starts at the
+ * beginning, and each run that read a full batch records where it stopped (`system_state`
+ * `rewrap.cursor`) and queues the next generation, which continues from there. Envelopes that
+ * never open (tampered, or bound to another row) are counted `failed` and passed over, so however
+ * many there are they cannot starve the rest. A pass ends at the last envelope: the cursor is
+ * cleared and nothing is queued; the daily check starts a new pass while any envelope remains,
+ * and `remaining` stays above 0 while one does not open, which the runbook checks before a key
+ * is removed. Idempotent: a redelivered run repeats its own batch.
  */
 export async function rewrapCredentials(
   context: ServiceContext,
@@ -86,7 +94,12 @@ export async function rewrapCredentials(
   const ctx = atOneInstant(context);
   const keyring = deps.credentialKeys;
   const keyIds = retiredKeyIds(keyring);
-  const envelopes = await repo.listEnvelopesUnderKeys(ctx.db, { keyIds, limit: REWRAP_BATCH });
+  const after = generation === 0 ? null : await repo.readRewrapCursor(ctx.db, generation);
+  const envelopes = await repo.listEnvelopesUnderKeys(ctx.db, {
+    keyIds,
+    limit: REWRAP_BATCH,
+    after,
+  });
   let rewrapped = 0;
   let failed = 0;
   for (const stored of envelopes) {
@@ -136,9 +149,16 @@ export async function rewrapCredentials(
       ctx,
     ),
   ]);
+  // A full batch may have more after it; a shorter one reached the end of the pass.
+  const last = envelopes.length === REWRAP_BATCH ? envelopes.at(-1) : undefined;
+  const more = last !== undefined && remaining > 0;
+  await repo.saveRewrapCursor(ctx.db, {
+    generation: generation + 1,
+    cursor: more ? { field: last.field, rowId: last.rowId } : null,
+    now: ctx.clock.now(),
+  });
   const continued =
-    rewrapped > 0 &&
-    remaining > 0 &&
+    more &&
     (await repo.enqueueOutboxOnce(
       ctx.db,
       rewrapRow(ctx.ids.next(), generation + 1, ctx.clock.now()),

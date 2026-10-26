@@ -19,7 +19,7 @@ export {
   REQUEST_ID_HEADER,
   withCorrelationId,
 } from "./correlation.ts";
-export { parseEnv } from "./env.ts";
+export { optionalSecretText, parseEnv, secretText } from "./env.ts";
 export type { CredentialEnvelopeFailure, EnvelopePurpose } from "./envelope.ts";
 export {
   CredentialEnvelopeError,

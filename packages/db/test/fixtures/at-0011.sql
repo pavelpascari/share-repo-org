@@ -1,12 +1,13 @@
--- Representative rows for a database at migration 0011 (manual access).
+-- Representative rows for a database at migration 0011 (deleted users).
 -- Loaded by upgrade.test.ts after migrations 0000..0011; every later migration must keep them.
 -- Every table that exists at this migration has at least one row, and every row satisfies the
 -- constraints and triggers of this migration. One statement per `;` at the end of a line.
 
-INSERT INTO users (id, created_at, updated_at) VALUES
-  ('u1', 1760000000000, 1760000000000),
-  ('u2', 1760003600000, 1760007200000),
-  ('u3', 1760007200000, 1760007200000);
+INSERT INTO users (id, created_at, updated_at, deleted_at) VALUES
+  ('u1', 1760000000000, 1760000000000, NULL),
+  ('u2', 1760003600000, 1760007200000, NULL),
+  ('u3', 1760007200000, 1760007200000, NULL),
+  ('u4', 1760010800000, 1760097200000, 1760097200000);
 
 INSERT INTO workspaces (id, slug, name, status, created_at, updated_at) VALUES
   ('w1', 'acme', 'Acme', 'active', 1760000000000, 1760086400000),
@@ -97,16 +98,10 @@ INSERT INTO subscription_items (id, workspace_id, subscription_id, external_item
   ('si1', 'w1', 'sub1', 'sim_item_1'),
   ('si2', 'w1', 'sub2', 'pri_01');
 
-INSERT INTO manual_accesses (id, workspace_id, offer_id, subject_id, ends_at, note, revoked_at, revoke_cause, next_evaluation_at, version, created_at, updated_at) VALUES
-  ('ma1', 'w1', 'of1', 'sb2', 1762851200000, 'early buyer, paid by invoice', NULL, NULL, 1762851200000, 1, 1760259200000, 1760259200000),
-  ('ma2', 'w1', 'of1', 'sb1', NULL, NULL, 1760345600000, 'owner', NULL, 2, 1760259200000, 1760345600000);
-
 INSERT INTO entitlements (id, workspace_id, subject_id, resource_id, access_level, source_type, policy_version, source_id, offer_id, offer_version, state, valid_from, valid_until, decision_reason, ended_at, created_at, updated_at) VALUES
   ('en1', 'w1', 'sb1', 'r1', 'read', 'subscription', 1, 'sub1', 'of1', 1, 'active', 1760086400000, NULL, 'subscription_active', NULL, 1760086400000, 1760086400000),
   ('en2', 'w1', 'sb2', 'r1', 'read', 'subscription', 1, 'sub2', 'of1', 2, 'revoked', 1760172800000, 1760259200000, 'subscription_canceled', 1760259200000, 1760172800000, 1760259200000),
-  ('en3', 'w1', 'sb2', 'r1', 'read', 'subscription', 1, 'sub3', 'of1', 2, 'active', 1760172800000, 1760864000000, 'subscription_past_due_grace', NULL, 1760172800000, 1760259200000),
-  ('en4', 'w1', 'sb2', 'r1', 'read', 'manual', 1, 'ma1', 'of1', 2, 'active', 1760259200000, 1762851200000, 'manual', NULL, 1760259200000, 1760259200000),
-  ('en5', 'w1', 'sb1', 'r1', 'read', 'manual', 1, 'ma2', 'of1', 2, 'revoked', 1760259200000, NULL, 'manual_revoked', 1760345600000, 1760259200000, 1760345600000);
+  ('en3', 'w1', 'sb2', 'r1', 'read', 'subscription', 1, 'sub3', 'of1', 2, 'active', 1760172800000, 1760864000000, 'subscription_past_due_grace', NULL, 1760172800000, 1760259200000);
 
 INSERT INTO grants (id, workspace_id, connection_id, subject_id, resource_id, access_level, state, managed, entitlement_id, external_grant_id, expires_at, observed_at, last_attempt_at, last_error_code, retry_class, indirect, next_attempt_at, created_at, updated_at) VALUES
   ('g1', 'w1', 'c1', 'sb1', 'r1', 'read', 'active', 1, 'en1', NULL, NULL, 1760090000000, 1760086400000, NULL, NULL, 0, NULL, 1760086400000, 1760090000000),

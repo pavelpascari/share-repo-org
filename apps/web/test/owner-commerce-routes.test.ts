@@ -248,6 +248,8 @@ describe("billing route", () => {
     );
     expect(confirming.confirmDisconnect).toBe(true);
     const destinationId = confirming.view?.connection?.destinationId;
+    // Paddle answers neither the sweep's list nor the delete of the stored destination.
+    connected.paddle.failNext("listNotificationSettings", "transient");
     connected.paddle.failNext("deleteNotificationSetting", "transient");
     const result = await billing.action(
       args(post(path, s.owner, { intent: "disconnect" }), s, context),

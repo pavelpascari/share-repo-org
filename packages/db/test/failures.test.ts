@@ -303,6 +303,7 @@ describe("readSweepHealth", () => {
     expect(await readSweepHealth(db, 0)).toEqual({
       oldestDueEvaluationAt: null,
       oldestDueReconcileAt: null,
+      rateLimitedReconciles: 0,
       oldestDueOutboxAt: null,
       lastHeartbeatAt: null,
     });
@@ -325,6 +326,7 @@ describe("readSweepHealth", () => {
     expect(await readSweepHealth(db, 10)).toEqual({
       oldestDueEvaluationAt: 5,
       oldestDueReconcileAt: 7,
+      rateLimitedReconciles: 0,
       oldestDueOutboxAt: 9,
       lastHeartbeatAt: 11,
     });

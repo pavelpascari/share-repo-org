@@ -724,8 +724,9 @@ const userStillReferenced = (userId: string) => sql`(
  * Deletes a user's account rows in one batch, with the audit event built from the counts: their
  * checkout claims, claim requests and consumed claim tokens, connection intents, memberships,
  * Better Auth sessions, accounts and profile, external identities, and the `users` row unless a
- * connection or offer version still names it (it holds only the ID; pruning removes it once
- * nothing does). Subjects must already be unlinked from the identity.
+ * connection or offer version still names it (it holds only the ID and timestamps, is marked
+ * `deleted_at`, and pruning removes it once nothing does). Subjects must already be unlinked
+ * from the identity.
  *
  * The batch writes nothing while the user owns a workspace that is not being deleted, checked in
  * the batch itself: a deletion cancelled concurrently, after the caller's check, must not leave
@@ -733,9 +734,9 @@ const userStillReferenced = (userId: string) => sql`(
  */
 export async function deleteAccountRows(
   db: Db,
-  input: { userId: string; audit: (deleted: DeletedRows) => AuditEvents },
+  input: { userId: string; now: Instant; audit: (deleted: DeletedRows) => AuditEvents },
 ): Promise<DeletedRows | null> {
-  const { userId } = input;
+  const { userId, now } = input;
   const deleted: Record<string, number> = {};
   for (const [table, column] of ACCOUNT_ROWS) {
     const [row] = await db.all<{ n: number }>(
@@ -764,6 +765,12 @@ export async function deleteAccountRows(
       "users",
       sql`id = ${userId} AND NOT ${userStillReferenced(userId)} AND ${written}`,
     ),
+    // The row that stays is marked deleted, so nothing (a racing sign-in's identity) attaches
+    // to it again (trigger `external_identities_user_not_deleted`).
+    db
+      .update(schema.users)
+      .set({ deletedAt: now, updatedAt: sql`max(updated_at, ${now})` })
+      .where(sql`id = ${userId} AND deleted_at IS NULL AND ${written}`),
   ]);
   return first === 1 ? deleted : null;
 }

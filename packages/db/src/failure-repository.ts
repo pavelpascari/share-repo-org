@@ -4,6 +4,7 @@ import { type AuditEvents, conditionalAuditInserts } from "./audit-repository.ts
 import { runBatch } from "./batch.ts";
 import type { Db } from "./client.ts";
 import type { OutboxRow } from "./outbox-repository.ts";
+import { countRateLimitedReconciles, oldestExcusedReconcileDue } from "./reconcile-repository.ts";
 import {
   connections,
   customers,
@@ -292,22 +293,26 @@ export const SWEEP_HEARTBEAT_KEY = "sweep.heartbeat";
 /** How far behind the sweeps are: the oldest due row of each, and the last heartbeat. */
 export interface SweepHealth {
   readonly oldestDueEvaluationAt: Instant | null;
+  /**
+   * The oldest reconcile late now, as the `sweep_lagging` alert measures it: a GitHub rate limit
+   * excuses up to `RATE_LIMIT_EXCUSE_MS` (decision 0014, amended).
+   */
   readonly oldestDueReconcileAt: Instant | null;
+  /** Repositories due now that wait for their connection's GitHub rate limit to reset. */
+  readonly rateLimitedReconciles: number;
   readonly oldestDueOutboxAt: Instant | null;
   /** When the heartbeat was last stored, or null when it never was. */
   readonly lastHeartbeatAt: Instant | null;
 }
 
 export async function readSweepHealth(db: Db, now: Instant): Promise<SweepHealth> {
-  const [[evaluation], [reconcile], [pending], [heartbeat]] = await Promise.all([
+  const [[evaluation], [reconcile], [rateLimited], [pending], [heartbeat]] = await Promise.all([
     db
       .select({ at: min(subscriptions.nextEvaluationAt) })
       .from(subscriptions)
       .where(lte(subscriptions.nextEvaluationAt, now)),
-    db
-      .select({ at: min(resources.nextReconcileAt) })
-      .from(resources)
-      .where(lte(resources.nextReconcileAt, now)),
+    oldestExcusedReconcileDue(db, now),
+    countRateLimitedReconciles(db, now),
     db
       .select({ at: min(outbox.availableAt) })
       .from(outbox)
@@ -319,7 +324,9 @@ export async function readSweepHealth(db: Db, now: Instant): Promise<SweepHealth
   ]);
   return {
     oldestDueEvaluationAt: (evaluation?.at ?? null) as Instant | null,
-    oldestDueReconcileAt: (reconcile?.at ?? null) as Instant | null,
+    oldestDueReconcileAt: reconcile?.at ?? null,
+    // An aggregate always returns its one row.
+    rateLimitedReconciles: Number(rateLimited?.n),
     oldestDueOutboxAt: (pending?.at ?? null) as Instant | null,
     lastHeartbeatAt: heartbeat?.at ?? null,
   };

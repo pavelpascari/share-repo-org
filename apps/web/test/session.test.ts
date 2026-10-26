@@ -56,6 +56,7 @@ describe("session helpers", () => {
       userId: (await sessionUser(cookie))?.id,
       name: account.name,
       image: account.avatarUrl,
+      sessionCreatedAt: expect.any(Number),
     });
     await expect(requireUser(withCookie(cookie), requestContext())).resolves.toEqual(user);
   });

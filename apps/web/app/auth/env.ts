@@ -1,4 +1,4 @@
-import { parseEnv } from "@sharerepo/platform";
+import { parseEnv, secretText } from "@sharerepo/platform";
 import { z } from "zod";
 import { GITHUB_ENDPOINTS, type GitHubEndpoints } from "./github.ts";
 
@@ -14,10 +14,10 @@ const E2E_ONLY_KEYS = ["GITHUB_OAUTH_BASE_URL", "GITHUB_API_BASE_URL"] as const;
 const authEnvSchema = z
   .object({
     ENVIRONMENT: z.enum(ENVIRONMENTS),
-    BETTER_AUTH_SECRET: z.string().min(32),
+    BETTER_AUTH_SECRET: secretText(32),
     BETTER_AUTH_URL: z.url({ protocol: /^https?$/ }),
     GITHUB_CLIENT_ID: z.string().min(1),
-    GITHUB_CLIENT_SECRET: z.string().min(1),
+    GITHUB_CLIENT_SECRET: secretText(),
     GITHUB_OAUTH_BASE_URL: z.url({ protocol: /^https?$/ }).optional(),
     GITHUB_API_BASE_URL: z.url({ protocol: /^https?$/ }).optional(),
   })

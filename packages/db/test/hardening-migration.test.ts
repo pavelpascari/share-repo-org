@@ -158,7 +158,13 @@ describe("migration 0009 (operational hardening)", () => {
       ]),
     );
     expect(await names(db, "trigger")).toEqual(
-      [...triggersBefore, "workspaces_created_live", "workspaces_purging_one_way"].sort(),
+      [
+        ...triggersBefore,
+        "workspaces_created_live",
+        "workspaces_purging_one_way",
+        // Migration 0011, applied with the rest.
+        "external_identities_user_not_deleted",
+      ].sort(),
     );
     await expect(
       db

@@ -1,6 +1,11 @@
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
-import { dailyOffsetMs, entitlementValidity, sweepLag } from "../src/index.ts";
+import {
+  dailyOffsetMs,
+  entitlementValidity,
+  excusedReconcileDueAt,
+  sweepLag,
+} from "../src/index.ts";
 
 const NOW = 1_700_000_000_000;
 const MINUTE = 60_000;
@@ -46,6 +51,29 @@ describe("sweepLag", () => {
       lagMs: 15 * MINUTE + 1,
       lagging: true,
     });
+  });
+});
+
+// Decision 0014 (amended): a GitHub rate limit excuses a reconcile from lag for up to an hour.
+describe("excusedReconcileDueAt", () => {
+  it("is the schedule when the connection was never rate-limited", () => {
+    expect(excusedReconcileDueAt(NOW, null)).toBe(NOW);
+  });
+
+  it("ignores a reset at or before the schedule (a stale rate limit)", () => {
+    expect(excusedReconcileDueAt(NOW, NOW - DAY)).toBe(NOW);
+    expect(excusedReconcileDueAt(NOW, NOW)).toBe(NOW);
+  });
+
+  it("waits for a reset within the hour", () => {
+    expect(excusedReconcileDueAt(NOW, NOW + 1)).toBe(NOW + 1);
+    expect(excusedReconcileDueAt(NOW, NOW + 30 * MINUTE)).toBe(NOW + 30 * MINUTE);
+    expect(excusedReconcileDueAt(NOW, NOW + HOUR)).toBe(NOW + HOUR);
+  });
+
+  it("excuses at most an hour of a longer rate limit", () => {
+    expect(excusedReconcileDueAt(NOW, NOW + HOUR + 1)).toBe(NOW + HOUR);
+    expect(excusedReconcileDueAt(NOW, NOW + DAY)).toBe(NOW + HOUR);
   });
 });
 

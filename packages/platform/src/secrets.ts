@@ -113,6 +113,8 @@ const signingKeyringShape = z.strictObject({
  */
 function decodeSigningKeys(raw: string): ClaimSigningKeyring | null {
   if (!raw.trimStart().startsWith("{")) {
+    // Whitespace only is a paste mistake, never a key: refuse it however long it is.
+    if (!/\S/.test(raw)) return null;
     const key = new TextEncoder().encode(raw);
     if (key.length < CLAIM_SIGNING_KEY_MIN_BYTES) return null;
     return { current: SINGLE_CLAIM_SIGNING_KEY_ID, keys: { [SINGLE_CLAIM_SIGNING_KEY_ID]: key } };

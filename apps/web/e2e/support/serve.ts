@@ -10,7 +10,7 @@ import type { Server } from "node:http";
 import { fileURLToPath } from "node:url";
 import { FAKE_CLIENT_SECRET, startFakeGitHub } from "./fake-github.ts";
 import { startFakePaddle } from "./fake-paddle.ts";
-import { READY_LINE, WEB_PORT, WEB_URL } from "./ports.ts";
+import { OPERATOR_GITHUB_ID, READY_LINE, WEB_PORT, WEB_URL } from "./ports.ts";
 
 const root = fileURLToPath(new URL("../../../../", import.meta.url));
 const stateDir = `${root}.e2e/state`;
@@ -70,6 +70,8 @@ writeFileSync(
     `GITHUB_APP_PRIVATE_KEY=${appKey}`,
     `GITHUB_WEBHOOK_SECRET=${webhookSecret}`,
     ...commerceSecrets,
+    // Overrides the e2e env's empty var: one operator for the /ops journeys.
+    `OPERATOR_GITHUB_IDS=${OPERATOR_GITHUB_ID}`,
     "",
   ].join("\n"),
 );

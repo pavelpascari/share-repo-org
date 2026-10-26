@@ -10,6 +10,12 @@ const DAY_MS = 24 * 60 * MINUTE_MS;
 export const SWEEP_LAG_ALERT_MS = 15 * MINUTE_MS;
 /** `sweep_lagging` is raised at most once per this interval while the lag lasts. */
 export const SWEEP_LAG_ALERT_INTERVAL_MS = 15 * MINUTE_MS;
+/**
+ * How long a GitHub rate limit excuses a repository's reconcile from counting as lag: one hour,
+ * GitHub's primary rate-limit window, so an installation that used its hourly budget waits out
+ * one reset without an alert. A connection still rate-limited past this is stuck, and is lag.
+ */
+export const RATE_LIMIT_EXCUSE_MS = 60 * MINUTE_MS;
 
 /** How far behind the sweep is: the oldest due instant's age, and whether it needs a person. */
 export interface SweepLag {
@@ -25,6 +31,21 @@ export function sweepLag(oldestDue: readonly (Instant | null)[], now: Instant): 
   const lags = oldestDue.map((at) => (at === null ? 0 : now - at));
   const lagMs = Math.max(0, ...lags);
   return { lagMs, lagging: lagMs > SWEEP_LAG_ALERT_MS };
+}
+
+/**
+ * When a repository's reconcile is due for lag purposes (decision 0014, amended): its
+ * `next_reconcile_at`, pushed back to its connection's `rate_limited_until` while GitHub
+ * rate-limits the installation, but by at most {@link RATE_LIMIT_EXCUSE_MS}. A reset already in
+ * the past (`rate_limited_until` only ever moves later, and is never cleared) changes nothing.
+ * The sweep repositories compute the same in SQL.
+ */
+export function excusedReconcileDueAt(
+  nextReconcileAt: Instant,
+  rateLimitedUntil: Instant | null,
+): Instant {
+  const excusedUntil = Math.min(rateLimitedUntil ?? 0, nextReconcileAt + RATE_LIMIT_EXCUSE_MS);
+  return Math.max(nextReconcileAt, excusedUntil);
 }
 
 /**

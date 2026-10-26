@@ -58,6 +58,46 @@ describe("parseGitHubAppConfig", () => {
     expect(config).not.toHaveProperty("webhookSecretPrevious");
   });
 
+  // security/blank-secret-fails-closed: a whitespace-only secret is a paste mistake, never a key.
+  it.each([" ", "   ", "\n", "\t \r\n"])(
+    "security/blank-secret-fails-closed: refuses a previous webhook secret of %j",
+    (previous) => {
+      expect(
+        issuesOf(() =>
+          parseGitHubAppConfig(env({ GITHUB_WEBHOOK_SECRET_PREVIOUS: previous }), all),
+        ),
+      ).toEqual([{ path: "GITHUB_WEBHOOK_SECRET_PREVIOUS", code: "invalid_format" }]);
+    },
+  );
+
+  it("security/blank-secret-fails-closed: refuses a blank webhook secret or private key", () => {
+    expect(
+      issuesOf(() =>
+        parseGitHubAppConfig(
+          env({ GITHUB_WEBHOOK_SECRET: "  ", GITHUB_APP_PRIVATE_KEY: "\n" }),
+          all,
+        ),
+      ),
+    ).toEqual([
+      { path: "GITHUB_APP_PRIVATE_KEY", code: "invalid_format" },
+      { path: "GITHUB_WEBHOOK_SECRET", code: "invalid_format" },
+    ]);
+    expect(
+      issuesOf(() =>
+        parseGitHubAppConfig(env({ GITHUB_WEBHOOK_SECRET: " \t" }), {
+          requireWebhookSecret: false,
+          requireSlug: true,
+        }),
+      ),
+    ).toEqual([{ path: "GITHUB_WEBHOOK_SECRET", code: "invalid_format" }]);
+  });
+
+  it("keeps a previous webhook secret with surrounding spaces exactly as given", () => {
+    expect(
+      parseGitHubAppConfig(env({ GITHUB_WEBHOOK_SECRET_PREVIOUS: " old " }), all),
+    ).toMatchObject({ webhookSecretPrevious: " old " });
+  });
+
   it.each([undefined, ""])("disables GitHub in development when the App ID is %j", (id) => {
     expect(parseGitHubAppConfig({ ENVIRONMENT: "development", GITHUB_APP_ID: id }, all)).toBeNull();
   });

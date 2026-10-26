@@ -19,7 +19,7 @@ The product owner (2026-10-25) made two previously accepted risks normal creator
 | Concern | Choice |
 |---|---|
 | Source record | `manual_accesses` (offer, subject, `ends_at`, note, revocation, `version`, `next_evaluation_at`) |
-| Entitlement FK | `entitlements` rebuilt with generated `subscription_id` / `manual_access_id` and one composite FK each (migration **0011**) |
+| Entitlement FK | `entitlements` rebuilt with generated `subscription_id` / `manual_access_id` and one composite FK each (migration **0012**; 0011 is `deleted_users` from the operations risk fixes) |
 | Planning | `planManualEntitlements`, sharing `diffEntitlements` with subscriptions |
 | Policy | `manual` until `ends_at`; `manual_ended` (expired); `manual_revoked` (revoked) |
 | Timer | `next_evaluation_at`, evaluated in the minute tick (not a queue job: no new outbox kind) |
@@ -51,7 +51,7 @@ The product owner (2026-10-25) made two previously accepted risks normal creator
 ## Tasks (as delivered)
 
 1. **Domain.** Source type, decision reasons, `decideManualAccess`, `planManualEntitlements`, note and end-date parsing, limits, audit actions; `diffEntitlements` extracted from `planEntitlements`. Literal expectations only; mutation score stays 100.
-2. **Storage.** Migration 0011 (`manual_accesses`; `entitlements` rebuild with deferred foreign keys, as 0009) and `at-0011.sql`; the upgrade test learns generated columns. `applyManualAccessWrite`, due marks, account deletion, deletion and cancel batches, sweep backlog, export, access view, customer link paths and unlinking.
+2. **Storage.** Migration 0012 (`manual_accesses`; `entitlements` rebuild with deferred foreign keys, as 0009) and `at-0012.sql` (built on `at-0011.sql`); the upgrade test learns generated columns. `applyManualAccessWrite`, due marks, account deletion, deletion and cancel batches, sweep backlog, export, access view, customer link paths and unlinking.
 3. **Services.** Grant, edit, revoke, evaluate, sweep; `resolveGitHubAccount` shared with path 3; offer recompute and purge repair mark due; account deletion revokes; `unlinkCustomerManually`; Customers show `via`; path 1 ignores a used claim of an unlinked customer.
 4. **Jobs.** The minute tick evaluates due manual accesses before the drain.
 5. **Web.** `/w/<slug>/manual-access`, the nav link, manual reason copy, Customers "Remove the link".
@@ -59,7 +59,7 @@ The product owner (2026-10-25) made two previously accepted risks normal creator
 
 ## Implementation notes
 
-- **Generated columns.** `insertWhere` now skips generated columns, and new rows are typed `StoredRow<T>` (no generated fields); reads return them. drizzle-kit 0.31 lists generated columns in a rebuild's `INSERT … SELECT`, which SQLite rejects; 0011's copy lists stored columns only (hand-edited, snapshot unchanged).
+- **Generated columns.** `insertWhere` now skips generated columns, and new rows are typed `StoredRow<T>` (no generated fields); reads return them. drizzle-kit 0.31 lists generated columns in a rebuild's `INSERT … SELECT`, which SQLite rejects; 0012's copy lists stored columns only (hand-edited, snapshot unchanged).
 - **The deferred-FK rebuild.** As in 0009, `PRAGMA defer_foreign_keys=on` before the rebuild and `off` after it: switching it off clears the count the DROP's implicit delete recorded for `grants` rows. The upgrade test checks `PRAGMA foreign_key_check`.
 - **Why no queue job for the timer.** A new outbox kind changes `outbox_kind_valid`, which rebuilds `outbox`; the work needs no provider, so the tick runs it. A failing evaluation stays due and does not stop the others.
 - **Due marks bump the version.** So a decision read before a deletion, cancel or offer change cannot overwrite the mark. The mark itself is an unaudited scheduling hint (like the subscription sweep's), listed as such in the audit-completeness test; the evaluation is audited.

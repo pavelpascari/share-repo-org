@@ -8,7 +8,9 @@
   // in each environment below.
   "observability": { "enabled": true, "issues": { "enabled": true } },
   "upload_source_maps": true,
-  // Hourly heartbeat; outbox drain every minute (decision 0003); daily full resync of connections.
+  // Hourly heartbeat. Every minute: the due-evaluation and due-reconcile sweeps, the outbox drain
+  // (decision 0003) and the sweep-health line (decision 0013). Daily: the Paddle sweeps, the rewrap
+  // check, the connection resyncs and the lifecycle jobs, each spread over the day.
   "triggers": { "crons": ["0 * * * *", "* * * * *", "17 3 * * *"] },
   "vars": {
     "ENVIRONMENT": "development",

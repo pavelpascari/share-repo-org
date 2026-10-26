@@ -26,6 +26,7 @@
     "db:migrate:local": "pnpm --filter @sharerepo/db db:migrate:local",
     "db:migrate:dev": "pnpm --filter @sharerepo/db db:migrate:dev",
     "db:migrate:prod": "pnpm --filter @sharerepo/db db:migrate:prod",
+    "db:drill": "node scripts/db-drill.ts",
     "db:check": "pnpm db:generate && git diff --exit-code -- packages/db/migrations && git status --porcelain -- packages/db/migrations | (! grep .)"
   },
   "devDependencies": {

@@ -25,16 +25,15 @@ apps/web Worker
                     |
                     v
 apps/jobs Worker
-  - queue consumers
+  - queue consumers, including the dead-letter queue
   - reconciliation
-  - scheduled jobs
-  - Workflow entry points
+  - scheduled sweeps and the outbox drain
         |
         +------> D1
         +------> GitHub / Paddle APIs
 ```
 
-The web Worker accepts requests, validates them, persists durable intent or events, and responds quickly. Slow or retryable provider work belongs in the jobs Worker. D1 is the authoritative domain store; queues and workflows coordinate work but are not the source of truth.
+The web Worker accepts requests, validates them, persists durable intent or events, and responds quickly. Slow or retryable provider work belongs in the jobs Worker. D1 is the authoritative domain store, and holds every timer; queues and the transactional outbox coordinate work but are not the source of truth.
 
 ## Suggested repository layout
 
@@ -49,8 +48,7 @@ sharerepo/
 │   │   └── worker.ts
 │   └── jobs/
 │       ├── queue.ts
-│       ├── scheduled.ts
-│       └── workflows/
+│       └── scheduled.ts
 ├── packages/
 │   ├── domain/
 │   ├── integrations/
@@ -84,8 +82,9 @@ The exact package split can evolve. Avoid packages that only re-export another p
 | Authentication | Better Auth | Login, sessions, OAuth handshake, and account linking |
 | Validation | Zod | Parse every external boundary |
 | Async delivery | Cloudflare Queues | At-least-once jobs; consumers must be idempotent |
-| Durable orchestration | Cloudflare Workflows | Delays, retries, and multi-step state changes |
-| Repair | Cron Triggers | Scheduled full or partitioned reconciliation |
+| Timers | D1 columns swept by Cron Triggers | Grace expiry, effective cancellation and every other boundary; no Workflows ([decision 0013](decisions/0013-database-timers-and-expiry-confirmation.md)) |
+| Repair | Cron Triggers | Scheduled, partitioned reconciliation and daily provider sweeps |
+| Alerting | Workers Logs, Workers Issues, Cloudflare Monitors | Alert lines and a heartbeat, emailed to the operator ([decision 0014](decisions/0014-failure-handling-and-alerting.md)) |
 | Testing | Vitest and Playwright | Domain/integration tests plus critical browser journeys |
 | Tooling | pnpm, Vite, Wrangler, Biome | Minimal workspace and deployment toolchain |
 | CI/CD | GitHub Actions | Explicit checks and Wrangler deployment |
@@ -108,7 +107,7 @@ Adapters own provider authentication, payload schemas, signatures, API calls, pa
 
 ### Infrastructure
 
-Infrastructure binds application ports to D1, Queues, Workflows, Cron, secrets, logs, and deployment configuration.
+Infrastructure binds application ports to D1, Queues, Cron, secrets, logs, and deployment configuration.
 
 ## Identity and authorization
 
@@ -172,7 +171,7 @@ Never assume a successful API response permanently represents provider state. Pe
 5. Commit the event before scheduling work.
 6. Process asynchronously where provider calls or retries are possible.
 7. Re-read current authoritative state during processing; do not trust stale job payloads.
-8. Use deterministic idempotency keys for mutations and workflow instances.
+8. Use deterministic idempotency keys for mutations and jobs.
 9. Classify failures as retryable, terminal, rate-limited, or user-action-required.
 10. Send exhausted work to an inspectable failure path and alert the operator.
 
@@ -193,19 +192,43 @@ D1 should enforce stable facts where possible:
 
 Event receipt, resulting state changes, an outbox/job intent, and audit facts should be committed atomically when they belong to one decision. If D1/Queues cannot provide an atomic cross-service commit, use a transactional outbox polled or drained by the jobs layer.
 
-## Workflows and time
+## Timers and time
 
-Use Workflows for durable processes such as effective cancellation and grace-period expiry:
+Timers live in the database ([decision 0013](decisions/0013-database-timers-and-expiry-confirmation.md)). Cloudflare Workflows are not used.
 
 1. Persist the provider event and current subscription facts.
-2. Calculate `validUntil` or the next policy evaluation time.
-3. Sleep until that time.
-4. Reload the current subscription and policy state.
+2. Calculate `validUntil` and the next policy evaluation time (`subscriptions.next_evaluation_at`), and each repository's next check (`resources.next_reconcile_at`).
+3. Every minute, the jobs Worker's sweep claims due rows with a compare-and-set and queues their work in the same `db.batch()`, so a timer cannot be lost between scheduling and running. Each tick claims a bounded number, oldest first.
+4. The job reloads the current subscription and policy state from the source.
 5. Recompute entitlements.
 6. Reconcile provider grants.
 7. Record outcome and audit facts.
 
-The reload is essential: the customer may renew or the subscription may change while the workflow sleeps. Workflow retries must be safe.
+The reload is essential: the customer may renew or the subscription may change before the boundary is processed. A sweep that runs twice, or a job delivered twice, changes nothing the second time.
+
+**Expiry is confirmed before revocation.** An active entitlement past its `validUntil` is *expiry pending*: reconciliation grants nothing new for it and revokes nothing, until the refresh re-reads the source and ends it, or until 6 hours have passed (`EXPIRY_CONFIRMATION_WINDOW_MS`). A lost renewal webhook therefore never revokes a paying subscriber, and a source that stays unreadable still cannot keep access for ever.
+
+**The sweep is observed.** Each minute tick logs a heartbeat with what it claimed and the oldest due instants. A Monitor emails when the heartbeat stops, and an alert line fires when the oldest due row is more than 15 minutes late.
+
+**Daily work is spread.** The daily cron queues each connection's GitHub resync and Paddle sweep, data pruning and due workspace purges with a delay derived from a hash of the job, so provider calls are spread over the day. The minute sweep queues at most 10 repository checks per GitHub installation, and none for an installation that is rate limited.
+
+## Failure handling and operations
+
+Decision [0014](decisions/0014-failure-handling-and-alerting.md) makes every failure that needs a person a row, an audit event and an email.
+
+- **Failed jobs are outbox rows** with `failed_at` and a classified error code, and a `job.failed` audit event. The outbox drain backs off a retryable failure (1 minute doubling, at most 2 hours) for about 6 hours before failing it. The queue hands a retryable job to the drain on its last retries. A dead-letter queue catches messages whose consumer crashed or timed out; the jobs Worker consumes it and fails the matching row.
+- **Owners** see their workspace's failed jobs, repositories that keep failing and a waiting deletion on the Access page, and can retry their own failed jobs.
+- **Operators** are users whose GitHub account ID is listed in `OPERATOR_GITHUB_IDS`. There is no operator role in the database. `/ops` shows every workspace's failures, unhealthy connections, waiting deletions and sweep health; operators retry or dismiss failures and open a workspace's Access page read-only. Operator routes call the same workspace-scoped services with an explicit operator principal, and every operator action is audited.
+- **Alert lines** (`alert: <name>`, IDs only) and Workers Issues reach the operator by email.
+
+## Data lifecycle
+
+Decision [0015](decisions/0015-data-lifecycle.md):
+
+- A daily job prunes operational data past its retention (webhook receipts, sent and dismissed jobs, used claims, settled provider mutations, expired sessions) in bounded batches, never a row something still references. Audit events live as long as their workspace or account.
+- An owner can export a workspace as JSON, without credentials or emails.
+- Deleting a workspace ends every entitlement, revokes the access ShareRepo granted, and purges every workspace-owned row, audit events included, 30 days later and only once no managed access remains. An account-scoped tombstone records the counts.
+- Deleting an account unlinks the user's GitHub account from every subject and customer, ends that access, and deletes their identity, sessions and memberships at once.
 
 ## Security and privacy
 
@@ -223,13 +246,15 @@ The reload is essential: the customer may renew or the subscription may change w
 
 Use structured logs and traces with:
 
-- request, event, job, workflow, workspace, connection, entitlement, and grant correlation IDs;
+- request, event, job, workspace, connection, entitlement, and grant correlation IDs;
 - provider operation names and normalized outcomes;
 - retry counts and rate-limit metadata;
 - reconciliation duration and drift counts;
 - no secrets or unnecessary personal data.
 
 Initial operational views should answer: What failed? Is access incorrect now? Will it retry? Does a user need to act? What decision created or removed access?
+
+The owner's Access page and the operator's `/ops` answer the first four; the audit history answers the last. The procedures are in the runbooks: [incident response](runbooks/incident-response.md), [failure triage](runbooks/failure-triage.md) and [alerting setup](runbooks/alerting-setup.md).
 
 ## Portability and self-hosting
 

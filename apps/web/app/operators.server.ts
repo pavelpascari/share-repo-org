@@ -15,10 +15,18 @@ export async function requireOperator(
   request: Request,
   context: Context,
 ): Promise<OperatorPrincipal> {
+  return (await requireOperatorSession(request, context)).operator;
+}
+
+/** {@link requireOperator}, with when the operator's session was created (their sign-in). */
+export async function requireOperatorSession(
+  request: Request,
+  context: Context,
+): Promise<{ readonly operator: OperatorPrincipal; readonly sessionCreatedAt: number }> {
   const { operatorGitHubIds } = context.get(cloudflareContext).env;
   const user = operatorGitHubIds.size === 0 ? null : await getSignedInUser(request, context);
   const operator =
     user === null ? null : await authorizeOperator(servicesFor(context), user, operatorGitHubIds);
-  if (operator === null) throw data(null, { status: 404 });
-  return operator;
+  if (user === null || operator === null) throw data(null, { status: 404 });
+  return { operator, sessionCreatedAt: user.sessionCreatedAt };
 }
