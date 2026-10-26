@@ -16,6 +16,9 @@ export default {
   mutate: ["src/**/*.ts"],
   coverageAnalysis: "perTest",
   reporters: ["clear-text", "progress", "html", "json"],
+  // List only the score table and surviving mutants. The per-test list marks every test that
+  // killed no mutant with ✘, which reads as a failure in CI logs although it is not one.
+  clearTextReporter: { reportTests: false },
   jsonReporter: { fileName: "reports/mutation/mutation.json" },
   htmlReporter: { fileName: "reports/mutation/mutation.html" },
   thresholds: { high: 100, low: 90, break: ratchet.mutation.domain },
