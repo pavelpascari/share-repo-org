@@ -4,11 +4,13 @@ import {
   decideManualAccess,
   type LiveEntitlement,
   type ManualPlanInput,
+  manualAccessEndDate,
   manualAccessRateLimitBuckets,
   manualAccessStatus,
   type PlanManualAccess,
   type PlanManualOffer,
   parseManualAccessEnd,
+  parseManualAccessEndDate,
   parseManualAccessNote,
   planManualEntitlements,
 } from "../src/index.ts";
@@ -79,6 +81,29 @@ describe("parseManualAccessNote", () => {
     ["tab\there", { ok: false, error: "note_invalid_characters" }],
   ])("%j", (input, result) => {
     expect(parseManualAccessNote(input)).toEqual(result);
+  });
+});
+
+// Decision 0017: the end of the chosen date anywhere on Earth (UTC−12) is 12:00 UTC next day.
+describe("parseManualAccessEndDate", () => {
+  it.each([
+    ["", { ok: true, value: null }],
+    ["  ", { ok: true, value: null }],
+    ["2026-10-26", { ok: true, value: Date.UTC(2026, 9, 27, 12) }],
+    [" 2026-12-31 ", { ok: true, value: Date.UTC(2027, 0, 1, 12) }],
+    ["2026-13-01", { ok: false, error: "end_date_invalid" }],
+    ["26/10/2026", { ok: false, error: "end_date_invalid" }],
+    ["2026-10-26T00:00", { ok: false, error: "end_date_invalid" }],
+    ["x2026-10-26", { ok: false, error: "end_date_invalid" }],
+  ])("%j", (input, result) => {
+    expect(parseManualAccessEndDate(input)).toEqual(result);
+  });
+
+  it.each([
+    [Date.UTC(2026, 9, 27, 12), "2026-10-26"],
+    [Date.UTC(2027, 0, 1, 12), "2026-12-31"],
+  ])("the end %d was chosen as %s", (endsAt, date) => {
+    expect(manualAccessEndDate(endsAt)).toBe(date);
   });
 });
 

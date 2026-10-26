@@ -116,7 +116,8 @@ describe("manual access route", () => {
       error: "Enter the end date as a date, or leave it empty for no end.",
     });
     expect((await manual.loader(args(get(path, s.owner), s, context))).accesses[0]?.endsAt).toBe(
-      Date.UTC(2099, 0, 31),
+      // The end of 2099-01-31 anywhere on Earth: 12:00 UTC the next day (decision 0017).
+      Date.UTC(2099, 1, 1, 12),
     );
 
     expect(await submit({ intent: "revoke", manualAccessId })).toEqual({

@@ -1,5 +1,5 @@
 import { connectedCreator } from "./support/github.ts";
-import { expect, test } from "./support/journeys.ts";
+import { expect, signIn, test } from "./support/journeys.ts";
 import {
   acceptInvitation,
   checkUntil,
@@ -16,6 +16,7 @@ test.describe.configure({ timeout: 120_000 });
 
 test("manual/owner-grants-and-revokes-by-login: the account is invited, accepts, and is removed on revoke", async ({
   page,
+  browser,
   request,
 }) => {
   const { account, slug } = await connectedCreator(page);
@@ -43,6 +44,19 @@ test("manual/owner-grants-and-revokes-by-login: the account is invited, accepts,
   expect((await repositoryAccess(request, repository)).invitations).toEqual([
     expect.objectContaining({ inviteeId: buyer.id }),
   ]);
+
+  // The recipient signs in: "My access" shows the grant exactly like a purchase, with no note.
+  const buyerContext = await browser.newContext();
+  const buyerTab = await buyerContext.newPage();
+  await signIn(buyerTab, buyer);
+  await buyerTab.goto("/me/access");
+  const shown = buyerTab.getByRole("listitem", { name: "Creator Studio" });
+  await expect(shown).toContainText("Subscription active");
+  await expect(shown).toContainText(repository);
+  await expect(shown.getByRole("link", { name: "Accept the invitation on GitHub" })).toBeVisible();
+  await expect(shown).not.toContainText("early buyer");
+  await buyerContext.close();
+
   await acceptInvitation(request, repository, buyer);
   await checkUntil(page, slug, repository, buyer.login, ["Access is in place"]);
 

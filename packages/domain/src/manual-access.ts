@@ -97,6 +97,33 @@ export function parseManualAccessNote(
   return { ok: true, value: note };
 }
 
+/**
+ * How far past the chosen date's UTC midnight a manual access ends: the end of that date anywhere
+ * on Earth (AoE, UTC−12), that is 12:00 UTC on the next day (decision 0017). ShareRepo cannot know
+ * the recipient's time zone, so no recipient loses access before their own day ends.
+ */
+const END_OF_DAY_AOE_MS = 36 * 3_600_000;
+
+/**
+ * The end instant of an owner's chosen end date (`YYYY-MM-DD`): the end of that date anywhere on
+ * Earth. Empty means no end; anything not shaped `YYYY-MM-DD`, or that does not parse, is
+ * `end_date_invalid`. The page's date input sends only real dates.
+ */
+export function parseManualAccessEndDate(
+  input: string,
+): ParseResult<Instant | null, "end_date_invalid"> {
+  const date = input.trim();
+  if (date === "") return { ok: true, value: null };
+  const midnight = /^\d{4}-\d{2}-\d{2}$/.test(date) ? Date.parse(`${date}T00:00:00Z`) : Number.NaN;
+  if (Number.isNaN(midnight)) return { ok: false, error: "end_date_invalid" };
+  return { ok: true, value: midnight + END_OF_DAY_AOE_MS };
+}
+
+/** The date an owner chose for an end instant (the inverse of {@link parseManualAccessEndDate}). */
+export function manualAccessEndDate(endsAt: Instant): string {
+  return new Date(endsAt - END_OF_DAY_AOE_MS).toISOString().slice(0, 10);
+}
+
 /** An end date for a manual access: none, or an instant after `now`. */
 export function parseManualAccessEnd(
   endsAt: Instant | null,

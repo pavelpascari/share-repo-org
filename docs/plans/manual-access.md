@@ -70,7 +70,7 @@ The product owner (2026-10-25) made two previously accepted risks normal creator
 
 ## Code and documentation conflicts found
 
-- `docs/domain-model.md` § State sketches says an active entitlement past `validUntil` "has already ended… never extends it". Decision 0013 and the planner continue an expiry-pending entitlement when the source confirms it went on. The code follows 0013; the sketch predates it. Left as is here (not this feature's text) and flagged.
+- `docs/domain-model.md` § State sketches used to say an active entitlement past `validUntil` "has already ended… never extends it", which contradicted decision 0013. Resolved by Phase 6 T7, which rewrote the sketch to describe expiry pending; the merged text agrees with the code.
 - The threat model listed T12's mitigation as deferred "until Paddle reports the transaction". Paddle does report it on the transaction, but that would not identify the actor; see decision 0016.
 
 ## Open questions for the user

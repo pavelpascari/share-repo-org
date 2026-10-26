@@ -148,9 +148,11 @@ export {
   MANUAL_ACCESS_REVOKE_CAUSES,
   ManualAccessRevokeCause,
   ManualAccessStatus,
+  manualAccessEndDate,
   manualAccessRateLimitBuckets,
   manualAccessStatus,
   parseManualAccessEnd,
+  parseManualAccessEndDate,
   parseManualAccessNote,
   planManualEntitlements,
 } from "./manual-access.ts";

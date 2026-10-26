@@ -5,6 +5,7 @@ import {
   revokeManualAccess,
   updateManualAccessEnd,
 } from "@sharerepo/application";
+import { manualAccessEndDate, parseManualAccessEndDate } from "@sharerepo/domain";
 import { Label, Radio, RadioGroup } from "react-aria-components";
 import { Form, useNavigation } from "react-router";
 import { z } from "zod";
@@ -17,7 +18,7 @@ import {
 } from "../commerce-messages.ts";
 import { TextField } from "../components/text-field.tsx";
 import { cloudflareContext } from "../context.ts";
-import { formatDate, formatInstant } from "../entitlement-messages.ts";
+import { formatInstant } from "../entitlement-messages.ts";
 import { attempt } from "../entitlements.server.ts";
 import { assertSameOrigin } from "../security/same-origin.ts";
 import { asResponse, loadWorkspace } from "../workspaces.server.ts";
@@ -40,12 +41,10 @@ export async function loader({ request, params, context }: Route.LoaderArgs) {
   return view;
 }
 
-/** A `YYYY-MM-DD` end date as its UTC midnight; empty for no end. Undefined when malformed. */
+/** The end of a `YYYY-MM-DD` date anywhere on Earth (decision 0017); null: none; undefined: bad. */
 function parseEndDate(value: string): number | null | undefined {
-  if (value.trim() === "") return null;
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(value.trim())) return undefined;
-  const instant = Date.parse(`${value.trim()}T00:00:00Z`);
-  return Number.isNaN(instant) ? undefined : instant;
+  const parsed = parseManualAccessEndDate(value);
+  return parsed.ok ? parsed.value : undefined;
 }
 
 const grantForm = z.object({
@@ -203,7 +202,7 @@ export default function ManualAccess({ loaderData, actionData }: Route.Component
           name="endsOn"
           label="End date (optional)"
           type="date"
-          description="Access ends at 00:00 UTC on this date. Leave empty for no end."
+          description="Access ends after this date in every time zone: whoever you grant it to keeps it until the day is over where they are (12:00 UTC the next day). Leave empty for no end."
           className="max-w-xs"
         />
         <TextField
@@ -257,7 +256,11 @@ function GrantCard(props: {
         <dt className="text-gray-600">Granted</dt>
         <dd>{formatInstant(access.grantedAt)}</dd>
         <dt className="text-gray-600">Ends</dt>
-        <dd>{access.endsAt === null ? "No end date" : formatInstant(access.endsAt)}</dd>
+        <dd>
+          {access.endsAt === null
+            ? "No end date"
+            : `Access ends after ${manualAccessEndDate(access.endsAt)}`}
+        </dd>
         {access.revokedAt !== null && (
           <>
             <dt className="text-gray-600">Revoked</dt>
@@ -294,7 +297,7 @@ function GrantCard(props: {
               name="endsOn"
               label="New end date"
               type="date"
-              defaultValue={access.endsAt === null ? "" : formatDate(access.endsAt)}
+              defaultValue={access.endsAt === null ? "" : manualAccessEndDate(access.endsAt)}
             />
             <button
               type="submit"

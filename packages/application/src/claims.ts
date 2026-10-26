@@ -1212,5 +1212,5 @@ export function myAccess(
   context: ServiceContext,
   user: UserActor,
 ): Promise<repo.MyAccessSubscription[]> {
-  return repo.listMyAccess(context.db, { userId: user.userId });
+  return repo.listMyAccess(context.db, { userId: user.userId, now: context.clock.now() });
 }
