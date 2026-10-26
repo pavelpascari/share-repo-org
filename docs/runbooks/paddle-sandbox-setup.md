@@ -102,3 +102,13 @@ Phase 5 is built on the safe assumptions in decisions 0011 and 0012. Several Pad
 9. **Clean up.** Disconnect Paddle on Billing (every ShareRepo destination disappears from Notifications), and revoke the sandbox key.
 
 Never commit a key, a webhook secret, a customer email or a full payload. Redact IDs you would not publish.
+
+## 10. Spike: where a checkout reference came from
+
+Decision 0016 leaves one open item: whether ShareRepo can flag a customer link whose checkout reference reached the subscription outside its own checkout. The read-only spike runs against this sandbox in one command:
+
+```sh
+PADDLE_SANDBOX_API_KEY=pdl_sdbx_apikey_… pnpm spike:paddle-origin --subscription sub_… [--transaction txn_…]
+```
+
+The scenarios to create, what to observe, the decision rule and the results table are in [the spike procedure](../research/paddle-reference-origin-spike.md). The key also needs **Notifications: Read** for the event order.

@@ -12,7 +12,8 @@ The product owner (2026-10-25) made two previously accepted risks normal creator
 ## Scope
 
 - In: a `manual` entitlement source; grant, change the end date and revoke; the end date as a database timer; offer versions; workspace and account deletion; export; access and Customers pages; removing a customer link; limits; audit.
-- Out: showing manual access on the recipient's **My access** page (see open questions); bulk grants; grants for teams or organizations; any Paddle API change.
+- In (2026-10-26): manual access on the recipient's **My access** page, like a purchase.
+- Out: bulk grants; grants for teams or organizations; any Paddle API change.
 
 ## Design summary
 
@@ -73,10 +74,23 @@ The product owner (2026-10-25) made two previously accepted risks normal creator
 - `docs/domain-model.md` § State sketches used to say an active entitlement past `validUntil` "has already ended… never extends it", which contradicted decision 0013. Resolved by Phase 6 T7, which rewrote the sketch to describe expiry pending; the merged text agrees with the code.
 - The threat model listed T12's mitigation as deferred "until Paddle reports the transaction". Paddle does report it on the transaction, but that would not identify the actor; see decision 0016.
 
-## Open questions for the user
+## Decided (2026-10-26)
 
-1. **My access for recipients.** A recipient who has a ShareRepo account does not see manual access on **My access** (it lists subscriptions). Conservative choice: not shown in v1. Should it be?
-2. **End date granularity.** The page takes a date and ends access at 00:00 UTC on it. Should it be the end of that day, or the creator's time zone?
-3. **Limits.** 100 open grants and 50 new a day per workspace are defaults. Are they right for early creators?
-4. **Checkout-reference attribution.** ShareRepo could compare the checkout's stored transaction with Paddle's `GET /transactions/{id}` to flag links whose reference arrived outside its checkout (not who did it). Worth verifying in the Paddle sandbox before building?
-5. **Members.** Only owners can grant. Should members with a future "manager" role be able to?
+1. **My access for recipients.** "Yes it should. but it should not look any different than if they went through the purchase." Done: My access lists manual access through the recipient's own GitHub ID, as purchases are, with the same component and wording. An end date shows as a scheduled cancellation; there is no source label and no note (`isolation/cross-workspace-read-denied` in `packages/db/test/customer-links.test.ts`, and the E2E journey).
+2. **End date.** "let's pick end of day at the recipients timezone." ShareRepo cannot know the recipient's time zone, so access ends at the end of the chosen date anywhere on Earth: 12:00 UTC the next day ([decision 0017](../decisions/0017-manual-access-end-of-day.md)). The page says "Access ends after <date>". Nothing has shipped, so no stored row needs a migration.
+3. **Limits.** 100 open grants and 50 new grants a day per workspace are confirmed for now: "we can adjust later".
+4. **Checkout-reference attribution.** "Let's spike it." Prepared: `pnpm spike:paddle-origin` and [the procedure](../research/paddle-reference-origin-spike.md). **Open item:** pending the product owner's sandbox run and results.
+5. **Who can grant.** "No. Only owners." As implemented (`workspace.manage`).
+
+## Known edge cases (deferred)
+
+The product owner's rule for now (2026-10-26): build the main path and note the exceptions; they will be examined when ShareRepo opens up as a SaaS. Security and workspace isolation are part of the main path.
+
+- **Impossible calendar dates.** `parseManualAccessEndDate` checks the `YYYY-MM-DD` shape and that it parses. A day past the month's end (`2026-02-30`) rolls over to the next month, as JavaScript dates do. The page's date input sends only real dates.
+- **The recipient's view of an end date.** My access shows the stored instant like a purchase's cancellation, so a grant ending after 2026-10-26 reads "Cancels 2026-10-27" (12:00 UTC). The creator's page reads "Access ends after 2026-10-26".
+- **Several grants or purchases for one workspace.** My access lists each as its own card, as it does for several subscriptions.
+- **A recipient's account renamed on GitHub.** The grant follows the immutable ID; the creator's list shows the login snapshot until the account is next resolved.
+- **The rate limit counts refused grants.** A grant refused after the limit was taken (a login that does not resolve) still uses one of the 50 a day.
+- **A crash between a grant's writes and a resubmitted form** can count the rate limit twice (`crash/every-batch-boundary-converges`).
+- **Reactivating an ended grant** is done by editing its end date. Revoked grants are final; the owner grants again.
+- **Grants for organizations, teams or bots** are refused, not supported.

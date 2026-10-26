@@ -14,13 +14,13 @@ Until now every entitlement derived from a subscription (`ENTITLEMENT_SOURCE_TYP
 
 ### Manual access is an entitlement source
 
-- **What it is.** A workspace owner grants an offer's repositories to a GitHub account, with an optional end date (a UTC instant) and an optional note. It is stored in `manual_accesses` (offer, subject, `ends_at`, note, revocation, `version`, `next_evaluation_at`).
+- **What it is.** A workspace owner grants an offer's repositories to a GitHub account, with an optional end date (a UTC instant; the end of the chosen date anywhere on Earth, [decision 0017](0017-manual-access-end-of-day.md)) and an optional note. It is stored in `manual_accesses` (offer, subject, `ends_at`, note, revocation, `version`, `next_evaluation_at`).
 - **Entitlements.** `ENTITLEMENT_SOURCE_TYPES` is `["subscription", "manual"]`. A manual access's entitlements have `source_type = 'manual'` and name it as `source_id`. Migration 0012 rebuilds `entitlements` with two generated columns, `subscription_id` and `manual_access_id` (each is `source_id` when `source_type` names its table, else null). Each has its own composite foreign key, so a source of either type must exist in the same workspace. Writers set nothing new: code deployed before the migration keeps working while it runs.
 - **Same pipeline.** Entitlements are planned by `planManualEntitlements`, which shares the subscription planner's diff (`diffEntitlements`), and written in one guarded batch with reconcile requests and audit events. Reconciliation does not know or care about the source: desired state is entitlements, observed state is grants.
 - **Policy** (`decideManualAccess`, policy version 1): granted with reason `manual` until the end date (open-ended without one); `manual_ended` (state `expired`) once the end date passed; `manual_revoked` (state `revoked`) once revoked. No grace period.
 - **The recipient needs no ShareRepo account.** The login is resolved to its immutable GitHub ID through the workspace's GitHub connection (`resolveGitHubAccount`, shared with the manual customer link). The subject is keyed by that ID per workspace, as for every other source. The login is a snapshot.
 - **Works in production.** Unlike the simulated source, which stays outside production (decision 0009).
-- **Permission.** `workspace.manage` (owners), in an active workspace. The page is `/w/<slug>/manual-access`; changes are same-origin POSTs.
+- **Permission.** `workspace.manage` (owners only, confirmed by the product owner 2026-10-26: "No. Only owners."), in an active workspace. The page is `/w/<slug>/manual-access`; changes are same-origin POSTs.
 
 ### Owners' actions
 
@@ -51,6 +51,11 @@ A decision is authorized and planned from reads. The batch re-checks, in the sam
 - **At most 100 open manual accesses per workspace**, counted inside the insert (`INSERT … SELECT … WHERE count < 100`).
 - **At most 50 new grants a day per workspace**, through the D1 rate-limit table (one atomic statement; checked before GitHub is asked).
 - The per-repository GitHub invitation budget (`INVITATION_BUDGET`, 40 a day) applies to manual grants like any other: reconciliation waits when it is used up. The limits bound how many GitHub invitations a workspace can make ShareRepo send to people who did not buy, and the work of re-evaluating a workspace's manual accesses.
+- The product owner confirmed both limits for now (2026-10-26: "we can adjust later").
+
+### The recipient's view
+
+A recipient with a ShareRepo account sees their manual access on **My access**, looked up through their own GitHub ID across workspaces, as purchases are. It looks no different from a purchase (product owner, 2026-10-26): no source label and no note. An end date shows as a scheduled cancellation; an ended or revoked grant shows as canceled.
 
 ### Data lifecycle (decision 0015)
 
@@ -83,3 +88,4 @@ A decision is authorized and planned from reads. The batch re-checks, in the sam
 - The minute tick does a little local work besides queueing. Its heartbeat reports `manualAccessesEvaluated`, and the evaluation backlog includes due manual accesses.
 - A recompute's due mark is an unaudited scheduling hint, like the subscription sweep clearing its timer; the evaluation that follows is audited.
 - Amends: decision 0009 (entitlement sources), 0013 (a timer without expiry confirmation), 0015 (deletion, export, purge order).
+- **Open (2026-10-26):** a [sandbox spike](../research/paddle-reference-origin-spike.md) checks whether a link whose reference arrived outside ShareRepo's checkout can at least be flagged. Until it is run, the design above stands.

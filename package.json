@@ -22,6 +22,7 @@
     "test:sandbox": "node -e \"console.log('No sandbox suites until Phase 2.')\"",
     "check:scenarios": "node scripts/scenario-catalog.ts",
     "spike:github": "node scripts/spike/github-feasibility.ts",
+    "spike:paddle-origin": "node scripts/spikes/paddle-reference-origin.ts",
     "db:generate": "pnpm --filter @sharerepo/db db:generate",
     "db:migrate:local": "pnpm --filter @sharerepo/db db:migrate:local",
     "db:migrate:dev": "pnpm --filter @sharerepo/db db:migrate:dev",

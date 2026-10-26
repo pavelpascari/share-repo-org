@@ -62,7 +62,7 @@ GitHub login and GitHub App installation are separate steps. Logging in identifi
 
 If neither works, the creator can link the purchase to your GitHub account by hand, from their Customers page. The Customers page shows how each purchase was linked, and the creator can remove a link that went to the wrong account; the payer can then claim it by email.
 
-**Given access without a purchase?** The creator granted you manual access: accept the GitHub invitation. You don't need a ShareRepo account.
+**Given access without a purchase?** The creator granted you manual access: accept the GitHub invitation. You don't need a ShareRepo account; if you have one, it appears on **My access** like a purchase.
 
 ## Version 1 scope
 

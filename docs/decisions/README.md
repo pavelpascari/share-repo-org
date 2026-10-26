@@ -22,3 +22,4 @@ Each record has: **Status**, **Context**, **Decision**, **Consequences**.
 | [0014](0014-failure-handling-and-alerting.md) | Failure records, dead-letter queue, operator access, email alerts | Accepted |
 | [0015](0015-data-lifecycle.md) | Data lifecycle: retention, export, workspace and account deletion | Accepted |
 | [0016](0016-manual-access-source.md) | Manual access: an entitlement source without a payment provider | Accepted |
+| [0017](0017-manual-access-end-of-day.md) | A manual access ends after its date everywhere on Earth | Accepted |
