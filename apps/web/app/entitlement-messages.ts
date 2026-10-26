@@ -6,6 +6,7 @@ import type {
 } from "@sharerepo/application";
 import type {
   AccessDecisionReason,
+  CommercialSource,
   GrantErrorCode,
   GrantState,
   OfferAccessError,
@@ -101,6 +102,8 @@ const ACCESS_REASONS: Record<AccessDecisionReason, string> = {
   item_removed: "Item no longer on the subscription",
   customer_unlinked: "Subscriber unlinked from the customer",
   subscription_missing: "Subscription no longer found",
+  workspace_deleted: "Workspace being deleted",
+  account_deleted: "Subscriber deleted their account",
 };
 
 /** Human text for a stored decision reason; an unrecognized one still reads as a sentence. */
@@ -141,6 +144,8 @@ const PLANNED_REASONS: Record<ReconciliationReason, string> = {
   no_access: "no access",
   invitation_quota: "invitation limit for this repository reached, waiting for it to reset",
   indirect_access: "has access as the repository owner, left as is",
+  expiry_pending:
+    "the end date passed; access stays while the subscription's end is confirmed, for up to 6 hours",
 };
 
 /** What a wait is for, by its reason; other waits read as "Waiting". */
@@ -149,23 +154,33 @@ const WAITS: Partial<Record<ReconciliationReason, string>> = {
   invitation_quota: "Waiting: invitation limit for this repository reached",
   transient_error: "Waiting to retry",
   rate_limited: "Waiting to retry",
+  expiry_pending: "Ending: confirming the subscription",
+};
+
+/** An expiry-pending wait names Paddle when Paddle is the source it confirms with (0013). */
+const EXPIRY_PENDING_WITH: Partial<Record<CommercialSource, string>> = {
+  paddle: "Ending: confirming with Paddle",
 };
 
 /**
  * What reconciliation will do, as a label and a detail: "Will invite" / "No access yet", or
  * "Blocked: repository not sellable" when a change is blocked. A wait to retry names when, given
- * the grant's next attempt.
+ * the grant's next attempt; a wait for an expiry to be confirmed names the subscription's source
+ * when it is Paddle.
  */
 export function plannedActionText(
   action: ReconciliationAction,
   reason: ReconciliationReason,
   retryAt: number | null = null,
+  source: CommercialSource | null = null,
 ): { label: string; detail: string } {
   const why = PLANNED_REASONS[reason];
   let label = PLANNED_ACTIONS[action];
   if (action === "blocked") label = `Blocked: ${why}`;
   if (action === "wait") {
-    label = WAITS[reason] ?? label;
+    const named =
+      reason === "expiry_pending" && source !== null ? EXPIRY_PENDING_WITH[source] : undefined;
+    label = named ?? WAITS[reason] ?? label;
     if (label === "Waiting to retry" && retryAt !== null) {
       label = `${label} at ${formatInstant(retryAt)}`;
     }

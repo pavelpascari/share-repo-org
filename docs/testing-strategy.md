@@ -23,8 +23,8 @@ ShareRepo's main risk is incorrect access: a paying subscriber without a grant, 
 | Fake providers | Used by the layers below | In-memory GitHub and Paddle implementations of the ports, with fault injection | `packages/testing` |
 | Application service and scenario | Vitest, Workers pool, local D1, in-process queue drain | The full flow event → refresh → entitlements → plan → mutate → observe → audit, run against fakes. One named scenario per matrix item. | `packages/application`, `packages/testing` |
 | Model-based convergence | Vitest, Workers pool or Node, `fast-check` | Random event sequences with injected faults. Checks global invariants after a final reconcile. | `packages/testing` |
-| Worker entry points | Vitest, Workers pool | Queue consumer, scheduled (cron) handler, and Workflow entry points: wiring, acknowledge/retry behaviour, idempotency | `apps/jobs`, `apps/web` |
-| End-to-end | Playwright against local dev Workers, fresh local D1 per run, fake OAuth server | Critical journeys: sign in, create workspace, connect repositories, map offer, subscriber claim, access status | `apps/web` |
+| Worker entry points | Vitest, Workers pool | Queue and dead-letter consumers, scheduled (cron) handler, routes and webhooks: wiring, acknowledge/retry behaviour, idempotency | `apps/jobs`, `apps/web` |
+| End-to-end | Playwright against local dev Workers, fresh local D1 per run, fake OAuth server | Critical journeys: sign in, create workspace, connect repositories, map offer, subscriber claim, access status; from Phase 6, failed jobs and their retry, `/ops`, expiry confirmation, export and deletion, webhook secret rotation | `apps/web` |
 | Sandbox smoke | Opt-in, real GitHub test account and Paddle sandbox | Real provider behaviour that fixtures cannot prove | `packages/integrations`, `apps/*` |
 
 ## Required seams
@@ -33,7 +33,7 @@ Build these in Phase 0–1 so later phases can be tested without retrofitting.
 
 | Seam | Production binding | Test binding | Why |
 |---|---|---|---|
-| `Clock` | System time (UTC) | Controllable clock | Grace periods, effective cancellation, invitation expiry, and workflow sleeps become ordinary tests |
+| `Clock` | System time (UTC) | Controllable clock | Grace periods, effective cancellation, invitation expiry, the expiry confirmation window and sweep timers become ordinary tests |
 | ID generator | Random/ULID | Deterministic sequence | Stable assertions and reproducible property-test failures |
 | HTTP client / `fetch` | Global `fetch` | Fixture-backed or fake-backed `fetch` | Adapters are tested without network access or a version-specific request mock |
 | Queue port | Cloudflare Queues producer | In-process queue that tests drain explicitly, with redelivery and reordering | Repeated delivery and crash-between-steps scenarios |
@@ -54,7 +54,10 @@ Build these in Phase 0–1 so later phases can be tested without retrofitting.
 - fail with a retryable, rate-limited (including secondary rate limit), terminal, or user-action-required error;
 - succeed but lose the response, so the mutation is applied and the caller sees a timeout;
 - return stale state on the next read;
-- simulate an outage for a time window measured by the test clock.
+- simulate an outage for a time window measured by the test clock (`outage(until)`: 503 until the fake's clock reaches it);
+- hang past the client's timeout (`hangNext(operation)`): the call fails as the real client fails a request its `AbortSignal` timeout aborted, `transient` with no status. A contract runs the same hang against the fake and against the real client over a `fetch` that stalls at its headers or mid-body (`packages/integrations/test/timeout.test.ts`).
+
+**Crash between writes.** `crashingD1` (`packages/testing`) wraps a D1 binding so that its Nth write (a `batch()`, or a single INSERT, UPDATE or DELETE) fails before it runs or after it commits. `packages/application/test/crash.test.ts` (`crash/every-batch-boundary-converges`) runs each multi-write operation once to count its writes, then crashes at every write on both sides, re-runs it as the queue or the user would, and compares every workspace table, the account audit events and the fakes' state with the clean run. A case names the history a recovery may add (a mutation in doubt, resolved) and the failures an operation absorbs by design. A new multi-write operation adds a case.
 
 Tests can also make out-of-band changes that act as drift: a human removes a collaborator, adds one manually, renames a user or repository, suspends an installation, or a subscriber declines an invitation.
 
@@ -74,7 +77,7 @@ Each scenario has a stable name used as the test title so coverage of the matrix
 | `webhook/out-of-order-does-not-regress` | Matrix: out-of-order events; AGENTS: out-of-order webhooks | Service, property | 3, 5 |
 | `webhook/invalid-signature-rejected-before-persist` | Integrations: signature verification | Contract | 2, 5 |
 | `queue/redelivery-is-idempotent` | Matrix: repeated queue delivery; AGENTS: repeated queue delivery | Service, entry point | 4 |
-| `workflow/replay-is-idempotent` | Matrix: workflow replay; AGENTS: workflow retries | Entry point | 6 |
+| `timing/sweep-replay-is-idempotent` | Matrix: workflow replay; AGENTS: workflow retries; renamed from `workflow/replay-is-idempotent` by [decision 0013](decisions/0013-database-timers-and-expiry-confirmation.md) | Entry point | 6 |
 | `provider/mutation-succeeds-response-lost` | Matrix: provider success with lost response | Service | 4 |
 | `crash/between-event-commit-and-enqueue` | Matrix: partial transaction and crash recovery | Service | 3–4 |
 | `crash/between-mutation-and-observation` | Same | Service | 4 |
@@ -94,7 +97,37 @@ Each scenario has a stable name used as the test title so coverage of the matrix
 | `timing/cancellation-revokes-at-effective-time` | AGENTS: cancellation timing | Domain, service | 3, 5 |
 | `timing/past-due-within-grace-keeps-access` | AGENTS: grace periods | Domain, service | 3, 5 |
 | `timing/grace-expiry-revokes` | Same | Domain, service | 3, 6 |
-| `timing/stale-workflow-cannot-revoke-renewed` | Implementation plan, Phase 6 | Entry point | 6 |
+| `timing/stale-workflow-cannot-revoke-renewed` | Implementation plan, Phase 6 | Entry point, E2E | 6 |
+| `timing/expiry-confirmed-before-revoke` | Decision 0013 | Domain, service, E2E | 6 |
+| `timing/expiry-revokes-after-confirmation-window` | Decision 0013 | Domain, entry point | 6 |
+| `timing/sweep-lag-alerts` | Decision 0014 | Entry point | 6 |
+| `timing/sweep-lag-excuses-rate-limits` | Decision 0014 (amended): a GitHub rate limit excuses lag for at most an hour | DB, service, entry point | 6 |
+| `failure/exhausted-job-is-recorded-and-alerted` | Decision 0014 | Entry point | 6 |
+| `failure/dead-letter-marks-row-failed` | Decision 0014; [operations threat model](security/operations-threat-model.md) O14 | Entry point | 6 |
+| `failure/owner-sees-only-own-failures` | Decision 0014; isolation | Service, E2E | 6 |
+| `operator/non-operator-gets-404` | Decision 0014; operations threat model O1, O2 | Entry point, E2E | 6 |
+| `operator/actions-audited` | Decision 0014; operations threat model O4 | Service | 6 |
+| `crash/every-batch-boundary-converges` | Matrix: partial transaction and crash recovery | Service | 6 |
+| `provider/timeout-is-retryable` | Matrix: provider outage | Contract, service | 6 |
+| `retention/prune-keeps-referenced-rows` | Decision 0015 | DB, service | 6 |
+| `deletion/workspace-revokes-before-purge` | Decision 0015 | Service (E2E covers delete and cancel only: the dev server runs no crons, so the deletion's refreshes never run there) | 6 |
+| `deletion/audit-delete-only-while-purging` | Decision 0015 | DB | 6 |
+| `deletion/purging-is-one-way` | Operations threat model O10 | DB | 6 |
+| `deletion/purge-touches-only-its-workspace` | Operations threat model O11 | Service | 6 |
+| `deletion/cross-site-request-refused` | Operations threat model O7, O8, O12 | Entry point | 6 |
+| `deletion/account-revokes-and-removes-identity` | Decision 0015 | Service | 6 |
+| `export/contains-no-secrets` | Decision 0015; AGENTS: secret leakage | Service | 6 |
+| `rotation/old-and-new-secret-both-accepted` | Phase 6: credential rotation | Service, entry point, E2E (Paddle webhook secret) | 6 |
+| `partition/one-installation-cannot-starve-others` | Phase 6: partitioned reconciliation | Service | 6 |
+| `migration/upgrade-from-each-release-keeps-data` | Phase 6: migration procedures | DB | 6 |
+| `security/no-secrets-in-stored-rows-or-logs` | Phase 6 acceptance | Service, entry point | 6 |
+| `paddle/orphaned-destinations-swept` | [Operations threat model](security/operations-threat-model.md#status-after-phase-6-risk-fixes) R1 | Service, contract | 6 |
+| `rotation/rewrap-progresses-past-unopenable-envelopes` | Operations threat model R2 | Service | 6 |
+| `deletion/sign-in-racing-account-deletion-attaches-cleanly` | Operations threat model R3 | Service | 6 |
+| `security/blank-secret-fails-closed` | Operations threat model R4 | Unit | 6 |
+| `queue/outbox-ack-matches-kind-and-subject` | Operations threat model R5 | DB, entry point | 6 |
+| `operator/list-views-audited` | Operations threat model R6; decision 0014 | Service, entry point | 6 |
+| `operator/mutation-needs-fresh-session` | Operations threat model R7; decision 0014 | Service, entry point | 6 |
 | `resource/selection-removed-blocks-new-provisioning` | Matrix: resource removal | Service | 2, 4 |
 | `resource/rename-transfer-keeps-identity` | Integrations: GitHub risks | Contract, service | 2 |
 | `connection/suspended-installation-surfaces-error` | Matrix: connection suspension | Service | 2, 4 |
@@ -186,6 +219,7 @@ CI on every PR runs `pnpm lint`, `pnpm typecheck`, `pnpm test:coverage` with the
 - **Recorded and redacted.** Provider responses and webhooks are recorded from sandbox or test accounts, then redacted: tokens, emails, names, and IDs are replaced with stable synthetic values. A redaction check fails if a fixture contains token-shaped strings or real email domains.
 - **Exact raw bytes.** Webhook fixtures store the raw body as received, and the signature is computed over those bytes with a test secret. Tests cover a valid signature, a tampered body, re-serialised JSON (which must fail), a wrong secret, and a missing header.
 - **Versioned.** Fixtures record the provider API or webhook version so schema changes appear as explicit fixture updates.
+- **Upgrade fixtures, one per migration.** Every migration `NNNN` adds `packages/db/test/fixtures/at-NNNN.sql` in the same change: representative rows valid at that migration, with at least one row in every table that exists then, satisfying its constraints and triggers. Start from the previous fixture and add rows for what `NNNN` introduces. `packages/db/test/upgrade.test.ts` (scenario `migration/upgrade-from-each-release-keeps-data`) has one test per fixture. Each test applies `0000…NNNN` to an empty database, loads the fixture, and applies the remaining migrations. It then checks `PRAGMA foreign_key_check` (no rows) and `PRAGMA quick_check` (`ok`; D1 does not allow `integrity_check`). It also checks that every fixture row survives with every value, and that columns added later hold their declared default (or null). The newest fixture has nothing to upgrade through until the next migration lands, and that migration's test then exercises it. A test fails when the set of fixtures differs from the set of migrations. A migration that changes existing values on purpose (a backfill, a dropped or renamed column) must make that expectation explicit in the test.
 - **Secret leakage test.** Test setup injects canary values into every secret, token, and credential. A shared assertion runs after every service and scenario test and fails if any canary appears in captured logs, audit event details, stored external-event metadata, or error messages.
 
 ## Version-sensitive details
@@ -193,7 +227,7 @@ CI on every PR runs `pnpm lint`, `pnpm typecheck`, `pnpm test:coverage` with the
 Tool versions and the testing APIs this strategy relies on are recorded in [`docs/decisions/0001-stack-versions.md`](decisions/0001-stack-versions.md). In summary:
 
 - Workers tests use `@cloudflare/vitest-plugin` (the renamed `vitest-pool-workers`) on Vitest 4.1, in a root `projects` config alongside Node projects, with merged V8 coverage.
-- D1 migrations are applied with `readD1Migrations`/`applyD1Migrations`; queue consumers are tested with `createMessageBatch`/`getQueueResult`; cron with `createScheduledController`; Workflows with disposable introspectors that can mock steps and skip sleeps.
+- D1 migrations are applied with `readD1Migrations`/`applyD1Migrations`; queue consumers are tested with `createMessageBatch`/`getQueueResult`; cron with `createScheduledController`. Workflows are not used ([decision 0013](decisions/0013-database-timers-and-expiry-confirmation.md)).
 - **Storage is isolated per test file, not per test.** Tests in one file share D1 state, so each test creates its own workspace and IDs, or resets in `afterEach`. Isolation tests must not pass by accident because another test's data happens to be absent.
 - Vitest `coverage.thresholds.autoUpdate` can only rewrite literal values in the Vitest config, not an imported JSON file, so `scripts/coverage-ratchet.ts` owns raising thresholds. One file then feeds both Vitest and Stryker.
 - Stryker runs only on `packages/domain` and requires Vitest 4 until stryker-js #6210 is fixed.

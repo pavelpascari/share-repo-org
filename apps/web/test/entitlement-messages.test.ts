@@ -254,6 +254,24 @@ describe("access messages", () => {
     // A retry time only qualifies a wait.
     expect(plannedActionText("retry", "rate_limited", at).label).toBe("Will retry");
   });
+
+  it("timing/expiry-confirmed-before-revoke: name Paddle while an ending is confirmed with it", () => {
+    expect(plannedActionText("wait", "expiry_pending", null, "paddle")).toEqual({
+      label: "Ending: confirming with Paddle",
+      detail:
+        "The end date passed; access stays while the subscription's end is confirmed, for up to 6 hours",
+    });
+    // The simulator is not named; neither is a source on any other wait.
+    expect(plannedActionText("wait", "expiry_pending", null, "simulated").label).toBe(
+      "Ending: confirming the subscription",
+    );
+    expect(plannedActionText("wait", "expiry_pending").label).toBe(
+      "Ending: confirming the subscription",
+    );
+    expect(plannedActionText("wait", "invitation_pending", null, "paddle").label).toBe(
+      "Waiting for the subscriber to accept",
+    );
+  });
 });
 
 describe("simulator messages", () => {

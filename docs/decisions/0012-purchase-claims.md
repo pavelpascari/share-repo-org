@@ -90,3 +90,13 @@ A **claim** links a Paddle customer (`ctm_…`) in a workspace to a ShareRepo us
 - Path 1 needs `transaction.write` on the key, and a default payment link page on the creator's approved domain that loads Paddle.js. The billing page gives a snippet.
 - Path 2 depends on a beta email service and on Workers Paid. It sits behind an adapter so the provider can change.
 - Hosting checkout on `sharerepo.org` would need Paddle to approve that domain for each seller, which is unconfirmed. It is not part of v1.
+
+## Amendment — rotating `CLAIM_SIGNING_KEY` (Phase 6 T5)
+
+`CLAIM_SIGNING_KEY` becomes a keyring (`{"current","keys"}`); the Phase 5 plain-text key still works as a keyring of one. The current key signs new checkout references and computes the email and IP hashes. Rotation must not break either use of the key:
+
+- **References** carry no key ID. Verification tries every listed key, always all of them, each with WebCrypto's constant-time HMAC verify, so the time taken does not say which key matched. A checkout claim the customer has already used is not verified again on its renewals: its reference was verified when the claim was used. So once a retired key is removed, renewals of customers it linked stay silent instead of recording `claim.rejected`.
+- **Email and IP hashes** are only rate-limit bucket names: `claim_requests.email_hash` is stored but never looked up. A new key would give every email and IP fresh counters, so a rotation would reset the limits once. Instead, each request computes its hashes under every listed key. It counts under the current key, and the counters under the other keys, in the same window, add to the same limit (`RateLimitBucket.retired`, applied atomically by `takeRateLimits`). Rotating cannot double a limit.
+- **Rejected alternative:** waiting out the claim windows before switching keys. It still resets the counters at the switch, and it needs a two-step deploy with a timed wait in between. Counting across keys costs one HMAC per listed key per request.
+
+The runbook ([secret-rotation.md](../runbooks/secret-rotation.md) § 2) keeps a retired key listed for at least 8 days (the 7-day checkout claim lifetime, plus the 1-day rate-limit window), then removes it. Removing a key ends its acceptance (threat O16).

@@ -12,6 +12,11 @@ A person with a ShareRepo account. A user can belong to one or more workspaces a
 
 The tenant and primary authorization boundary. It owns connections, resources, offers, commercial records, entitlements, grants, and audit events. A workspace can represent an individual creator or a team.
 
+Its status is `active`, `suspended`, `deleting` or `purging` ([decision 0015](decisions/0015-data-lifecycle.md)). Only an `active` workspace accepts changes, checkout and claims.
+
+- **`deleting`:** the owner asked to delete it. It is read-only, its access is being withdrawn, and `delete_after` (30 days later) says when its data may be purged. The owner can cancel until then, which makes it `active` again.
+- **`purging`:** the purge has started. It is reached only from `deleting`, and never left; the workspace row is the last thing deleted.
+
 ### Workspace membership
 
 The relationship between a user and a workspace, including role. Initial roles can remain small, for example `owner` and `member`, but authorization should not be inferred solely from being the user who created a connection.
@@ -77,6 +82,18 @@ An immutable receipt of a provider webhook or synchronization fact, identified b
 ### Audit event
 
 An append-only explanation of a meaningful ShareRepo decision or action: who or what initiated it, which workspace and objects were involved, what changed, why, and the outcome. Audit events are domain-facing history, not raw application logs.
+
+### Failure
+
+A job that stopped for good and needs a person ([decision 0014](decisions/0014-failure-handling-and-alerting.md)): an outbox row with `failed_at` and a classified error code, recorded with a `job.failed` audit event. It belongs to a workspace, or to none for system-wide work. It is resolved by a **retry** (due again, attempts reset; `job.retried`) or a **dismissal** by an operator, with a required reason (`dismissed_at`, `dismissed_by`, `dismiss_reason`; `job.dismissed`). The row is kept either way until pruning. A repository whose checks fail 3 or more times in a row is shown as a failure too, from its own `reconcile_failures`.
+
+### Operator
+
+A person who runs ShareRepo: a signed-in user whose GitHub account ID is listed in the `OPERATOR_GITHUB_IDS` configuration. It is not a role and is not stored in the database. Code proves it with an `OperatorPrincipal`, which operator services take alongside an explicit workspace. Operator actions are audited with actor type `operator`.
+
+### System state
+
+Unaudited bookkeeping that belongs to no workspace record, in the `system_state` table (`key`, JSON `value`, `updated_at`): the sweep's last heartbeat (`sweep.heartbeat`) and lag alert (`sweep.lag_alerted`), and a purge's progress (`purge_progress:<workspaceId>`) and the reason it waits (`purge_blocked:<workspaceId>`). It never decides access.
 
 ## Core distinction
 
@@ -274,7 +291,7 @@ Provider-specific details can live in validated metadata or integration tables w
 7. A grant never creates an entitlement. Provider state cannot become commercial truth.
 8. Access mutations are derived from a reconciliation plan, not directly from webhook event names.
 9. Revocation timing follows policy and effective dates, not receipt time alone.
-10. Audit history is append-only; corrections are represented by later events.
+10. Audit history is append-only; corrections are represented by later events. The one exception is a workspace's purge: its audit events are deleted while it is `purging`, and an account-scoped tombstone records the counts (decision 0015).
 11. Removal of a user-facing account does not silently destroy records required for access repair or legitimate audit retention.
 12. Only supported provider capabilities can be selected for an offer.
 
@@ -290,9 +307,10 @@ active -> revoked    (the source stopped mapping it: paused, offer access remove
 Stored states are only `active`, `expired` and `revoked` ([decision 0009](decisions/0009-entitlement-policy-v1.md)):
 
 - An ended entitlement is never reopened; a reactivation creates a new entitlement.
-- An active entitlement whose `validUntil` has passed has already ended, even if no sweep has recorded it yet. The next plan ends it as `expired` and never extends it.
 - "Expiring" is an active entitlement with `validUntil` set.
+- An active entitlement whose `validUntil` has passed is **expiry pending** ([decision 0013](decisions/0013-database-timers-and-expiry-confirmation.md)). Reconciliation grants nothing new for it and revokes nothing, while the subscription's refresh re-reads the source. If the source still grants the access, a refresh within the window continues the same entitlement; otherwise the refresh ends it as `expired`, and access granted again later gets a new entitlement. Once `EXPIRY_CONFIRMATION_WINDOW_MS` (6 hours) has passed, the access is not desired, even if no refresh has recorded the end. `entitlementValidity(validUntil, now)` returns `desired`, `expiry_pending` or `not_desired`.
 - "Pending" and "blocked" are reconciliation planner decisions about a subject and resource, not entitlement states.
+- **Withdrawn access** ([decision 0015](decisions/0015-data-lifecycle.md)) ends entitlements as `revoked` whatever the subscription says: `workspace_deleted` while the workspace is being deleted, and `account_deleted` when the subscriber deleted their ShareRepo account.
 
 Validity timestamps and the decision reason carry the rest of the meaning.
 

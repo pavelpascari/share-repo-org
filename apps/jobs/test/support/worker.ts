@@ -41,10 +41,10 @@ let messageCounter = 0;
 export async function deliver(
   target: ExportedHandler<Env>,
   bodies: unknown[],
-  options: { attempts?: number; bindings?: Env } = {},
+  options: { attempts?: number; bindings?: Env; queue?: string } = {},
 ) {
   const batch = createMessageBatch(
-    QUEUE,
+    options.queue ?? QUEUE,
     bodies.map((body) => ({
       id: `msg-${++messageCounter}`,
       timestamp: clock.now(),

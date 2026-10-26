@@ -1,4 +1,9 @@
-import type { AccessLevel } from "./entitlement.ts";
+import {
+  type AccessLevel,
+  EntitlementValidity,
+  EXPIRY_CONFIRMATION_WINDOW_MS,
+  entitlementValidity,
+} from "./entitlement.ts";
 import type { GrantState, MutationOperation, MutationStatus, RetryClass } from "./grant.ts";
 import { type InvitationBudget, preferredGrant } from "./reconciliation.ts";
 import type { Instant } from "./time.ts";
@@ -735,6 +740,8 @@ export interface NextReconcileInput {
     readonly retryClass: RetryClass | null;
   }[];
   readonly budget: InvitationBudget | null;
+  /** The repository's live (`active`) entitlements. */
+  readonly entitlements: readonly { readonly validUntil: Instant | null }[];
   /** The run left decisions unacted on. */
   readonly leftover: boolean;
 }
@@ -744,13 +751,20 @@ const IN_FLIGHT: readonly GrantState[] = ["pending_invitation", "provisioning", 
 /**
  * When a repository should be reconciled next. Now when a run left work over; otherwise the
  * earliest of: a short poll while anything is in flight or retryable, each error's retry time,
- * each pending invitation's lapse, the budget reopening, and the idle interval. Never before now.
+ * each pending invitation's lapse, the budget reopening, the end of each expiry-pending
+ * entitlement's confirmation window (decision 0013: the bounded revoke happens even if nothing
+ * else wakes the repository), and the idle interval. Never before now.
  */
 export function nextReconcileAt(input: NextReconcileInput): Instant {
   const { now } = input;
   if (input.leftover) return now;
   const candidates = [now + RECONCILE_IDLE_MS];
   if (input.budget?.opensAt != null) candidates.push(input.budget.opensAt);
+  for (const { validUntil } of input.entitlements) {
+    if (entitlementValidity(validUntil, now) === EntitlementValidity.ExpiryPending) {
+      candidates.push((validUntil as Instant) + EXPIRY_CONFIRMATION_WINDOW_MS);
+    }
+  }
   for (const grant of input.grants) {
     const retryable = grant.retryClass === "retryable" || grant.retryClass === "rate_limited";
     if (IN_FLIGHT.includes(grant.state) || (grant.state === "error" && retryable)) {

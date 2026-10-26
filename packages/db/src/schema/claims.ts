@@ -1,6 +1,14 @@
 import type { Instant } from "@sharerepo/domain";
 import { sql } from "drizzle-orm";
-import { check, foreignKey, integer, sqliteTable, text, unique } from "drizzle-orm/sqlite-core";
+import {
+  check,
+  foreignKey,
+  index,
+  integer,
+  sqliteTable,
+  text,
+  unique,
+} from "drizzle-orm/sqlite-core";
 import { customers, offers } from "./commerce.ts";
 import { users } from "./users.ts";
 import { workspaces } from "./workspaces.ts";
@@ -42,6 +50,8 @@ export const checkoutClaims = sqliteTable(
   },
   (t) => [
     unique("checkout_claims_workspace_id_id_unique").on(t.workspaceId, t.id),
+    // Pruning by age (decision 0015).
+    index("checkout_claims_expires_idx").on(t.expiresAt),
     foreignKey({
       name: "checkout_claims_offer_fk",
       columns: [t.workspaceId, t.offerId],
@@ -87,6 +97,8 @@ export const claimRequests = sqliteTable(
   },
   (t) => [
     unique("claim_requests_workspace_id_id_unique").on(t.workspaceId, t.id),
+    // Pruning by age (decision 0015).
+    index("claim_requests_created_idx").on(t.createdAt),
     check("claim_requests_email_hash_hex", isHexDigest("email_hash")),
     check(
       "claim_requests_email_envelope_json",
@@ -123,6 +135,8 @@ export const claimTokens = sqliteTable(
   },
   (t) => [
     unique("claim_tokens_workspace_id_id_unique").on(t.workspaceId, t.id),
+    // Pruning by age (decision 0015).
+    index("claim_tokens_expires_idx").on(t.expiresAt),
     foreignKey({
       name: "claim_tokens_customer_fk",
       columns: [t.workspaceId, t.customerId],

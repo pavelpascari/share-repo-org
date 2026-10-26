@@ -142,6 +142,8 @@ export interface PaddleTransaction {
 }
 
 export interface CreateNotificationSettingInput {
+  /** Shown in the Paddle dashboard; ShareRepo's tag (`destinationDescription`), 1–500 characters. */
+  readonly description: string;
   /** The HTTPS URL Paddle delivers to. */
   readonly destination: string;
   /** Event type names, such as `subscription.created`. */
@@ -158,6 +160,7 @@ export interface CreatedNotificationSetting {
 /** A destination as read back. The secret is deliberately not returned. */
 export interface PaddleNotificationSetting {
   readonly id: string;
+  readonly description: string;
   readonly destination: string;
   readonly active: boolean;
   readonly events: readonly string[];
@@ -197,6 +200,11 @@ export interface PaddlePort {
   ): Promise<CreatedNotificationSetting>;
   /** `not_found` once deleted. */
   getNotificationSetting(settingId: string): Promise<PaddleNotificationSetting>;
+  /**
+   * Every destination of the seller, active or not, any app's, every page (200 each, at most
+   * 30). Read only to find ShareRepo's own orphaned destinations (`parseDestinationDescription`).
+   */
+  listNotificationSettings(): Promise<PaddleNotificationSetting[]>;
   /** `not_found`: already gone. */
   deleteNotificationSetting(settingId: string): Promise<"deleted" | "not_found">;
 }

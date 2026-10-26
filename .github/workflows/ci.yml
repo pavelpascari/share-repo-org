@@ -13,7 +13,7 @@ permissions:
   contents: read
 
 env:
-  CURRENT_PHASE: "5"
+  CURRENT_PHASE: "6"
 
 jobs:
   checks:
@@ -88,6 +88,18 @@ jobs:
       - name: Mutation ratchet
         if: steps.changes.outputs.domain == 'true'
         run: pnpm coverage:check --mutation packages/domain/reports/mutation/mutation.json
+      - name: Mutation summary
+        if: always() && steps.changes.outputs.domain == 'true'
+        run: |
+          node -e '
+            const r = JSON.parse(require("fs").readFileSync("packages/domain/reports/mutation/mutation.json", "utf8"));
+            const n = {};
+            for (const f of Object.values(r.files)) for (const m of f.mutants) n[m.status] = (n[m.status] ?? 0) + 1;
+            const valid = (n.Killed ?? 0) + (n.Timeout ?? 0) + (n.Survived ?? 0) + (n.NoCoverage ?? 0);
+            const score = valid === 0 ? 100 : ((n.Killed ?? 0) + (n.Timeout ?? 0)) / valid * 100;
+            console.log(`### Mutation score: ${score.toFixed(2)}%\n\n| Status | Mutants |\n|---|---|`);
+            for (const [k, v] of Object.entries(n)) console.log(`| ${k} | ${v} |`);
+          ' >> "$GITHUB_STEP_SUMMARY"
 
   e2e:
     name: End-to-end

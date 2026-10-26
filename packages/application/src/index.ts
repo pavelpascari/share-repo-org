@@ -30,6 +30,14 @@ export {
 } from "./claims.ts";
 export { asAuditActor, type ServiceContext, type UserActor } from "./context.ts";
 export {
+  decodeRewrapKey,
+  encodeRewrapKey,
+  queueCredentialRewrap,
+  REWRAP_BATCH,
+  type RewrapRunSummary,
+  rewrapCredentials,
+} from "./credentials.ts";
+export {
   type CheckoutClaimSupport,
   type ClaimRequestRef,
   type CustomerLink,
@@ -51,6 +59,34 @@ export {
   type SubscriptionRef,
   simulatedEntitlementSource,
 } from "./entitlement-source.ts";
+export {
+  type AffectedAccess,
+  authorizeOperator,
+  DELETED_CONNECTION_LISTED_MS,
+  DISMISS_REASON_MAX_LENGTH,
+  type DismissFailureResult,
+  dismissFailure,
+  FAILURE_LIST_LIMIT,
+  type FailedJob,
+  type FailingRepository,
+  type JobFailure,
+  listAllOpenFailures,
+  listOpenFailures,
+  OPERATOR_SESSION_MAX_AGE_MS,
+  OPS_PAGE_TARGET,
+  type OperatorFailures,
+  type OperatorPrincipal,
+  type OperatorWorkspaceView,
+  operatorSessionIsFresh,
+  type PurgeBlocked,
+  RECONCILE_FAILING_THRESHOLD,
+  type RetriedFailure,
+  recordJobFailure,
+  retryFailure,
+  retryFailureAsOperator,
+  viewWorkspaceAsOperator,
+  type WorkspaceFailures,
+} from "./failures.ts";
 export {
   CONNECTION_INTENT_TTL_MS,
   type CompleteConnectionFailure,
@@ -79,6 +115,28 @@ export {
   type SignInOutcome,
 } from "./identity.ts";
 export {
+  type AccountView,
+  type AccountWorkspace,
+  cancelWorkspaceDeletion,
+  type DeleteAccountResult,
+  deleteAccount,
+  type ExportWorkspaceResult,
+  exportWorkspace,
+  getAccountView,
+  getWorkspaceSettings,
+  PRUNE_JOB_KEY,
+  PURGE_BATCHES_PER_RUN,
+  type PurgeOutcome,
+  pruneData,
+  purgeWorkspace,
+  queueLifecycleJobs,
+  type RequestDeletionResult,
+  requestWorkspaceDeletion,
+  type WorkspaceDeletion,
+  type WorkspaceExport,
+  type WorkspaceSettings,
+} from "./lifecycle.ts";
+export {
   archiveOffer,
   createOffer,
   listOfferableResources,
@@ -100,8 +158,10 @@ export {
   type Deployment,
   type DisconnectPaddleResult,
   disconnectPaddle,
+  disconnectWorkspacePaddle,
   getBillingView,
   ingestPaddleWebhook,
+  ORPHANED_DESTINATION_GRACE_MS,
   PADDLE_KEY_EXPIRY_WARNING_MS,
   PADDLE_REQUIRED_PERMISSIONS,
   PADDLE_WEBHOOK_EVENTS,
@@ -113,7 +173,9 @@ export {
   processPaddleEvent,
   queuePaddleSweeps,
   type ReconnectPaddleResult,
+  type RotatePaddleWebhookSecretResult,
   reconnectPaddle,
+  rotatePaddleWebhookSecret,
   type SyncPaddleCatalogResult,
   sweepPaddleSubscriptions,
   syncPaddleCatalog,
@@ -149,6 +211,11 @@ export {
   recomputeOffer,
   refreshSubscription,
 } from "./subscriptions.ts";
+export {
+  checkSweepHealth,
+  queueDailyResyncs,
+  type SweepHealth,
+} from "./sweeps.ts";
 export {
   addWorkspaceMember,
   createWorkspace,

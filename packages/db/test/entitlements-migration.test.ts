@@ -38,6 +38,11 @@ describe("migration 0004 (entitlements core)", () => {
         sent_at: null,
         failed_at: 4,
         last_error_code: "rejected",
+        // Added by migration 0009 (failure records).
+        workspace_id: null,
+        dismissed_at: null,
+        dismissed_by: null,
+        dismiss_reason: null,
       },
       {
         id: "o2",
@@ -49,6 +54,11 @@ describe("migration 0004 (entitlements core)", () => {
         sent_at: 7,
         failed_at: null,
         last_error_code: null,
+        // Added by migration 0009 (failure records).
+        workspace_id: null,
+        dismissed_at: null,
+        dismissed_by: null,
+        dismiss_reason: null,
       },
     ]);
     for (const kind of ["refresh_subscription", "recompute_offer"]) {

@@ -2,6 +2,7 @@ import { env } from "cloudflare:workers";
 import { getPaddleConnection, markOutboxSent, type PaddleConnection } from "@sharerepo/db";
 import type { PaddlePrice } from "@sharerepo/integrations";
 import {
+  createFakeMail,
   createFakePaddle,
   type FakePaddle,
   type FakePaddleDelivery,
@@ -12,6 +13,7 @@ import {
   type CommerceDeps,
   connectPaddle,
   createOffer,
+  decodeClaimRequestKey,
   decodeOfferKey,
   decodeRefreshKey,
   ingestPaddleWebhook,
@@ -20,7 +22,9 @@ import {
   processPaddleEvent,
   recomputeOffer,
   refreshSubscription,
+  requestClaim,
   type ServiceContext,
+  sendClaimEmail,
   startCheckout,
   type UserActor,
 } from "../../src/index.ts";
@@ -88,7 +92,7 @@ export function commerceDeps(
   return {
     paddle: ({ apiKey }) => accounts.resolve(apiKey),
     credentialKeys: KEYRING,
-    claimSigningKey: CLAIM_KEY,
+    claimSigningKeys: { current: "c1", keys: { c1: CLAIM_KEY } },
     baseUrl: "https://sharerepo.test/",
     deployment: "development",
     ...overrides,
@@ -344,4 +348,28 @@ export async function purchase(s: PaddleShop, user: UserActor) {
   const subscription = s.paddle.completeCheckout(transactionId, { customerId: customer.id });
   await deliverSubscription(s, "subscription.created", subscription.id);
   return { customer, subscription, checkoutClaimId: started.checkoutClaimId, transactionId };
+}
+
+/** Requests a claim for `email` and runs its job; returns the emailed link's token. */
+export async function claimLinkToken(
+  p: PaddleShop,
+  user: UserActor,
+  email: string,
+): Promise<string> {
+  const mail = createFakeMail();
+  const requested = await requestClaim(
+    serviceContext(),
+    { workspaceSlug: p.slug, email, user, ip: buyerIp() },
+    p.deps,
+  );
+  if (requested.status !== "requested" || requested.outboxId === null) throw new Error("limited");
+  const row = await env.DB.prepare("SELECT subject_id FROM outbox WHERE id = ?")
+    .bind(requested.outboxId)
+    .first<{ subject_id: string }>();
+  const ref = decodeClaimRequestKey(row?.subject_id as string);
+  if (!ref.ok) throw new Error("key");
+  await sendClaimEmail(serviceContext(), ref.value, { ...p.deps, mail });
+  const token = mail.sent[0]?.text.match(/\/claim\/([A-Za-z0-9_-]+)/)?.[1];
+  if (token === undefined) throw new Error("no claim link");
+  return token;
 }

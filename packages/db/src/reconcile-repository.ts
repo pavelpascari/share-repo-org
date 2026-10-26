@@ -6,11 +6,13 @@ import {
   type MutationStatus,
   type ObservationErrorCode,
   OutboxKind,
+  RATE_LIMIT_EXCUSE_MS,
   type RetryClass,
 } from "@sharerepo/domain";
 import {
   and,
   asc,
+  count,
   eq,
   gt,
   inArray,
@@ -34,7 +36,7 @@ import {
   type NewOutboxRow,
   pendingOutbox,
 } from "./outbox-repository.ts";
-import { entitlements, grants, providerMutations, resources } from "./schema/index.ts";
+import { connections, entitlements, grants, providerMutations, resources } from "./schema/index.ts";
 import type { Entitlement } from "./subscription-repository.ts";
 
 /** A change ShareRepo asked an access provider to make (decision 0010). */
@@ -75,6 +77,79 @@ export const reconcileKeyOfRow: SQL = sql`${resources.workspaceId} || ':' || ${r
 
 const ofResource = (workspaceId: string, resourceId: string) =>
   and(eq(resources.workspaceId, workspaceId), eq(resources.id, resourceId)) as SQL;
+
+/**
+ * "The resource row in scope belongs to a connection GitHub rate-limited until after `now`": its
+ * reconciles wait for the reset (phase-6 plan § Partitioning). Scoped by workspace too.
+ */
+export function rateLimitedConnection(now: Instant): SQL {
+  return sql`EXISTS (SELECT 1 FROM ${connections} WHERE ${connections.workspaceId} = ${resources.workspaceId} AND ${connections.id} = ${resources.connectionId} AND ${connections.rateLimitedUntil} > ${now})`;
+}
+
+/**
+ * When the resource row in scope's reconcile is due for lag purposes, in SQL: domain
+ * `excusedReconcileDueAt` of its `next_reconcile_at` and its connection's `rate_limited_until`
+ * (looked up within the row's workspace). A rate limit excuses at most `RATE_LIMIT_EXCUSE_MS`;
+ * a past or missing reset leaves the schedule as it is.
+ */
+const excusedReconcileDueAtOfRow = sql`MAX(${resources.nextReconcileAt}, MIN(COALESCE((SELECT ${connections.rateLimitedUntil} FROM ${connections} WHERE ${connections.workspaceId} = ${resources.workspaceId} AND ${connections.id} = ${resources.connectionId}), 0), ${resources.nextReconcileAt} + ${RATE_LIMIT_EXCUSE_MS}))`;
+
+/**
+ * The query for the oldest reconcile late at `now` (decision 0014, amended): the earliest
+ * {@link excusedReconcileDueAtOfRow} at or before `now`, across every workspace. The sweep lag
+ * alert and the operator page both read it, so they agree. Scans only rows already due by
+ * schedule (`resources_next_reconcile_idx`), since the excused instant is never earlier.
+ */
+export function oldestExcusedReconcileDue(db: Db, now: Instant) {
+  return db
+    .select({ at: sql<Instant | null>`MIN(${excusedReconcileDueAtOfRow})` })
+    .from(resources)
+    .where(
+      and(
+        isNotNull(resources.nextReconcileAt),
+        lte(resources.nextReconcileAt, now),
+        sql`${excusedReconcileDueAtOfRow} <= ${now}`,
+      ),
+    );
+}
+
+/**
+ * The query counting repositories due by schedule at `now` that the sweep holds back because
+ * GitHub is rate-limiting their connection (`rate_limited_until` still ahead), across every
+ * workspace. Waiting on purpose, so a figure apart from lag.
+ */
+export function countRateLimitedReconciles(db: Db, now: Instant) {
+  return db
+    .select({ n: count() })
+    .from(resources)
+    .where(
+      and(
+        isNotNull(resources.nextReconcileAt),
+        lte(resources.nextReconcileAt, now),
+        rateLimitedConnection(now),
+      ),
+    );
+}
+
+/**
+ * Records that GitHub rate-limited a connection's installation until `until`, so the sweep defers
+ * its other due reconciles until then. Only ever moves the time later. A scheduling hint like
+ * `next_reconcile_at`, so it carries no audit event: the failure that caused it is audited
+ * (`provider.mutation_failed`) or recorded on the repository (`last_reconcile_error`).
+ */
+export async function deferConnectionReconciles(
+  db: Db,
+  input: { workspaceId: string; connectionId: string; until: Instant },
+): Promise<void> {
+  await db
+    .update(connections)
+    .set({
+      rateLimitedUntil: sql`MAX(COALESCE(${connections.rateLimitedUntil}, 0), ${input.until})`,
+    })
+    .where(
+      and(eq(connections.workspaceId, input.workspaceId), eq(connections.id, input.connectionId)),
+    );
+}
 
 /**
  * The statements that request a reconciliation of the resource a `reconcile_resource` row names
@@ -636,21 +711,50 @@ export async function enqueueReconcile(
  *   completed run's `last_reconciled_at` supersedes it.
  *
  * Clearing the schedule is bookkeeping, like the outbox, so it carries no audit event.
+ *
+ * Partitioned (phase-6 plan § Partitioning): due resources are claimed at most `perConnection`
+ * per connection (one GitHub installation) per sweep, oldest first within each, so one large
+ * installation cannot starve the others or spend its rate limit in one minute. Resources of a
+ * connection GitHub rate-limited (`rate_limited_until` still ahead) are not claimed by any kind;
+ * they stay due and are claimed once the limit resets.
  */
 export async function claimDueReconciles(
   db: Db,
   input: {
     now: Instant;
     limit: number;
+    perConnection: number;
     makeOutboxRow: (resource: { workspaceId: string; id: string }) => NewOutboxRow;
   },
 ): Promise<number> {
   const key = { workspaceId: resources.workspaceId, id: resources.id };
-  const due = await db
-    .select({ ...key, nextReconcileAt: resources.nextReconcileAt })
+  const deferred = rateLimitedConnection(input.now);
+  const ranked = db
+    .select({
+      ...key,
+      nextReconcileAt: resources.nextReconcileAt,
+      rank: sql<number>`row_number() OVER (PARTITION BY ${resources.workspaceId}, ${resources.connectionId} ORDER BY ${resources.nextReconcileAt}, ${resources.id})`.as(
+        "connection_rank",
+      ),
+    })
     .from(resources)
-    .where(and(isNotNull(resources.nextReconcileAt), lte(resources.nextReconcileAt, input.now)))
-    .orderBy(asc(resources.nextReconcileAt), asc(resources.id))
+    .where(
+      and(
+        isNotNull(resources.nextReconcileAt),
+        lte(resources.nextReconcileAt, input.now),
+        sql`NOT ${deferred}`,
+      ),
+    )
+    .as("ranked");
+  const due = await db
+    .select({
+      workspaceId: ranked.workspaceId,
+      id: ranked.id,
+      nextReconcileAt: ranked.nextReconcileAt,
+    })
+    .from(ranked)
+    .where(lte(ranked.rank, input.perConnection))
+    .orderBy(asc(ranked.nextReconcileAt), asc(ranked.id))
     .limit(input.limit);
   const liveEntitlement = sql`EXISTS (SELECT 1 FROM ${entitlements} WHERE ${entitlements.workspaceId} = ${resources.workspaceId} AND ${entitlements.resourceId} = ${resources.id} AND ${entitlements.state} = 'active')`;
   const presentGrant = sql`EXISTS (SELECT 1 FROM ${grants} WHERE ${grants.workspaceId} = ${resources.workspaceId} AND ${grants.resourceId} = ${resources.id} AND ${grants.state} <> 'absent')`;
@@ -669,6 +773,7 @@ export async function claimDueReconciles(
                 lte(resources.reconcileLeaseUntil, input.now),
               ),
               sql`NOT ${pendingOutbox(OutboxKind.ReconcileResource, reconcileKeyOfRow)}`,
+              sql`NOT ${deferred}`,
               or(
                 and(isNull(resources.nextReconcileAt), or(liveEntitlement, presentGrant)),
                 and(notDue, requested),

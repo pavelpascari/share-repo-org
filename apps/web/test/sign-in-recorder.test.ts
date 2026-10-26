@@ -1,3 +1,4 @@
+import { env } from "cloudflare:workers";
 import { createUserForSignIn } from "@sharerepo/application";
 import { createDb, listAuditEventsByCorrelationId } from "@sharerepo/db";
 import { randomIds, systemClock } from "@sharerepo/domain";
@@ -73,6 +74,27 @@ describe("createSignInRecorder", () => {
       },
     ]);
     expect(lines.join("\n")).toContain('"reason":"identity_conflict"');
+  });
+
+  it("refuses and audits a sign-in that raced the user's own account deletion", async () => {
+    const { userId } = await createUserForSignIn(services());
+    // The deletion's final batch kept the ID-only row and marked it deleted.
+    await env.DB.prepare("UPDATE users SET deleted_at = updated_at WHERE id = ?")
+      .bind(userId)
+      .run();
+    const ctx = services();
+    const { logger, lines } = recordingLogger();
+    const recorder = createSignInRecorder(ctx, logger);
+    recorder.captureProfile(fakeAccount());
+    await expect(recorder.beforeSessionCreate({ userId })).resolves.toBe(false);
+    expect(await listAuditEventsByCorrelationId(db, ctx.correlationId)).toMatchObject([
+      {
+        action: "auth.sign_in_refused",
+        target: { id: userId },
+        details: { provider: "github", reason: "account_deleted" },
+      },
+    ]);
+    expect(lines.join("\n")).toContain('"reason":"account_deleted"');
   });
 
   it.each([

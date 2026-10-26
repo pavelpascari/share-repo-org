@@ -244,6 +244,7 @@ function recomputeRow(
     subjectId: encodeOfferKey({ workspaceId, offerId }),
     createdAt: now,
     availableAt: now,
+    workspaceId,
   };
 }
 

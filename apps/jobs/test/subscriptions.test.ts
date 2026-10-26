@@ -8,7 +8,7 @@ import { type Db, enqueueOutbox } from "@sharerepo/db";
 import { createFakeGitHubApp } from "@sharerepo/integrations/testing";
 import { captureLogs, changedTables, type LogCapture, snapshotTables } from "@sharerepo/testing";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { CRONS } from "../src/handlers.ts";
+import { CRONS, QUEUE_MAX_RETRIES } from "../src/handlers.ts";
 import {
   act,
   DAY,
@@ -67,6 +67,7 @@ async function queuedRow(subjectId: string, kind: "refresh_subscription" | "reco
     subjectId,
     createdAt: clock.now(),
     availableAt: clock.now(),
+    workspaceId: null,
   });
   return id;
 }
@@ -204,6 +205,38 @@ describe("refresh_subscription and recompute_offer on the queue", () => {
     expect(await outboxRow(outboxId)).toMatchObject({ sent_at: null, failed_at: null });
     expect(await subscriptionVersion(s, "sub_01")).toBeUndefined();
   });
+
+  it("hands a refresh still waiting for Paddle to the drain from the queue's last retry", async () => {
+    const s = await shop(createFakeGitHubApp());
+    const subjectId = `${s.workspaceId}:paddle:sub_02`;
+    const outboxId = await queuedRow(subjectId, "refresh_subscription");
+    const result = await deliver(
+      jobsWorker(s.github),
+      [{ kind: "refresh_subscription", subjectId, outboxId }],
+      { attempts: QUEUE_MAX_RETRIES },
+    );
+    expect(result.retryMessages).toEqual([]);
+    expect(result.explicitAcks).toHaveLength(1);
+    const row = await env.DB.prepare("SELECT failed_at, available_at FROM outbox WHERE id = ?")
+      .bind(outboxId)
+      .first<{ failed_at: number | null; available_at: number }>();
+    // No provider reset to honour: the drain's own backoff for that attempt (16 minutes).
+    expect(row).toEqual({ failed_at: null, available_at: clock.now() + 16 * 60_000 });
+  });
+
+  it("backs a refresh still waiting for Paddle off in the drain, without failing it", async () => {
+    const s = await shop(createFakeGitHubApp());
+    const subjectId = `${s.workspaceId}:paddle:sub_03`;
+    const outboxId = await queuedRow(subjectId, "refresh_subscription");
+    await runCron(jobsWorker(s.github), CRONS.drainOutbox);
+    const row = await env.DB.prepare(
+      "SELECT failed_at, attempts, available_at FROM outbox WHERE id = ?",
+    )
+      .bind(outboxId)
+      .first<{ failed_at: number | null; attempts: number; available_at: number }>();
+    // The first attempt's backoff is the lease: one minute.
+    expect(row).toEqual({ failed_at: null, attempts: 1, available_at: clock.now() + 60_000 });
+  });
 });
 
 describe("refresh_subscription and recompute_offer in the outbox drain", () => {
@@ -216,17 +249,20 @@ describe("refresh_subscription and recompute_offer in the outbox drain", () => {
       sent_at: null,
       last_error_code: "key_invalid",
     });
-    expect(logged().find((line) => line.outboxId === outboxId)).toMatchObject({
-      msg: "outbox job failed",
-      kind: "refresh_subscription",
-      final: true,
-      errorCode: "key_invalid",
-    });
+    const lines = () =>
+      logged().filter((line) => line.outboxId === outboxId && line.msg === "outbox job failed");
+    expect(lines()).toEqual([
+      expect.objectContaining({
+        kind: "refresh_subscription",
+        final: true,
+        errorCode: "key_invalid",
+      }),
+    ]);
     expect(logs.text()).not.toContain(subjectId);
     // Never claimed again.
     clock.advance(10 * 60_000);
     await runCron(jobsWorker(github), CRONS.drainOutbox);
-    expect(logged().filter((line) => line.outboxId === outboxId)).toHaveLength(1);
+    expect(lines()).toHaveLength(1);
   });
 
   it("leaves a stale refresh leased for a later attempt", async () => {

@@ -615,7 +615,7 @@ describe("webhooks", () => {
     const { rawBody, headers } = await delivery({ action: "added" }, undefined, "wrong-secret");
     const ctx = serviceContext();
     const { result, changedTables } = await expectAuditedChange(env.DB, ctx.correlationId, () =>
-      ingestGitHubWebhook(ctx, { secret: SECRET, rawBody, headers }),
+      ingestGitHubWebhook(ctx, { secrets: [SECRET], rawBody, headers }),
     );
     expect(result).toEqual({ status: "rejected" });
     const receipts = await env.DB.prepare("SELECT count(*) AS n FROM external_events").first<{
@@ -629,12 +629,12 @@ describe("webhooks", () => {
     const headers = new Headers({ "x-hub-signature-256": await signWebhook(SECRET, raw) });
     const rawBody = new TextEncoder().encode(raw).buffer as ArrayBuffer;
     await expect(
-      ingestGitHubWebhook(serviceContext(), { secret: SECRET, rawBody, headers }),
+      ingestGitHubWebhook(serviceContext(), { secrets: [SECRET], rawBody, headers }),
     ).resolves.toEqual({ status: "rejected" });
     const signedJson = await delivery({});
     signedJson.headers.delete("x-github-event");
     await expect(
-      ingestGitHubWebhook(serviceContext(), { secret: SECRET, ...signedJson }),
+      ingestGitHubWebhook(serviceContext(), { secrets: [SECRET], ...signedJson }),
     ).resolves.toEqual({ status: "rejected" });
   });
 
@@ -642,14 +642,14 @@ describe("webhooks", () => {
     const { github, connection, installationId } = await connected();
     const body = { action: "added", installation: { id: Number(installationId) } };
     const first = await delivery(body);
-    const accepted = await ingestGitHubWebhook(serviceContext(), { secret: SECRET, ...first });
+    const accepted = await ingestGitHubWebhook(serviceContext(), { secrets: [SECRET], ...first });
     expect(accepted.status).toBe("accepted");
 
     const again = await delivery(body, first.deliveryId);
     const outboxBefore = await env.DB.prepare("SELECT count(*) AS n FROM outbox").first<{
       n: number;
     }>();
-    const duplicate = await ingestGitHubWebhook(serviceContext(), { secret: SECRET, ...again });
+    const duplicate = await ingestGitHubWebhook(serviceContext(), { secrets: [SECRET], ...again });
     expect(duplicate).toEqual({
       status: "duplicate",
       eventId: (accepted as { eventId: string }).eventId,
@@ -674,7 +674,7 @@ describe("webhooks", () => {
   it("ignores events for unknown installations and unrelated event types", async () => {
     const github = createFakeGitHubApp();
     const unknown = await delivery({ action: "created", installation: { id: 123 } });
-    const result = await ingestGitHubWebhook(serviceContext(), { secret: SECRET, ...unknown });
+    const result = await ingestGitHubWebhook(serviceContext(), { secrets: [SECRET], ...unknown });
     const eventId = (result as { eventId: string }).eventId;
     await expect(processExternalEvent(serviceContext(), eventId, github)).resolves.toBe("ignored");
     expect((await getExternalEvent(db, eventId))?.processingState).toBe("ignored");
@@ -683,7 +683,7 @@ describe("webhooks", () => {
     );
     // An installation event without an installation (malformed but signed) is ignored too.
     const bare = await delivery({ action: "created" });
-    const bareResult = await ingestGitHubWebhook(serviceContext(), { secret: SECRET, ...bare });
+    const bareResult = await ingestGitHubWebhook(serviceContext(), { secrets: [SECRET], ...bare });
     await expect(
       processExternalEvent(serviceContext(), (bareResult as { eventId: string }).eventId, github),
     ).resolves.toBe("ignored");
@@ -695,7 +695,7 @@ describe("webhooks", () => {
       action: "added",
       installation: { id: Number(installationId) },
     });
-    const result = await ingestGitHubWebhook(serviceContext(), { secret: SECRET, ...signed });
+    const result = await ingestGitHubWebhook(serviceContext(), { secrets: [SECRET], ...signed });
     const eventId = (result as { eventId: string }).eventId;
     github.failNext("rate_limited");
     await expect(processExternalEvent(serviceContext(), eventId, github)).rejects.toBeInstanceOf(
@@ -718,7 +718,7 @@ describe("webhooks", () => {
       action: "added",
       installation: { id: Number(installationId) },
     });
-    const result = await ingestGitHubWebhook(serviceContext(), { secret: SECRET, ...signed });
+    const result = await ingestGitHubWebhook(serviceContext(), { secrets: [SECRET], ...signed });
     const eventId = (result as { eventId: string }).eventId;
     const broken = { ...github, getInstallation: () => Promise.reject(new Error("boom")) };
     await expect(processExternalEvent(serviceContext(), eventId, broken)).rejects.toThrow("boom");

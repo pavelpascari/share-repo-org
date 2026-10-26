@@ -87,6 +87,8 @@ export const connections = sqliteTable(
     // current, and marks its write with a unique token so dependent statements can tell.
     syncVersion: integer("sync_version").notNull().default(0),
     syncToken: text("sync_token"),
+    // Until when GitHub rate-limits the installation: its other due reconciles wait until then.
+    rateLimitedUntil: integer("rate_limited_until").$type<Instant>(),
   },
   (t) => [
     unique("connections_workspace_id_id_unique").on(t.workspaceId, t.id),

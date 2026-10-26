@@ -1409,7 +1409,7 @@ describe("nextReconcileAt", () => {
   const next = (
     grants: Grant[],
     budget: { remaining: number; opensAt: number | null } | null = null,
-  ) => nextReconcileAt({ now: NOW, grants, budget, leftover: false });
+  ) => nextReconcileAt({ now: NOW, grants, budget, entitlements: [], leftover: false });
 
   it("runs again at once when decisions were left over", () => {
     expect(
@@ -1417,9 +1417,29 @@ describe("nextReconcileAt", () => {
         now: NOW,
         grants: [g({ state: "provisioning" })],
         budget: null,
+        entitlements: [{ validUntil: NOW - MINUTE }],
         leftover: true,
       }),
     ).toBe(NOW);
+  });
+
+  it("timing/expiry-revokes-after-confirmation-window: checks again when the window ends", () => {
+    const WINDOW = 6 * HOUR;
+    const at = (...validUntils: (number | null)[]) =>
+      nextReconcileAt({
+        now: NOW,
+        grants: [g()],
+        budget: null,
+        entitlements: validUntils.map((validUntil) => ({ validUntil })),
+        leftover: false,
+      });
+    // Expiry pending: the bounded revoke is scheduled even if nothing else wakes the repository.
+    expect(at(NOW - HOUR)).toBe(NOW - HOUR + WINDOW);
+    expect(at(NOW)).toBe(NOW + RECONCILE_IDLE_MS);
+    expect(at(NOW - WINDOW + 1, NOW - 2 * HOUR)).toBe(NOW + 1);
+    // Desired, open-ended, or past the window: only the other candidates count.
+    expect(at(NOW + MINUTE, null)).toBe(NOW + RECONCILE_IDLE_MS);
+    expect(at(NOW - WINDOW)).toBe(NOW + RECONCILE_IDLE_MS);
   });
 
   it("waits the idle interval when nothing is in flight", () => {

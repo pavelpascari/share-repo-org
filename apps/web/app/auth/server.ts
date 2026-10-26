@@ -8,10 +8,13 @@ import { createGitHubClient } from "./github.ts";
 
 type Context = Readonly<RouterContextProvider>;
 
-/** Service context for this request: D1, system clock, random IDs, the request's correlation ID. */
+/**
+ * Service context for this request: D1, system clock, random IDs, the request's correlation ID,
+ * and its logger, for alert lines such as a Paddle key refused during an owner's action.
+ */
 export function servicesFor(context: Context): ServiceContext {
-  const { env, correlationId } = context.get(cloudflareContext);
-  return { db: createDb(env.DB), clock: systemClock, ids: randomIds, correlationId };
+  const { env, correlationId, logger } = context.get(cloudflareContext);
+  return { db: createDb(env.DB), clock: systemClock, ids: randomIds, correlationId, logger };
 }
 
 const instances = new WeakMap<Context, Auth>();

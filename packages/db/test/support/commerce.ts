@@ -202,8 +202,12 @@ export function entitlementRow(
   };
 }
 
-export function outboxRow(kind: NewOutboxRow["kind"], subjectId: string): NewOutboxRow {
-  return { id: uniqueId("obx"), kind, subjectId, createdAt: T0, availableAt: T0 };
+export function outboxRow(
+  kind: NewOutboxRow["kind"],
+  subjectId: string,
+  workspaceId: string | null = null,
+): NewOutboxRow {
+  return { id: uniqueId("obx"), kind, subjectId, createdAt: T0, availableAt: T0, workspaceId };
 }
 
 /**

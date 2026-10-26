@@ -84,6 +84,7 @@ describe("Paddle requests", () => {
     ]);
     await port.createTransaction({ priceId: PRICE_MONTHLY, customData: { sharerepo_claim: "r" } });
     const created = await port.createNotificationSetting({
+      description: "ShareRepo",
       destination: "https://sharerepo.test/webhooks/paddle/c1",
       events: ["subscription.updated"],
     });
@@ -193,7 +194,11 @@ describe("Paddle error classification", () => {
       ),
     ]);
     const error = await failure(
-      port.createNotificationSetting({ destination: "https://x.test/", events: [] }),
+      port.createNotificationSetting({
+        description: "ShareRepo",
+        destination: "https://x.test/",
+        events: [],
+      }),
     );
     expect(error.kind).toBe("malformed");
     expect(JSON.stringify({ ...error, message: error.message })).not.toContain(SECRET);

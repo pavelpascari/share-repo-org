@@ -31,7 +31,16 @@ const nameFormat = sql.raw(
   `length(name) BETWEEN 1 AND ${WORKSPACE_NAME_MAX_LENGTH} AND name = trim(name, ' ' || char(9, 10, 11, 12, 13))`,
 );
 
-/** The tenant root. Its `id` is the `workspace_id` that every tenant-owned table carries. */
+/**
+ * The tenant root. Its `id` is the `workspace_id` that every tenant-owned table carries.
+ *
+ * Deletion (decision 0015): `deleting` and `purging` carry `delete_after`, when the purge may
+ * start, and `deletion_requested_by`, the requesting user's ID. That ID has no foreign key, like
+ * an audit actor's: the requester may delete their account while the workspace is `deleting`.
+ * Hand-written triggers (migration 0009) allow `purging` only after `deleting`, never leave it,
+ * and refuse a new workspace that is already being deleted: `purging` unlocks deleting the
+ * workspace's audit history.
+ */
 export const workspaces = sqliteTable(
   "workspaces",
   {
@@ -41,12 +50,23 @@ export const workspaces = sqliteTable(
     status: text("status", { enum: WORKSPACE_STATUSES }).notNull(),
     createdAt: integer("created_at").$type<Instant>().notNull(),
     updatedAt: integer("updated_at").$type<Instant>().notNull(),
+    deleteAfter: integer("delete_after").$type<Instant>(),
+    deletionRequestedBy: text("deletion_requested_by"),
   },
   () => [
     check("workspaces_slug_format", slugFormat),
     check("workspaces_name_format", nameFormat),
     check("workspaces_status_valid", sql`status IN (${literalList(WORKSPACE_STATUSES)})`),
     check("workspaces_updated_after_created", sql`updated_at >= created_at`),
+    // A deletion is scheduled exactly while the workspace is being deleted, and names who asked.
+    check(
+      "workspaces_deletion_scheduled",
+      sql`(status IN ('deleting', 'purging')) = (delete_after IS NOT NULL)`,
+    ),
+    check(
+      "workspaces_deletion_requester",
+      sql`(delete_after IS NULL) = (deletion_requested_by IS NULL) AND (deletion_requested_by IS NULL OR length(deletion_requested_by) > 0)`,
+    ),
   ],
 );
 

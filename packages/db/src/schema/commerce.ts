@@ -69,7 +69,8 @@ export const offers = sqliteTable(
 
 /**
  * Immutable snapshot of an offer's configuration at one version, so every entitlement can be
- * explained by what was promised when it was decided (decision 0009). Append-only via triggers.
+ * explained by what was promised when it was decided (decision 0009). Append-only via triggers,
+ * except that a workspace's purge deletes them while it is `purging` (decision 0015).
  */
 export const offerVersions = sqliteTable(
   "offer_versions",

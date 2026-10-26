@@ -173,7 +173,12 @@ export function createSignInRecorder(services: ServiceContext, logger: Logger) {
       } catch (error) {
         // Never a 500 mid-callback: refuse the session, so Better Auth redirects to the sign-in
         // error page, and keep only a classification of the error.
-        const reason = error instanceof ConflictError ? "identity_conflict" : "internal_error";
+        const reason =
+          error instanceof ConflictError
+            ? error.code === "account_deleted"
+              ? "account_deleted"
+              : "identity_conflict"
+            : "internal_error";
         logger.warn("sign-in refused", { reason, errorName: errorName(error) });
         await recordSignInRefused(services, actor, { provider: profile.provider, reason }).catch(
           () => logger.error("could not audit refused sign-in", { reason }),

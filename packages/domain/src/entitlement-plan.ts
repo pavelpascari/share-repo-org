@@ -1,4 +1,10 @@
-import { ACCESS_POLICY_VERSION, type AccessLevel } from "./entitlement.ts";
+import {
+  ACCESS_POLICY_VERSION,
+  type AccessLevel,
+  EntitlementValidity,
+  entitlementValidity,
+} from "./entitlement.ts";
+import type { AccessWithdrawal } from "./lifecycle.ts";
 import type { OfferStatus } from "./offer.ts";
 import {
   type AccessDecision,
@@ -51,6 +57,11 @@ export interface EntitlementPlanInput {
   readonly offers: readonly PlanOffer[];
   /** The subscription's live entitlements; at most one per offer, resource and subject. */
   readonly live: readonly LiveEntitlement[];
+  /**
+   * Set when all access is withdrawn whatever the subscription says (decision 0015): nothing is
+   * desired, and every live entitlement is revoked with this reason. Absent or null otherwise.
+   */
+  readonly withdrawn?: AccessWithdrawal | null;
 }
 
 export interface NewEntitlementPlan {
@@ -126,7 +137,8 @@ interface Desired {
  * - Granted and not live: create. Granted and live: update when validity, reason, offer version
  *   or policy version differ; a changed access level ends the live one and creates a new one.
  * - Not granted and live: end, `expired` for time-based reasons and `revoked` otherwise.
- * - Live but no longer desired: revoke, with the most specific reason.
+ * - Live but no longer desired: revoke, with the most specific reason. A withdrawal (the workspace
+ *   is being deleted) desires nothing and is the reason for every revocation.
  * - Live but lapsed (`validUntil` at or before `now`, because the sweep that should have ended it
  *   ran late): it has already ended, whatever is desired now. End it `expired`, with the reason
  *   its own boundary implies (`cancel_scheduled` → `cancellation_effective`,
@@ -134,6 +146,10 @@ interface Desired {
  *   granted again, create a new row, so the gap stays visible (decision 0009: a reactivation
  *   creates a new row). A `past_due_in_grace` row cut short by a scheduled cancellation also
  *   reads `grace_expired`: the row records only that its grace-period access ran out.
+ * - Except while its expiry is pending (decision 0013: within the confirmation window after
+ *   `validUntil`, reconciliation neither granted nor revoked for it): when access is granted
+ *   again, the source has confirmed it went on (a renewal whose webhook was lost), so the row
+ *   continues like any live one. Access never had a gap, so neither does the record.
  *
  * Throws on duplicate offers, live entitlements or accesses, and when a live entitlement refers
  * to an offer missing from the input: those are caller defects, not facts to act on.
@@ -149,7 +165,7 @@ export function planEntitlements(input: EntitlementPlanInput): EntitlementPlan {
   const desired = new Map<string, Desired>();
   let nextEvaluationAt: Instant | null = null;
 
-  if (subscription !== null && subjectId !== null) {
+  if (subscription !== null && subjectId !== null && !input.withdrawn) {
     for (const offer of offers.values()) {
       if (offer.status !== "active" || !intersects(offer.items, subscription.items)) continue;
       const decision = decideAccess(subscription, offer.gracePeriodDays, now);
@@ -169,7 +185,10 @@ export function planEntitlements(input: EntitlementPlanInput): EntitlementPlan {
   for (const key of [...new Set([...live.keys(), ...desired.keys()])].sort()) {
     let current = live.get(key);
     const wanted = desired.get(key);
-    if (current !== undefined && current.validUntil !== null && current.validUntil <= now) {
+    const validity = current === undefined ? null : entitlementValidity(current.validUntil, now);
+    const continues =
+      validity === EntitlementValidity.ExpiryPending && wanted?.decision.granted === true;
+    if (current !== undefined && validity !== EntitlementValidity.Desired && !continues) {
       end.push({ id: current.id, state: "expired", reason: lapseReason(current.decisionReason) });
       current = undefined;
       if (wanted === undefined || !wanted.decision.granted) continue;
@@ -208,8 +227,9 @@ export function planEntitlements(input: EntitlementPlanInput): EntitlementPlan {
 /** Why a live entitlement no longer maps to desired access, most specific cause first. */
 function lostMapping(
   entitlement: LiveEntitlement,
-  { subscription, subjectId, offers }: EntitlementPlanInput,
+  { subscription, subjectId, offers, withdrawn }: EntitlementPlanInput,
 ): AccessDecisionReason {
+  if (withdrawn) return withdrawn;
   if (subscription === null) return "subscription_missing";
   if (entitlement.subjectId !== subjectId) return "customer_unlinked";
   const offer = offers.find((o) => o.offerId === entitlement.offerId);

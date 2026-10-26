@@ -156,6 +156,8 @@ Replace the simulated commercial source with real Paddle facts while retaining t
 
 ## Phase 6 — Durable timing and operational hardening
 
+**Status:** delivered. What was built, and where it differs from the work list below, is in the [Phase 6 plan](plans/phase-6.md) and decisions [0013](decisions/0013-database-timers-and-expiry-confirmation.md), [0014](decisions/0014-failure-handling-and-alerting.md) and [0015](decisions/0015-data-lifecycle.md). In short: timers stay in the database and expiry is confirmed before revocation, instead of Workflows; failures are rows with owner and operator pages, a dead-letter queue and email alerts; data is pruned, exported and deleted on a schedule; every secret has a rotation procedure; and the runbooks are under `docs/runbooks/`. Live checks that need a deployed environment are listed in [deployment](deployment.md) § First-deploy checks.
+
 ### Goal
 
 Make delayed policy, retries, and recovery safe enough for the founder launch.
@@ -205,6 +207,11 @@ Operate the complete loop for one real creator, then a small invited cohort.
 
 Potential work includes public GitHub App distribution, self-service Paddle connection, ShareRepo's own billing, quotas, abuse controls, support tooling, legal/privacy material, service objectives, and public onboarding. This phase is intentionally not designed in detail before private validation.
 
+### Future development (parked)
+
+- **Workspace team management.** The `owner` and `member` roles and `addWorkspaceMember` exist, but no product path uses them, so every workspace has only its creator as owner. Parked by the user on 2026-10-25 for after the current work. It needs: inviting a member by GitHub login, changing a member's role (promote to owner, demote to member), removing a member, never leaving a workspace without an owner (account deletion already refuses while the user owns a live workspace), and an audit event with correlation ID for each change.
+- **Contingency for a purge stuck on an uninstalled GitHub App.** If an owner uninstalls the App on GitHub before their workspace's purge, ShareRepo cannot remove the collaborators it added and the purge waits for ever when the owner cannot be reached (accepted risk, operations threat model, 2026-10-25). Options to weigh later: purge after a long period and tell the owner which logins may still have access, keep a minimal record of those grants beyond the purge, or warn before the uninstall more strongly.
+
 ## Cross-phase test matrix
 
 Every production mechanism should accumulate adversarial coverage for:
@@ -232,7 +239,7 @@ Resolve these with evidence at the named phase rather than guessing now:
 - access ownership policy for pre-existing or indirect grants — Phase 2–4 (resolved: ShareRepo manages only access it created, decision 0010);
 - fixed versus creator-configurable grace period — Phase 3 or private beta (resolved: per offer, decision 0009);
 - Paddle OAuth availability and approval path versus temporary credentials — Phase 5 (resolved: seller API keys now, OAuth after publisher-program approval, decision 0011);
-- Workflows versus database-scheduled jobs for each timer — Phase 6;
+- Workflows versus database-scheduled jobs for each timer — Phase 6 (resolved: database timers swept every minute, no Workflows, and expiry confirmed before revocation, decision 0013);
 - public pricing, quotas, and self-hosting — after private beta.
 
 ## First Codex task after adding this pack

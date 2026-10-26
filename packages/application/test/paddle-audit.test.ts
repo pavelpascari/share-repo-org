@@ -172,7 +172,13 @@ describe("audit/every-state-change-has-audit-event (Paddle and claims)", () => {
     const token = mail.sent[0]?.text.match(/\/claim\/([A-Za-z0-9_-]+)/)?.[1] as string;
     const confirmed = await audited((ctx) => confirmClaim(ctx, { token, user }));
     expect(confirmed.changedTables).toEqual(["claim_tokens", "customers", "subjects"]);
-    const rejected = await audited((ctx) => confirmClaim(ctx, { token, user }));
+    // The claimant confirming again changes nothing and records nothing; anyone else is refused,
+    // which is audited.
+    const repeated = await audited((ctx) => confirmClaim(ctx, { token, user }));
+    expect(repeated.auditEventCount).toBe(0);
+    expect(repeated.changedTables).toEqual([]);
+    const stranger = await signedUpUser();
+    const rejected = await audited((ctx) => confirmClaim(ctx, { token, user: stranger }));
     expect(rejected.auditEventCount).toBe(1);
     await drainPaddle(s);
 

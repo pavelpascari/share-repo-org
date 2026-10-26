@@ -42,6 +42,17 @@ export {
   updateConnection,
 } from "./connection-repository.ts";
 export {
+  countEnvelopesUnderKeys,
+  type EnvelopeCursor,
+  listEnvelopesUnderKeys,
+  REWRAP_CURSOR_KEY,
+  readRewrapCursor,
+  rewrapClaimRequestEmail,
+  type StoredEnvelope,
+  type StoredEnvelopeField,
+  saveRewrapCursor,
+} from "./credential-repository.ts";
+export {
   type ApplyCustomerLinkResult,
   applyCustomerLink,
   type Customer,
@@ -51,7 +62,7 @@ export {
   getCustomer,
   listCustomersWithLinks,
 } from "./customer-repository.ts";
-export { isUniqueViolation, uniqueViolationColumns } from "./errors.ts";
+export { isForeignKeyViolation, isUniqueViolation, uniqueViolationColumns } from "./errors.ts";
 export {
   type ExternalEvent,
   getExternalEvent,
@@ -61,6 +72,26 @@ export {
   type RecordExternalEventResult,
   recordExternalEvent,
 } from "./event-repository.ts";
+export { readWorkspaceExport, type WorkspaceExportRows } from "./export-repository.ts";
+export {
+  type AccessNames,
+  dismissOutboxFailure,
+  type FailingResource,
+  failOutboxRow,
+  getFailedOutboxRow,
+  getOutboxRow,
+  listFailingResources,
+  listOpenOutboxFailures,
+  listUnhealthyConnections,
+  type OpenOutboxFailure,
+  offerAccessNames,
+  readSweepHealth,
+  retryOutboxFailure,
+  SWEEP_HEARTBEAT_KEY,
+  type SweepHealth,
+  subscriptionAccessNames,
+  type UnhealthyConnection,
+} from "./failure-repository.ts";
 export { type Grant, getGrant, listGrantsForWorkspace } from "./grant-repository.ts";
 export {
   type ExternalIdentity,
@@ -72,6 +103,35 @@ export {
   type UpdateExternalIdentitySnapshotResult,
   updateExternalIdentitySnapshot,
 } from "./identity-repository.ts";
+export {
+  cancelWorkspaceDeletion,
+  countRemainingAccess,
+  type DeletedRows,
+  deleteAccountRows,
+  finishPurge,
+  getWorkspaceDeletionState,
+  type LinkedSubject,
+  listDuePurges,
+  listPurgeBlocks,
+  listSubjectsOfIdentity,
+  PRUNABLE,
+  PURGE_ORDER,
+  type PurgeBlocked,
+  pruneExpiredData,
+  purgeBatch,
+  purgeBlockedKey,
+  purgeProgress,
+  purgeProgressKey,
+  purgeTableHasRows,
+  queueWorkspaceRefreshes,
+  readSubjectAccess,
+  recordPurgeBlocked,
+  type SubjectAccess,
+  scheduleWorkspaceDeletion,
+  subjectsLinkedToIdentity,
+  unlinkSubjectsFromIdentity,
+  type WorkspaceDeletionState,
+} from "./lifecycle-repository.ts";
 export {
   listMyAccess,
   type MyAccessEntitlement,
@@ -101,11 +161,12 @@ export {
 export {
   claimOutbox,
   dedupedOutboxInsert,
+  deferOutboxRow,
   enqueueOutbox,
   enqueueOutboxOnce,
   enqueueOutboxRows,
-  markOutboxFailed,
   markOutboxSent,
+  markQueuedJobSent,
   type NewOutboxRow,
   type OutboxRow,
   outboxInsert,
@@ -116,12 +177,14 @@ export {
 } from "./outbox-repository.ts";
 export {
   type CreatePaddleConnectionResult,
+  completePaddleWebhookRotation,
   createPaddleConnection,
   disconnectPaddleConnection,
   type GuardedWriteResult,
   getPaddleConnection,
   getPaddleConnectionForWebhook,
   listActivePaddleConnections,
+  listPaddleConnectionIds,
   listPaddlePrices,
   markPaddleEventReceived,
   type PaddleConnection,
@@ -132,6 +195,7 @@ export {
   recordPaddleConnectionChecked,
   replacePaddleCredentials,
   rewrapPaddleEnvelope,
+  startPaddleWebhookRotation,
   updatePaddleConnectionStatus,
   upsertPaddlePrices,
 } from "./paddle-repository.ts";
@@ -141,6 +205,8 @@ export {
   beginMutation,
   claimDueReconciles,
   claimReconcileLease,
+  countRateLimitedReconciles,
+  deferConnectionReconciles,
   enqueueReconcile,
   type FinishMutation,
   finishMutation,
@@ -155,9 +221,11 @@ export {
   listInviteStarts,
   listLiveEntitlementsForResource,
   listOpenMutations,
+  oldestExcusedReconcileDue,
   type ProviderMutation,
   type ReleaseReconcileLease,
   type ResetGrantRetryResult,
+  rateLimitedConnection,
   reconcileKey,
   reconcileKeyOfRow,
   reconcileRequest,
@@ -214,6 +282,13 @@ export {
   type SubscriptionRefresh,
   type SubscriptionWithItems,
 } from "./subscription-repository.ts";
+export {
+  claimSweepLagAlert,
+  readSweepBacklog,
+  recordSweepHeartbeat,
+  SWEEP_LAG_ALERT_STATE_KEY,
+  type SweepBacklog,
+} from "./sweep-repository.ts";
 export { createUser, type User } from "./user-repository.ts";
 export {
   type AddWorkspaceMemberResult,

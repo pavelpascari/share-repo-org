@@ -48,7 +48,7 @@ Phase 0 serves from `*.workers.dev`. Attaching `sharerepo.org` is a separate, ex
 9. Set the Paddle and claim secrets ([decision 0011](decisions/0011-paddle-connection-and-tenant-credentials.md), [decision 0012](decisions/0012-purchase-claims.md)) on **both** Workers, with the **same values** in each, because both read the same database. Use different values per environment. Both Workers fail closed outside local development without them.
 
    - `CREDENTIAL_KEYS`: the keyring that wraps every stored Paddle API key and webhook secret, `{"current":"k1","keys":{"k1":"<base64 of 32 random bytes>"}}`.
-   - `CLAIM_SIGNING_KEY`: signs checkout claim references and hashes claim emails; at least 32 bytes.
+   - `CLAIM_SIGNING_KEY`: signs checkout claim references and hashes claim emails and IPs. Either a plain-text key of at least 32 bytes (the Phase 5 format, below), or a keyring in the same shape as `CREDENTIAL_KEYS`, `{"current":"c1","keys":{"c1":"<base64 of at least 32 bytes>"}}`. A plain-text key is the keyring's only key. Rotation needs the keyring ([secret rotation](runbooks/secret-rotation.md) § 2 converts one to the other).
 
    ```sh
    node -e 'console.log(JSON.stringify({current: "k1", keys: {k1: require("node:crypto").randomBytes(32).toString("base64")}}))' > keyring.json
@@ -60,18 +60,55 @@ Phase 0 serves from `*.workers.dev`. Attaching `sharerepo.org` is a separate, ex
    # and again with --env production, with new values
    ```
 
-   Store both in the password manager, then delete the files. Treat `CREDENTIAL_KEYS` like the GitHub App private key: losing it makes every stored Paddle credential unreadable, and every creator must reconnect. To rotate it, add a key to `keys`, make it `current`, and keep the old one: envelopes under the old key are re-wrapped as they are used. Remove the old key only once no envelope references it. Changing `CLAIM_SIGNING_KEY` invalidates open checkout claims and makes rate-limit buckets start over; claim links already sent keep working.
+   Store both in the password manager, then delete the files. Treat `CREDENTIAL_KEYS` like the GitHub App private key: losing it makes every stored Paddle credential unreadable, and every creator must reconnect. Rotate either one with the [secret rotation runbook](runbooks/secret-rotation.md): add the new key to both Workers, make it current, and remove the old key only when the runbook says so. Replacing `CLAIM_SIGNING_KEY` outright, without the keyring, invalidates open checkout claims; claim links already sent keep working.
 
-10. Create the queues that carry webhook work from web to jobs:
+10. Create the queues that carry webhook work from web to jobs, and their dead-letter queues ([decision 0014](decisions/0014-failure-handling-and-alerting.md)):
 
    ```sh
    pnpm --filter @sharerepo/web exec wrangler queues create sharerepo-events-dev
+   pnpm --filter @sharerepo/web exec wrangler queues create sharerepo-events-dlq-dev
    pnpm --filter @sharerepo/web exec wrangler queues create sharerepo-events-prod
+   pnpm --filter @sharerepo/web exec wrangler queues create sharerepo-events-dlq-prod
    ```
 
-11. Set the repository variable `DEPLOY_ENABLED` to `true`. Until then, CI runs every check but skips deployment.
+   Cloudflare creates a missing dead-letter queue on its own; creating it explicitly makes the setup the same in both environments. See § Queues for how they are used.
 
-ShareRepo-owned secrets are added with `wrangler secret put <NAME> [--env production]`, never committed; `secrets.required` in `wrangler.jsonc` lists them. Local values go in `apps/*/.dev.vars`, which is gitignored. The wrangler `e2e` environment is for local Playwright runs only and is never deployed; a test fails if CI ever selects it.
+11. List the **operators** ([decision 0014](decisions/0014-failure-handling-and-alerting.md)): set `OPERATOR_GITHUB_IDS` in `apps/web/wrangler.jsonc` (top level for dev, `env.production` for production) to the operators' GitHub account IDs, comma-separated. These are the immutable numeric IDs, never logins (`gh api users/<login> --jq .id`). They are not secret, so they are committed. Empty means no operators: `/ops` answers 404 to everyone. A value that is not a comma-separated list of numbers is a configuration error: the web Worker fails closed, as for a malformed secret, and the `/readyz` smoke test fails. The jobs Worker does not read it.
+12. Set up alerting: Workers Issues automations and the two Monitors, by the [alerting setup runbook](runbooks/alerting-setup.md). They are configured by hand in the Cloudflare dashboard, because Wrangler cannot configure them yet.
+13. Set the repository variable `DEPLOY_ENABLED` to `true`. Until then, CI runs every check but skips deployment.
+
+ShareRepo-owned secrets are added with `wrangler secret put <NAME> [--env production]`, never committed; `secrets.required` in `wrangler.jsonc` lists them. One secret is optional and not listed: `GITHUB_WEBHOOK_SECRET_PREVIOUS` on the web Worker, set only while the GitHub webhook secret is being rotated ([secret rotation](runbooks/secret-rotation.md) § 3). While it is set, webhooks signed with either secret are accepted. Local values go in `apps/*/.dev.vars`, which is gitignored. The wrangler `e2e` environment is for local Playwright runs only and is never deployed; a test fails if CI ever selects it.
+
+## Queues
+
+| Queue | Producer | Consumer | Settings |
+|---|---|---|---|
+| `sharerepo-events-<env>` | web and jobs (`EVENTS`) | jobs | `max_batch_size` 10, `max_retries` 5, dead-letter queue `sharerepo-events-dlq-<env>` |
+| `sharerepo-events-dlq-<env>` | Cloudflare only (no binding) | jobs | `max_batch_size` 10, `max_retries` 5 |
+
+- A message is one outbox row by ID (decision 0003). The outbox drain runs every row the queue does not finish.
+- A retryable failure is retried on the queue with backoff. From the fifth delivery (`QUEUE_MAX_RETRIES` in `apps/jobs/src/handlers.ts`, which a test keeps equal to `max_retries`) the consumer hands the row to the drain's longer backoff instead. So only a consumer that crashes or times out on every delivery sends a message to the dead-letter queue.
+- The dead-letter consumer never runs the job. It marks a matching, still-open outbox row failed with `dead_lettered`, writes `job.failed` and logs the `job_failed` alert line ([failure triage](runbooks/failure-triage.md#the-dead-letter-queue)).
+- `<env>` is `dev` or `prod`. The `e2e` environment uses the dev queue names locally.
+
+## Scheduled work
+
+The jobs Worker's crons (`triggers.crons` in `apps/jobs/wrangler.jsonc`, the same in every environment):
+
+| Cron | What it does |
+|---|---|
+| `* * * * *` | The minute tick. Queues up to 100 subscriptions whose next policy boundary passed, and up to 100 due repository checks (at most 10 per GitHub installation, none for an installation that is rate limited). Drains the outbox for about 20 seconds. Then stores and logs the `sweep.heartbeat` line, and raises `sweep_lagging` when the oldest due row is more than 15 minutes late (at most once per 15 minutes). Each step runs even when another fails. |
+| `17 3 * * *` | The daily tick. Queues a Paddle sweep per active Paddle connection; a `rewrap_credentials` run while any envelope is under a retired `CREDENTIAL_KEYS` key; a resync of every GitHub connection that is not deleted; and the data lifecycle: one `prune_data` and a `purge_workspace` per workspace whose deletion is due ([decision 0015](decisions/0015-data-lifecycle.md)). Every row except the rewrap is delayed by `dailyOffsetMs` (a hash of its kind and subject, under 24 hours), so the day's provider calls are spread over the day rather than made at 03:17. |
+| `0 * * * *` | Logs `scheduled heartbeat`. Nothing else. |
+
+The minute and daily ticks do nothing, heartbeat included, while `GITHUB_APP_ID` is empty on the jobs Worker. Timers stay in the database: there are no Cloudflare Workflows ([decision 0013](decisions/0013-database-timers-and-expiry-confirmation.md)).
+
+## Observability and alerts
+
+- **Workers Logs** is on for both Workers. Every line is JSON with a correlation ID, and carries IDs and classified codes, never secrets or personal data.
+- **Workers Issues** is on for both Workers in every environment (`observability.issues.enabled: true`). Each environment block repeats it, because a deploy without it turns Issues off.
+- **Alert lines** (`alert: <name>`) and the minute heartbeat feed two Cloudflare Monitors that email the operator. Both are configured by hand: [alerting setup](runbooks/alerting-setup.md).
+- **`/ops`** shows every workspace's failures and the sweep's health, for operators only. Until Monitors leaves beta, review it daily.
 
 ## Claim emails
 
@@ -111,7 +148,32 @@ Because migrations run before the new code, **every migration must be compatible
 
 - **Code:** `wrangler rollback` for the affected Worker (from `apps/web` or `apps/jobs`, with `--env production` for production), or revert the commit on `main` and let CI redeploy.
 - **Schema:** D1 migrations are forward-only. Write a new migration that reverses the change. Because migrations are backwards compatible, rolling back code does not require rolling back schema.
-- **Data:** D1 Time Travel can restore a database to a point in time (`wrangler d1 time-travel restore`). Treat this as an incident procedure; it discards later writes.
+- **Data:** D1 Time Travel can restore a database to a point in time (`wrangler d1 time-travel restore`). Treat this as an incident procedure; it discards later writes. Follow [backup and restore](runbooks/backup-and-restore.md), and read [incident response](runbooks/incident-response.md) § Restoring D1 for what a restore loses.
+
+## First-deploy checks
+
+These need a deployed environment and have not been run yet. Run them in dev after the first deploy that includes Phase 6, then in production, and record the date and result here. The steps are in [alerting setup](runbooks/alerting-setup.md) § 5.
+
+| Check | dev | production |
+|---|---|---|
+| Both queues and their dead-letter queues exist; the events queue names its dead-letter queue; the jobs Worker consumes both | not run | not run |
+| A message on the dead-letter queue is consumed and logged | not run | not run |
+| Workers Issues lists both Workers, and its automation notifies the operator | not run | not run |
+| An alert line reaches the operator by email | not run | not run |
+| The heartbeat Monitor counts the minute heartbeat | not run | not run |
+| `/ops` loads for an operator and answers 404 to anyone else | not run | not run |
+| `pnpm db:drill --remote` passes against the environment's database ([backup and restore](runbooks/backup-and-restore.md)) | not run | not run |
+| An in-place Time Travel restore and its order of operations, rehearsed on dev only | not run | — |
+| Each section of [secret rotation](runbooks/secret-rotation.md) rehearsed | not run | — |
+
+## Runbooks
+
+- [Incident response](runbooks/incident-response.md): triage, severity, access loss, leaked secrets, restores, a workspace deletion that waits.
+- [Failure triage](runbooks/failure-triage.md): `/ops`, the Access page's failures, error codes, retry or dismiss, the dead-letter queue, alerts.
+- [Alerting setup](runbooks/alerting-setup.md): Workers Issues, the Monitors, email, first-deploy checks.
+- [Backup and restore](runbooks/backup-and-restore.md): the drill, a real restore.
+- [Secret rotation](runbooks/secret-rotation.md): every ShareRepo and tenant secret.
+- [GitHub App setup](runbooks/github-app-setup.md) and [Paddle sandbox setup](runbooks/paddle-sandbox-setup.md).
 
 ## Manual deploy (emergency only)
 

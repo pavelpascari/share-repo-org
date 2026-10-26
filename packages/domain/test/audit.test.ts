@@ -74,6 +74,7 @@ const VALID_DETAILS = {
     previousLogin: "octocat",
     login: "octocat-renamed",
   },
+  "subject.identity_unlinked": { provider: "github", externalSubjectId: "583231" },
   "customer.created": { source: "simulated", externalCustomerId: "ctm_1" },
   "customer.linked": { previousSubjectId: "s1", subjectId: "s2" },
   "subscription.recorded": {
@@ -138,6 +139,29 @@ const VALID_DETAILS = {
   "claim.conflict": { path: "checkout", claimId: "cc1", subjectId: "s1", userId: "u2" },
   "customer.relinked": { path: "email", previousSubjectId: "s1", subjectId: "s2" },
   "customer.linked_manually": { previousSubjectId: null, subjectId: "s1" },
+  "job.failed": {
+    kind: "reconcile_resource",
+    subjectId: "w1:r1",
+    errorCode: "dead_lettered",
+    attempts: 5,
+  },
+  "job.retried": { kind: "refresh_subscription", previousErrorCode: "rejected" },
+  "job.dismissed": { kind: "send_claim_email", errorCode: "rejected" },
+  "operator.viewed_workspace": {},
+  "operator.viewed_failures": { jobs: 2, repositories: 1, connections: 0, purgesBlocked: 3 },
+  "data.pruned": { deleted: { external_events: 12, outbox: 0 } },
+  "workspace.exported": { formatVersion: 1 },
+  "workspace.deletion_requested": { deleteAfter: 1_702_592_000_000 },
+  "workspace.deletion_cancelled": {},
+  "workspace.purged": { deleted: { audit_events: 40, workspaces: 1 } },
+  "user.deleted": { unlinkedSubjects: 2, deleted: { users: 1, auth_sessions: 3 } },
+  "paddle.webhook_secret_rotated": {
+    stage: "started",
+    previousDestinationId: "ntfset_1",
+    destinationId: "ntfset_2",
+  },
+  "credentials.rewrapped": { rewrapped: 3, failed: 0, remaining: 0 },
+  "paddle.destinations_swept": { reason: "orphaned", destinationIds: ["ntfset_1", "ntfset_2"] },
 } as const satisfies { [A in AuditAction]: AuditDetails<A> };
 
 const ACTIONS = Object.keys(VALID_DETAILS) as AuditAction[];
@@ -169,6 +193,7 @@ describe("audit action catalog", () => {
     ["offer.archived", "workspace", "offer"],
     ["subject.created", "workspace", "subject"],
     ["subject.login_updated", "workspace", "subject"],
+    ["subject.identity_unlinked", "workspace", "subject"],
     ["customer.created", "workspace", "customer"],
     ["customer.linked", "workspace", "customer"],
     ["subscription.recorded", "workspace", "subscription"],
@@ -197,6 +222,20 @@ describe("audit action catalog", () => {
     ["claim.conflict", "workspace", "customer"],
     ["customer.relinked", "workspace", "customer"],
     ["customer.linked_manually", "workspace", "customer"],
+    ["job.failed", "either", "outbox"],
+    ["job.retried", "either", "outbox"],
+    ["job.dismissed", "either", "outbox"],
+    ["operator.viewed_workspace", "workspace", "workspace"],
+    ["operator.viewed_failures", "account", "ops_page"],
+    ["data.pruned", "account", "retention_run"],
+    ["workspace.exported", "workspace", "workspace"],
+    ["workspace.deletion_requested", "workspace", "workspace"],
+    ["workspace.deletion_cancelled", "workspace", "workspace"],
+    ["workspace.purged", "account", "workspace"],
+    ["user.deleted", "account", "user"],
+    ["paddle.webhook_secret_rotated", "workspace", "paddle_connection"],
+    ["credentials.rewrapped", "account", "rewrap_run"],
+    ["paddle.destinations_swept", "workspace", "workspace"],
   ] as const)("%s is %s-scoped and targets a %s", (action, scope, targetType) => {
     expect(AUDIT_ACTIONS[action].scope).toBe(scope);
     expect(AUDIT_ACTIONS[action].targetType).toBe(targetType);
@@ -337,6 +376,7 @@ describe("audit action catalog", () => {
     ["paddle.status_changed", "status", "disconnected"],
     ["paddle.credentials_rewrapped", "field", "email"],
     ["paddle.credentials_rewrapped", "field", "apiKey"],
+    ["paddle.credentials_rewrapped", "field", "webhook_secret_previous"],
     ["paddle.catalog_synced", "added", -1],
     ["paddle.catalog_synced", "updated", 1.5],
     ["paddle.catalog_synced", "archived", "0"],
@@ -357,6 +397,38 @@ describe("audit action catalog", () => {
     ["customer.linked_manually", "subjectId", null],
     ["customer.linked_manually", "previousSubjectId", ""],
     ["customer.linked_manually", "previousSubjectId", "s1"],
+    ["job.failed", "kind", "send_email"],
+    ["job.failed", "attempts", -1],
+    ["job.failed", "attempts", 1.5],
+    ["job.retried", "kind", "send_email"],
+    ["job.dismissed", "kind", "send_email"],
+    ["data.pruned", "deleted", { outbox: -1 }],
+    ["data.pruned", "deleted", { outbox: 1.5 }],
+    ["data.pruned", "deleted", { "outbox; DROP": 1 }],
+    ["data.pruned", "deleted", { Outbox: 1 }],
+    ["data.pruned", "deleted", { _outbox: 1 }],
+    ["data.pruned", "deleted", { "": 1 }],
+    ["data.pruned", "deleted", { outbox: "1" }],
+    ["workspace.exported", "formatVersion", 0],
+    ["workspace.exported", "formatVersion", 1.5],
+    ["workspace.deletion_requested", "deleteAfter", -1],
+    ["workspace.deletion_requested", "deleteAfter", 1.5],
+    ["workspace.purged", "deleted", { audit_events: -1 }],
+    ["user.deleted", "unlinkedSubjects", -1],
+    ["user.deleted", "deleted", { "users-x": 1 }],
+    ["paddle.webhook_secret_rotated", "destinationId", "ntfset_1"],
+    ["paddle.webhook_secret_rotated", "stage", "finished"],
+    ["credentials.rewrapped", "rewrapped", -1],
+    ["credentials.rewrapped", "failed", -1],
+    ["credentials.rewrapped", "remaining", 1.5],
+    ["operator.viewed_failures", "jobs", -1],
+    ["operator.viewed_failures", "repositories", 1.5],
+    ["operator.viewed_failures", "connections", "0"],
+    ["operator.viewed_failures", "purgesBlocked", -1],
+    ["paddle.destinations_swept", "reason", "lost"],
+    ["paddle.destinations_swept", "destinationIds", []],
+    ["paddle.destinations_swept", "destinationIds", [""]],
+    ["paddle.destinations_swept", "destinationIds", "ntfset_1"],
   ] as const)("%s rejects %s %j", (action, key, value) => {
     const details = { ...VALID_DETAILS[action], [key]: value };
     expect(AUDIT_ACTIONS[action].details.safeParse(details).success).toBe(false);
@@ -527,6 +599,11 @@ describe("Paddle and claim details", () => {
     ["paddle.status_changed", { previousStatus: "unauthorized", status: "active" }],
     ["paddle.disconnected", { previousStatus: "unauthorized", destinationDeleted: false }],
     ["paddle.credentials_rewrapped", { field: "webhook_secret" }],
+    ["paddle.credentials_rewrapped", { field: "webhook_secret_next" }],
+    [
+      "paddle.webhook_secret_rotated",
+      { stage: "completed", previousDestinationId: "ntfset_1", destinationId: "ntfset_2" },
+    ],
     ["claim.completed", { path: "email", claimId: "t1", userId: "u1", subjectId: "s1" }],
     ["claim.rejected", { path: "checkout", claimId: null, reason: "signature_invalid" }],
     ["claim.rejected", { path: "email", claimId: null, reason: "unknown_claim" }],
@@ -673,11 +750,54 @@ describe("auditEvent", () => {
     );
   });
 
+  it("puts an either-scoped event in its workspace when it has one", () => {
+    const event = auditEvent(
+      "job.failed",
+      {
+        workspaceId: "w1",
+        actor: { type: "system", id: null },
+        targetId: "ob1",
+        details: VALID_DETAILS["job.failed"],
+      },
+      context(),
+    );
+    expect(event).toMatchObject({ scope: "workspace", workspaceId: "w1" });
+  });
+
+  it("makes an either-scoped event account-scoped for an explicit null workspace", () => {
+    const event = auditEvent(
+      "job.failed",
+      {
+        workspaceId: null,
+        actor: { type: "system", id: null },
+        targetId: "ob1",
+        details: VALID_DETAILS["job.failed"],
+      },
+      context(),
+    );
+    expect(event).toMatchObject({ scope: "account", workspaceId: null });
+  });
+
+  it.each([
+    ["missing", undefined],
+    ["empty", ""],
+  ])("rejects a %s workspace ID on an either-scoped action", (_, workspaceId) => {
+    const input = {
+      workspaceId,
+      actor: { type: "system", id: null },
+      targetId: "ob1",
+      details: VALID_DETAILS["job.failed"],
+    } as never;
+    expect(() => auditEvent("job.failed", input, context())).toThrow(
+      "job.failed is workspace-scoped",
+    );
+  });
+
   it("rejects an unknown action", () => {
-    const action = "user.deleted" as AuditAction;
+    const action = "user.vanished" as AuditAction;
     expect(() =>
       auditEvent(action, { actor: user, targetId: "u1", details: {} } as never, context()),
-    ).toThrow("unknown audit action: user.deleted");
+    ).toThrow("unknown audit action: user.vanished");
   });
 
   it("rejects an action inherited from Object.prototype", () => {

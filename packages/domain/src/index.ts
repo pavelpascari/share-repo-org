@@ -1,3 +1,4 @@
+export { ALERT_NAMES, AlertName } from "./alert.ts";
 export type {
   AuditAction,
   AuditActorType,
@@ -63,6 +64,10 @@ export {
   ACCESS_POLICY_VERSION,
   ENTITLEMENT_SOURCE_TYPES,
   ENTITLEMENT_STATES,
+  ENTITLEMENT_VALIDITIES,
+  EntitlementValidity,
+  EXPIRY_CONFIRMATION_WINDOW_MS,
+  entitlementValidity,
   supportsAccessLevel,
 } from "./entitlement.ts";
 export type {
@@ -112,6 +117,22 @@ export {
 } from "./identity.ts";
 export type { IdGenerator } from "./ids.ts";
 export { randomIds } from "./ids.ts";
+export type { AccessWithdrawal, PruneCutoffs } from "./lifecycle.ts";
+export {
+  accountDeletionConfirmed,
+  isBeingDeleted,
+  LIFECYCLE_BATCH_SIZE,
+  PurgeBlock,
+  pruneCutoffs,
+  purgeBlock,
+  purgeDue,
+  RETENTION_MS,
+  WORKSPACE_DELETION_DELAY_MS,
+  WORKSPACE_EXPORT_FORMAT_VERSION,
+  workspaceDeletionConfirmed,
+  workspacesBlockingAccountDeletion,
+  workspaceWithdrawal,
+} from "./lifecycle.ts";
 export type {
   CommercialSource,
   OfferAccess,
@@ -197,12 +218,19 @@ export {
   RETRY_BACKOFF_MS,
   retryBackoff,
 } from "./provisioning.ts";
-export type { RateLimitBucket, RateLimitCounter, RateLimitDecision } from "./rate-limit.ts";
+export type {
+  KeyedHash,
+  RateLimitBucket,
+  RateLimitCounter,
+  RateLimitDecision,
+} from "./rate-limit.ts";
 export {
   CHECKOUT_RATE_LIMITS,
   CLAIM_RATE_LIMITS,
   checkoutRateLimitBuckets,
   claimRateLimitBuckets,
+  EXPORT_RATE_LIMIT,
+  exportRateLimitBuckets,
   rateLimitDecision,
   rateLimitWindowStart,
 } from "./rate-limit.ts";
@@ -244,6 +272,15 @@ export {
   parseSubscriptionSnapshot,
   SUBSCRIPTION_STATES,
 } from "./subscription.ts";
+export type { SweepLag } from "./sweep.ts";
+export {
+  dailyOffsetMs,
+  excusedReconcileDueAt,
+  RATE_LIMIT_EXCUSE_MS,
+  SWEEP_LAG_ALERT_INTERVAL_MS,
+  SWEEP_LAG_ALERT_MS,
+  sweepLag,
+} from "./sweep.ts";
 export type { Clock, Instant } from "./time.ts";
 export { systemClock } from "./time.ts";
 export type {

@@ -1,9 +1,10 @@
 import type { Instant, PaddleConnectionStatus } from "@sharerepo/domain";
-import { and, asc, eq, isNotNull, ne, type SQL, sql } from "drizzle-orm";
+import { and, asc, eq, isNotNull, isNull, ne, type SQL, sql } from "drizzle-orm";
 import { type AuditEvents, auditInserts, conditionalAuditInserts } from "./audit-repository.ts";
 import { insertWhere, runBatch, type Statement } from "./batch.ts";
 import type { Db } from "./client.ts";
 import { isUniqueViolation } from "./errors.ts";
+import { refreshAllInsert } from "./lifecycle-repository.ts";
 import { paddleConnections, paddlePrices } from "./schema/index.ts";
 
 /**
@@ -13,10 +14,13 @@ import { paddleConnections, paddlePrices } from "./schema/index.ts";
 export type PaddleConnection = typeof paddleConnections.$inferSelect;
 export type PaddlePrice = typeof paddlePrices.$inferSelect;
 
-/** What a webhook needs before it trusts a body: the workspace, the status and the secret. */
+/**
+ * What a webhook needs before it trusts a body: the workspace, the status and the secrets (the
+ * next one only while a webhook secret rotation is in progress).
+ */
 export type PaddleWebhookConnection = Pick<
   PaddleConnection,
-  "id" | "workspaceId" | "status" | "webhookSecretEnvelope"
+  "id" | "workspaceId" | "status" | "webhookSecretEnvelope" | "webhookSecretNextEnvelope"
 >;
 
 /** A guarded write found the row in another state than expected (or absent): nothing written. */
@@ -50,6 +54,15 @@ export async function createPaddleConnection(
     await runBatch(db, [
       db.insert(paddleConnections).values(connection),
       ...auditInserts(db, audit),
+      // Subscriptions stored from an earlier connection are read again, in the same batch, so a
+      // crash cannot leave the connection without them: after a cancelled workspace deletion
+      // (decision 0015) their entitlements were withdrawn until Paddle could be read.
+      refreshAllInsert(db, {
+        workspaceId: connection.workspaceId,
+        sources: ["paddle"],
+        now: connection.createdAt,
+        when: sql`1`,
+      }),
     ]);
   } catch (error) {
     if (isUniqueViolation(error, LIVE_KEY)) return { ok: false, reason: "already_connected" };
@@ -85,11 +98,28 @@ export async function getPaddleConnectionForWebhook(
       workspaceId: paddleConnections.workspaceId,
       status: paddleConnections.status,
       webhookSecretEnvelope: paddleConnections.webhookSecretEnvelope,
+      webhookSecretNextEnvelope: paddleConnections.webhookSecretNextEnvelope,
     })
     .from(paddleConnections)
     .where(eq(paddleConnections.id, connectionId))
     .limit(1);
   return rows[0] ?? null;
+}
+
+/**
+ * The IDs of every connection the workspace ever had, disconnected ones included: a destination
+ * ShareRepo created before destinations were tagged names one of them in its URL.
+ */
+export async function listPaddleConnectionIds(
+  db: Db,
+  key: { workspaceId: string },
+): Promise<string[]> {
+  const rows = await db
+    .select({ id: paddleConnections.id })
+    .from(paddleConnections)
+    .where(eq(paddleConnections.workspaceId, key.workspaceId))
+    .orderBy(asc(paddleConnections.id));
+  return rows.map((row) => row.id);
 }
 
 /** Connections the daily sweep visits: every `active` one. */
@@ -237,21 +267,31 @@ export async function markPaddleEventReceived(
 }
 
 /**
- * Disconnects a live connection, with its audit event (`paddle.disconnected`): erases both
- * envelopes and marks it `disconnected`. `destinationId` is what to keep: null once the
- * destination was deleted in Paddle, or its ID when the creator must delete it by hand.
+ * Disconnects a live connection, with its audit event (`paddle.disconnected`): erases every
+ * envelope (a rotation's next secret too) and marks it `disconnected`. `destinationId` and
+ * `destinationNextId` are what to keep: null once the destination was deleted in Paddle (or there
+ * was none), or its ID when the creator must delete it by hand. Guarded on the destinations the
+ * caller read (`expected`): a rotation that stored a second destination meanwhile makes it stale,
+ * so the caller deletes that one too before trying again.
  */
 export async function disconnectPaddleConnection(
   db: Db,
   input: {
     workspaceId: string;
     connectionId: string;
+    expected: { destinationId: string | null; destinationNextId: string | null };
     destinationId: string | null;
+    destinationNextId: string | null;
     now: Instant;
   },
   audit: AuditEvents,
 ): Promise<GuardedWriteResult> {
-  const guard = and(scoped(input.workspaceId, input.connectionId), notDisconnected);
+  const guard = and(
+    scoped(input.workspaceId, input.connectionId),
+    notDisconnected,
+    sql`${paddleConnections.destinationId} IS ${input.expected.destinationId}`,
+    sql`${paddleConnections.destinationNextId} IS ${input.expected.destinationNextId}`,
+  );
   return guardedUpdate(
     db,
     guard,
@@ -262,7 +302,9 @@ export async function disconnectPaddleConnection(
         statusReason: null,
         apiKeyEnvelope: null,
         webhookSecretEnvelope: null,
+        webhookSecretNextEnvelope: null,
         destinationId: input.destinationId,
+        destinationNextId: input.destinationNextId,
         updatedAt: input.now,
       })
       .where(guard),
@@ -270,8 +312,20 @@ export async function disconnectPaddleConnection(
   );
 }
 
-/** Which envelope of a connection a re-wrap replaces. */
-export type PaddleEnvelopeField = "api_key" | "webhook_secret";
+/**
+ * Which envelope of a connection a re-wrap replaces. `webhook_secret_next` is the secret of a
+ * webhook rotation in progress; it is sealed for that purpose (its own AAD).
+ */
+export type PaddleEnvelopeField = "api_key" | "webhook_secret" | "webhook_secret_next";
+
+const ENVELOPE_COLUMNS = {
+  api_key: { column: paddleConnections.apiKeyEnvelope, key: "apiKeyEnvelope" },
+  webhook_secret: { column: paddleConnections.webhookSecretEnvelope, key: "webhookSecretEnvelope" },
+  webhook_secret_next: {
+    column: paddleConnections.webhookSecretNextEnvelope,
+    key: "webhookSecretNextEnvelope",
+  },
+} as const;
 
 /**
  * Replaces an envelope sealed under a retired master key with one re-sealed under the current
@@ -290,20 +344,106 @@ export async function rewrapPaddleEnvelope(
   },
   audit: AuditEvents,
 ): Promise<GuardedWriteResult> {
-  const column =
-    input.field === "api_key"
-      ? paddleConnections.apiKeyEnvelope
-      : paddleConnections.webhookSecretEnvelope;
-  const set =
-    input.field === "api_key"
-      ? { apiKeyEnvelope: input.next }
-      : { webhookSecretEnvelope: input.next };
+  const { column, key } = ENVELOPE_COLUMNS[input.field];
   const guard = and(
     scoped(input.workspaceId, input.connectionId),
     notDisconnected,
     eq(column, input.previous),
   );
-  return guardedUpdate(db, guard, db.update(paddleConnections).set(set).where(guard), audit);
+  return guardedUpdate(
+    db,
+    guard,
+    db
+      .update(paddleConnections)
+      .set({ [key]: input.next })
+      .where(guard),
+    audit,
+  );
+}
+
+/**
+ * Webhook secret rotation, first step (Phase 6): stores the second destination and its secret
+ * (sealed for `webhook_secret_next`), with its audit event (`paddle.webhook_secret_rotated`,
+ * `started`). From then on both secrets are accepted. Guarded on the connection being live with
+ * `destinationId` as its destination and `expectedNextId` as its second destination: null when no
+ * rotation is in progress, or the ID of a second destination being replaced because it no longer
+ * delivers. Two rotations never overlap.
+ */
+export async function startPaddleWebhookRotation(
+  db: Db,
+  input: {
+    workspaceId: string;
+    connectionId: string;
+    destinationId: string;
+    expectedNextId: string | null;
+    destinationNextId: string;
+    webhookSecretNextEnvelope: string;
+    now: Instant;
+  },
+  audit: AuditEvents,
+): Promise<GuardedWriteResult> {
+  const guard = and(
+    scoped(input.workspaceId, input.connectionId),
+    notDisconnected,
+    eq(paddleConnections.destinationId, input.destinationId),
+    input.expectedNextId === null
+      ? isNull(paddleConnections.destinationNextId)
+      : eq(paddleConnections.destinationNextId, input.expectedNextId),
+  );
+  return guardedUpdate(
+    db,
+    guard,
+    db
+      .update(paddleConnections)
+      .set({
+        destinationNextId: input.destinationNextId,
+        webhookSecretNextEnvelope: input.webhookSecretNextEnvelope,
+        updatedAt: input.now,
+      })
+      .where(guard),
+    audit,
+  );
+}
+
+/**
+ * Webhook secret rotation, last step: once the old destination is deleted in Paddle, the next
+ * destination becomes the connection's destination and its secret (re-sealed for
+ * `webhook_secret`) the connection's secret, with its audit event (`paddle.webhook_secret_rotated`,
+ * `completed`). Guarded on the rotation still being the one read.
+ */
+export async function completePaddleWebhookRotation(
+  db: Db,
+  input: {
+    workspaceId: string;
+    connectionId: string;
+    previousDestinationId: string;
+    destinationId: string;
+    webhookSecretEnvelope: string;
+    now: Instant;
+  },
+  audit: AuditEvents,
+): Promise<GuardedWriteResult> {
+  const guard = and(
+    scoped(input.workspaceId, input.connectionId),
+    notDisconnected,
+    eq(paddleConnections.destinationId, input.previousDestinationId),
+    eq(paddleConnections.destinationNextId, input.destinationId),
+  );
+  return guardedUpdate(
+    db,
+    guard,
+    db
+      .update(paddleConnections)
+      .set({
+        destinationId: input.destinationId,
+        webhookSecretEnvelope: input.webhookSecretEnvelope,
+        destinationNextId: null,
+        webhookSecretNextEnvelope: null,
+        updatedAt: input.now,
+      })
+      .where(guard),
+    audit,
+  );
 }
 
 /** A price as imported from Paddle's catalog; `id` is ShareRepo's row ID for a new price. */

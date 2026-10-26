@@ -11,7 +11,7 @@ export async function createUser(
   input: { id: string; now: Instant },
   audit: AuditEvents,
 ): Promise<User> {
-  const user: User = { id: input.id, createdAt: input.now, updatedAt: input.now };
+  const user: User = { id: input.id, createdAt: input.now, updatedAt: input.now, deletedAt: null };
   await db.batch([db.insert(users).values(user), ...auditInserts(db, audit)]);
   return user;
 }

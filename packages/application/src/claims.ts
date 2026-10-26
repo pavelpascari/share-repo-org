@@ -17,6 +17,7 @@ import {
   customerKnownBeforeClaim,
   decideCustomerLink,
   type EMAIL_REJECTION_REASONS,
+  type KeyedHash,
   LinkPath,
   OutboxKind,
   parseGitHubLogin,
@@ -33,6 +34,7 @@ import {
 } from "@sharerepo/integrations";
 import {
   ConflictError,
+  claimSigningKeysOf,
   envelopeAad,
   hashClaimEmail,
   hashClaimToken,
@@ -92,6 +94,19 @@ function workspaceEvent<A extends WorkspaceAuditAction>(
   },
 ): AuditEvent {
   return auditEvent(action, input as unknown as AuditEventInput<A>, ctx);
+}
+
+/**
+ * A keyed hash under the current claim signing key, and under each other key still listed. Rate
+ * limits count under the current key and add the others' counts, so rotating `CLAIM_SIGNING_KEY`
+ * does not reset them (decision 0012 amendment).
+ */
+async function keyedHash(
+  deps: Pick<CommerceDeps, "claimSigningKeys">,
+  hash: (key: Uint8Array) => Promise<string>,
+): Promise<KeyedHash> {
+  const { current, retired } = claimSigningKeysOf(deps.claimSigningKeys);
+  return { current: await hash(current), retired: await Promise.all(retired.map(hash)) };
 }
 
 /** Queues a refresh of each subscription a link moves, so its entitlements follow the link. */
@@ -212,13 +227,18 @@ export async function linkCheckoutReference(
   // Looked up in the subscription's workspace only: another workspace's claim is unknown here.
   const claim = await repo.getCheckoutClaim(ctx.db, { workspaceId, id: parsed.checkoutClaimId });
   if (claim === null) return reject(ClaimRejectionReason.UnknownClaim, null);
-  const verified = await verifyClaimReference({
-    key: source.signingKey,
-    reference,
-    workspaceId,
-    userId: claim.userId,
-    offerId: claim.offerId,
-  });
+  // A claim this customer already used was verified when it was used: its renewals need no MAC,
+  // so they stay silent once the key that signed the reference is retired (secret rotation).
+  const usedByCustomer = claim.consumedByCustomerId === customer.id;
+  const verified =
+    usedByCustomer ||
+    (await verifyClaimReference({
+      keys: source.signingKeys,
+      reference,
+      workspaceId,
+      userId: claim.userId,
+      offerId: claim.offerId,
+    }));
   if (!verified) return reject(ClaimRejectionReason.SignatureInvalid, null);
   const usable = checkoutClaimUsable(claim, { now, customerId: customer.id });
   if (!usable.usable) return reject(usable.reason, claim.id);
@@ -477,7 +497,7 @@ export async function startCheckout(
   if (open !== null) return { ok: true, checkoutUrl: open.checkoutUrl, checkoutClaimId: open.id };
   const buckets = checkoutRateLimitBuckets({
     userId,
-    ipHash: await hashIp(deps.claimSigningKey, input.ip),
+    ipHash: await keyedHash(deps, (key) => hashIp(key, input.ip)),
   });
   if (!(await repo.takeRateLimits(ctx.db, buckets, now))) {
     return { ok: false, reason: "rate_limited" };
@@ -485,7 +505,7 @@ export async function startCheckout(
 
   const checkoutClaimId = ctx.ids.next();
   const reference = await signClaimReference({
-    key: deps.claimSigningKey,
+    key: claimSigningKeysOf(deps.claimSigningKeys).current,
     workspaceId,
     checkoutClaimId,
     userId,
@@ -586,14 +606,13 @@ export async function requestClaim(
   if (!email.success) return { status: "invalid_email" };
 
   const now = ctx.clock.now();
-  const key = deps.claimSigningKey;
   const workspaceId = workspace.id;
-  const emailHash = await hashClaimEmail(key, email.data);
+  const emailHash = await keyedHash(deps, (key) => hashClaimEmail(key, email.data));
   const buckets = claimRateLimitBuckets({
     workspaceId,
     emailHash,
     userId: input.user.userId,
-    ipHash: await hashIp(key, input.ip),
+    ipHash: await keyedHash(deps, (key) => hashIp(key, input.ip)),
   });
   // Counted in every bucket or in none, atomically: a refused request uses up no limit.
   if (!(await repo.takeRateLimits(ctx.db, buckets, now))) {
@@ -612,6 +631,7 @@ export async function requestClaim(
     subjectId: encodeClaimRequestKey({ workspaceId, claimRequestId }),
     createdAt: now,
     availableAt: now,
+    workspaceId,
   };
   await repo.createClaimRequest(
     ctx.db,
@@ -620,7 +640,7 @@ export async function requestClaim(
         id: claimRequestId,
         workspaceId,
         userId: input.user.userId,
-        emailHash,
+        emailHash: emailHash.current,
         emailEnvelope,
         createdAt: now,
       },
@@ -887,6 +907,8 @@ export async function confirmClaim(
   const actor = asAuditActor(input.user);
   const resolved = await resolveToken(ctx, input.token);
   if (!resolved.ok) {
+    const repeated = await repeatedConfirmation(ctx, resolved, input.user.userId);
+    if (repeated !== null) return repeated;
     if (resolved.token !== null) {
       await repo.appendAuditEvents(ctx.db, [
         workspaceEvent(ctx, "claim.rejected", {
@@ -963,6 +985,39 @@ export async function confirmClaim(
         ? "linked"
         : "relinked";
   return { ok: true, workspaceId: workspace.id, workspaceSlug: workspace.slug, outcome };
+}
+
+/**
+ * The claimant confirming again a claim they already completed, as after a lost response or a
+ * double submit: the token is used up by them and the customer is still linked to their subject.
+ * That is the same success again, with nothing written; anything else is still refused.
+ */
+async function repeatedConfirmation(
+  ctx: ServiceContext,
+  resolved: Extract<ResolvedToken, { ok: false }>,
+  userId: string,
+): Promise<ConfirmClaimResult | null> {
+  const { token } = resolved;
+  if (
+    token === null ||
+    resolved.reason !== ClaimRejectionReason.AlreadyUsed ||
+    token.consumedByUserId !== userId
+  ) {
+    return null;
+  }
+  const { workspaceId, customerId } = token;
+  const customer = await repo.getCustomer(ctx.db, { workspaceId, customerId });
+  const claimant = await claimantIn(ctx, workspaceId, userId);
+  if (
+    customer === null ||
+    claimant.subject === null ||
+    customer.subjectId !== claimant.subject.id
+  ) {
+    return null;
+  }
+  // An active workspace: `resolveToken` reports any other as unknown.
+  const workspace = (await repo.getWorkspace(ctx.db, workspaceId)) as repo.Workspace;
+  return { ok: true, workspaceId, workspaceSlug: workspace.slug, outcome: "already_linked" };
 }
 
 // Path 3: the owner's manual link -----------------------------------------------------------

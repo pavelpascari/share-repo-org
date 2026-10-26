@@ -34,9 +34,15 @@ function stripJsonc(source: string): string {
 }
 
 interface WranglerEnv {
+  name?: string;
   vars?: Record<string, string>;
   secrets?: { required?: string[] };
   d1_databases?: unknown[];
+  observability?: { enabled?: boolean; issues?: { enabled?: boolean } };
+  queues?: {
+    producers?: { binding: string; queue: string }[];
+    consumers?: { queue: string; dead_letter_queue?: string; max_retries?: number }[];
+  };
 }
 interface WranglerConfig extends WranglerEnv {
   env?: Record<string, WranglerEnv>;
@@ -112,6 +118,13 @@ describe("apps/web/wrangler.jsonc", () => {
   it("e2e uses the same local database as the top level, where E2E applies migrations", () => {
     expect(config.env?.e2e?.d1_databases).toEqual(config.d1_databases);
   });
+
+  it("every environment enables Workers Issues and declares the operator IDs (decision 0014)", () => {
+    for (const env of [config, ...Object.values(config.env ?? {})]) {
+      expect(env.observability).toEqual({ enabled: true, issues: { enabled: true } });
+      expect(env.vars).toHaveProperty("OPERATOR_GITHUB_IDS");
+    }
+  });
 });
 
 describe("apps/jobs/wrangler.jsonc", () => {
@@ -131,6 +144,27 @@ describe("apps/jobs/wrangler.jsonc", () => {
       expect(env.vars?.ENVIRONMENT === "e2e").toBe(name === "e2e");
     }
     expect(config.env?.e2e?.d1_databases).toEqual(config.d1_databases);
+  });
+
+  it("every environment enables Workers Issues (decision 0014)", () => {
+    for (const env of [config, ...Object.values(config.env ?? {})]) {
+      expect(env.observability).toEqual({ enabled: true, issues: { enabled: true } });
+    }
+  });
+
+  it("every environment dead-letters its events queue to a DLQ it also consumes", () => {
+    for (const env of [config, ...Object.values(config.env ?? {})]) {
+      const events = env.queues?.producers?.find((p) => p.binding === "EVENTS")?.queue ?? "";
+      const dlq = events.replace("sharerepo-events-", "sharerepo-events-dlq-");
+      expect(events).toMatch(/^sharerepo-events-(dev|prod)$/);
+      expect(env.queues?.consumers).toEqual([
+        // max_retries is QUEUE_MAX_RETRIES in apps/jobs/src/handlers.ts: from that retry on,
+        // a retryable job is handed to the outbox drain rather than dead-lettered.
+        expect.objectContaining({ queue: events, dead_letter_queue: dlq, max_retries: 5 }),
+        expect.objectContaining({ queue: dlq }),
+      ]);
+      expect(env.queues?.consumers?.[1]).not.toHaveProperty("dead_letter_queue");
+    }
   });
 
   it("every environment sets the claim links' origin and sender; production uses https", () => {

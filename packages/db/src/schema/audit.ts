@@ -13,6 +13,8 @@ import { workspaces } from "./workspaces.ts";
 /**
  * Append-only audit history (decision 0007). UPDATE and DELETE are rejected by triggers that are
  * appended by hand to the migration (Drizzle does not model triggers); a test proves they exist.
+ * The one exception (decision 0015, migration 0009): a workspace's purge deletes its events while
+ * the workspace is `purging`.
  */
 export const auditEvents = sqliteTable(
   "audit_events",

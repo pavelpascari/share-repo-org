@@ -1,6 +1,7 @@
 import * as repo from "@sharerepo/db";
 import {
   type AccessLevel,
+  AlertName,
   type AuditDetails,
   type AuditEvent,
   type AuditEventInput,
@@ -31,11 +32,13 @@ import { ConflictError, NotFoundError } from "@sharerepo/platform";
 import {
   asAuditActor,
   atOneInstant,
+  raiseAlert,
   type ServiceContext,
   type UserActor,
   type WorkspaceAuditAction,
 } from "./context.ts";
 import { encodeReconcileKey, type ReconcileRef } from "./entitlement-source.ts";
+import { RECONCILE_FAILING_THRESHOLD } from "./failures.ts";
 import { capabilitiesOf } from "./offers.ts";
 import { openWorkspace } from "./workspaces.ts";
 
@@ -73,6 +76,7 @@ export function reconcileOutboxRow(ctx: ServiceContext, ref: ReconcileRef): repo
     subjectId: encodeReconcileKey(ref),
     createdAt: now,
     availableAt: now,
+    workspaceId: ref.workspaceId,
   };
 }
 
@@ -537,9 +541,12 @@ async function mutate(run: Run, input: MutationInput): Promise<MutationResult> {
               at,
             ),
         );
-        return written.ok
-          ? { status: "failed", stopRun: outcome.stopRun }
-          : { status: "lease_lost" };
+        if (!written.ok) return { status: "lease_lost" };
+        // GitHub rate-limits the installation, not the repository: its other repositories wait.
+        if (outcome.retryClass === "rate_limited") {
+          await deferInstallation(run, outcome.nextAttemptAt as number);
+        }
+        return { status: "failed", stopRun: outcome.stopRun };
       }
       case "stop_run": {
         // The failed row needs a retry class (CHECK); the event says the grant is unchanged.
@@ -579,6 +586,7 @@ async function queueResync(run: Run): Promise<void> {
     subjectId: run.connection.id,
     createdAt: run.now,
     availableAt: run.now,
+    workspaceId: run.connection.workspaceId,
   });
 }
 
@@ -862,16 +870,48 @@ async function release(
  * An observation GitHub refused. It is retried with a backoff by the repository's consecutive
  * failures, and its classified code is recorded for the access page. A suspended or missing
  * installation, or a repository that is gone or renamed, queues a resync of the connection; its
- * changes queue the next run, and a suspended connection then blocks.
+ * changes queue the next run, and a suspended connection then blocks. A rate limit also defers
+ * the installation's other repositories until GitHub's reset (or this repository's retry, when
+ * GitHub gave no reset).
  */
 async function observationFailed(run: Run, error: GitHubApiError): Promise<ReconcileOutcome> {
+  const failures = run.resource.reconcileFailures + 1;
   const outcome = classifyObservationFailure({
     failure: providerFailure(error),
-    failures: run.resource.reconcileFailures + 1,
+    failures,
     now: run.now,
   });
   if (outcome.resync) await queueResync(run);
-  return release(run, outcome.nextReconcileAt, { ok: false, errorCode: outcome.errorCode });
+  if (outcome.errorCode === "rate_limited") {
+    const reset = error.retryAfterMs;
+    await deferInstallation(run, reset === undefined ? outcome.nextReconcileAt : run.now + reset);
+  }
+  const released = await release(run, outcome.nextReconcileAt, {
+    ok: false,
+    errorCode: outcome.errorCode,
+  });
+  // Raised once, when the run that holds the lease records the third failure in a row.
+  if (released === "done" && failures === RECONCILE_FAILING_THRESHOLD) {
+    raiseAlert(run.ctx, AlertName.ReconcileFailing, {
+      workspaceId: run.lease.workspaceId,
+      resourceId: run.lease.resourceId,
+      failures,
+      errorCode: outcome.errorCode,
+    });
+  }
+  return released;
+}
+
+/**
+ * GitHub rate-limited the run's installation: the sweep defers the connection's other due
+ * reconciles until `until` (phase-6 plan § Partitioning). A scheduling hint, not audited.
+ */
+async function deferInstallation(run: Run, until: number): Promise<void> {
+  await repo.deferConnectionReconciles(run.ctx.db, {
+    workspaceId: run.lease.workspaceId,
+    connectionId: run.connection.id,
+    until,
+  });
 }
 
 /**
@@ -943,7 +983,14 @@ export async function reconcileResource(
   const final = await load(run);
   return release(
     run,
-    nextReconcileAt({ now, grants: final.grants, budget: final.budget, leftover }),
+    nextReconcileAt({
+      now,
+      grants: final.grants,
+      budget: final.budget,
+      // An expiry-pending entitlement is checked again when its confirmation window ends.
+      entitlements: final.entitlements,
+      leftover,
+    }),
     // A skipped observation (inactive connection, unselected repository) says nothing.
     observed === "observed" ? { ok: true } : undefined,
   );
@@ -1050,17 +1097,19 @@ export async function retryGrant(
 
 /**
  * The per-minute sweep: queues a `reconcile_resource` for up to `limit` repositories, in any
- * workspace, that are due (or, the repair path, have live access but nothing scheduled). Returns
- * how many it queued.
+ * workspace, that are due (or, the repair path, have live access but nothing scheduled), at most
+ * `perConnection` due ones per GitHub installation, and none of an installation GitHub is
+ * rate-limiting. Returns how many it queued.
  */
 export async function queueDueReconciles(
   context: ServiceContext,
-  input: { readonly limit: number },
+  input: { readonly limit: number; readonly perConnection: number },
 ): Promise<number> {
   const ctx = atOneInstant(context);
   return repo.claimDueReconciles(ctx.db, {
     now: ctx.clock.now(),
     limit: input.limit,
+    perConnection: input.perConnection,
     makeOutboxRow: (resource) =>
       reconcileOutboxRow(ctx, { workspaceId: resource.workspaceId, resourceId: resource.id }),
   });

@@ -11,7 +11,7 @@ import type { CredentialKeyring } from "./secrets.ts";
 export const ENVELOPE_VERSION = 1;
 
 /** What a sealed secret is for; part of its additional authenticated data. */
-export type EnvelopePurpose = "api_key" | "webhook_secret" | "email";
+export type EnvelopePurpose = "api_key" | "webhook_secret" | "webhook_secret_next" | "email";
 
 /** Why an envelope could not be sealed or opened. Never carries secret material. */
 export type CredentialEnvelopeFailure =

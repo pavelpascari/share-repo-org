@@ -90,9 +90,10 @@ describe("createUser", () => {
       id,
       createdAt: T0 + 5,
       updatedAt: T0 + 5,
+      deletedAt: null,
     });
     const row = await env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(id).first();
-    expect(row).toEqual({ id, created_at: T0 + 5, updated_at: T0 + 5 });
+    expect(row).toEqual({ id, created_at: T0 + 5, updated_at: T0 + 5, deleted_at: null });
     await expect(listAuditEventsByCorrelationId(db, event.correlationId)).resolves.toEqual([event]);
   });
 
@@ -141,6 +142,8 @@ describe("createWorkspace", () => {
         status: "active",
         createdAt: T0 + 1,
         updatedAt: T0 + 1,
+        deleteAfter: null,
+        deletionRequestedBy: null,
       },
     });
     const membership = await env.DB.prepare(

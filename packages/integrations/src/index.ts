@@ -62,6 +62,12 @@ export {
 } from "./paddle/client.ts";
 export { PADDLE_API_BASE_URLS, type PaddleConfig, parsePaddleConfig } from "./paddle/config.ts";
 export {
+  type DestinationTag,
+  destinationDescription,
+  LEGACY_DESTINATION_DESCRIPTION,
+  parseDestinationDescription,
+} from "./paddle/destination-tag.ts";
+export {
   InvalidPaddleWebhookError,
   isDestinationLimitError,
   PADDLE_API_ERROR_KINDS,

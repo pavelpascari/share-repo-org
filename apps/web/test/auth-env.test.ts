@@ -64,6 +64,15 @@ describe("parseAuthEnv", () => {
     ]);
   });
 
+  it("security/blank-secret-fails-closed: rejects a whitespace-only auth or client secret", () => {
+    expect(
+      issuesOf({ ...base, BETTER_AUTH_SECRET: " ".repeat(40), GITHUB_CLIENT_SECRET: "\n" }),
+    ).toEqual([
+      { path: "BETTER_AUTH_SECRET", code: "invalid_format" },
+      { path: "GITHUB_CLIENT_SECRET", code: "invalid_format" },
+    ]);
+  });
+
   it("rejects empty client credentials", () => {
     expect(issuesOf({ ...base, GITHUB_CLIENT_ID: "", GITHUB_CLIENT_SECRET: "" })).toEqual([
       { path: "GITHUB_CLIENT_ID", code: "too_small" },

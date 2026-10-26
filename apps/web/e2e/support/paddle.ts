@@ -157,13 +157,66 @@ export async function subscriptionControl(
     | "pause"
     | "resume",
   form: Record<string, string> = {},
+  options: { destinations?: number } = {},
 ) {
   const result = await control<{
     subscription: WireSubscription;
     deliveries: { status: number }[];
   }>(request, `/subscriptions/${subscriptionId}/${action}`, form);
-  expect(result.deliveries.map((delivery) => delivery.status)).toEqual([200]);
+  // One delivery per active destination (two during a webhook secret rotation, none while the
+  // subscription's webhooks are lost), each accepted.
+  expect(result.deliveries.map((delivery) => delivery.status)).toEqual(
+    Array.from({ length: options.destinations ?? 1 }, () => 200),
+  );
   return result.subscription;
+}
+
+/** Paddle loses this subscription's webhooks from now on: changes apply, nothing is delivered. */
+export const loseWebhooks = (request: APIRequestContext, subscriptionId: string) =>
+  control(request, `/subscriptions/${subscriptionId}/lose-webhooks`);
+
+/** Paddle delivers this subscription's webhooks again. */
+export const deliverWebhooks = (request: APIRequestContext, subscriptionId: string) =>
+  control(request, `/subscriptions/${subscriptionId}/deliver-webhooks`);
+
+/**
+ * Paddle delivers an event carrying the subscription as it is now, as its retry of a lost
+ * delivery does; returns each destination's response status.
+ */
+export async function redeliver(
+  request: APIRequestContext,
+  seller: FakeSeller,
+  subscriptionId: string,
+  eventType: string,
+): Promise<number[]> {
+  const { deliveries } = await control<{ deliveries: { status: number }[] }>(
+    request,
+    `/sellers/${seller.sellerId}/events`,
+    { event_type: eventType, subscription_id: subscriptionId },
+  );
+  return deliveries.map((delivery) => delivery.status);
+}
+
+/** The seller's next call of `operation` fails with `kind`, as Paddle answers it. */
+export const failNextPaddleCall = (
+  request: APIRequestContext,
+  seller: FakeSeller,
+  operation: string,
+  kind: "rejected" | "transient" | "not_found" | "rate_limited" | "unauthorized",
+) => control(request, `/sellers/${seller.sellerId}/fail-next`, { operation, kind });
+
+/** ShareRepo's notification destinations in the seller's fake. */
+export async function destinations(
+  request: APIRequestContext,
+  seller: FakeSeller,
+): Promise<{ id: string; destination: string; active: boolean }[]> {
+  const response = await request.get(`${FAKE_PADDLE_URL}/_control/sellers/${seller.sellerId}`);
+  expect(response.ok()).toBe(true);
+  return (
+    (await response.json()) as {
+      notificationSettings: { id: string; destination: string; active: boolean }[];
+    }
+  ).notificationSettings;
 }
 
 /** The seller's subscriptions in the fake. */
@@ -179,16 +232,29 @@ export async function sellerSubscriptions(
 export const revokeKey = (request: APIRequestContext, seller: FakeSeller) =>
   control(request, `/sellers/${seller.sellerId}/revoke-key`);
 
+/**
+ * The mail the fake captured for this address. A transient request error (the fake's socket
+ * reset, a response cut short) reads as no mail yet, so the caller's poll simply tries again.
+ */
+async function mailTo(request: APIRequestContext, email: string): Promise<{ text: string }[]> {
+  try {
+    const response = await request.get(
+      `${FAKE_PADDLE_URL}/_control/mail?to=${encodeURIComponent(email)}`,
+    );
+    if (!response.ok()) return [];
+    return (await response.json()) as { text: string }[];
+  } catch {
+    return [];
+  }
+}
+
 /** The claim link ShareRepo emailed to this address, once the mail arrives. */
 export async function claimLinkFor(request: APIRequestContext, email: string): Promise<string> {
   let link = "";
   await expect
     .poll(
       async () => {
-        const response = await request.get(
-          `${FAKE_PADDLE_URL}/_control/mail?to=${encodeURIComponent(email)}`,
-        );
-        const mails = (await response.json()) as { text: string }[];
+        const mails = await mailTo(request, email);
         link = mails[0]?.text.match(new RegExp(`${WEB_URL}/claim/[A-Za-z0-9_-]+`))?.[0] ?? "";
         return link;
       },

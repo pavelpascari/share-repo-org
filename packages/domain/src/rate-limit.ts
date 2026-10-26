@@ -12,6 +12,22 @@ export interface RateLimitBucket {
   readonly bucket: string;
   readonly windowMs: number;
   readonly limit: number;
+  /**
+   * The same limit's counters under claim signing keys being rotated out (Phase 6, secret
+   * rotation): their counts in the current window add to this bucket's, so a rotation does not
+   * reset a limit. Only `bucket` itself is counted. Empty outside a rotation.
+   */
+  readonly retired: readonly string[];
+}
+
+/**
+ * An HMAC under the current claim signing key, and under every other key still listed while the
+ * key is rotated (decision 0012 amendment). Rate limits count under `current` and consult the
+ * rest.
+ */
+export interface KeyedHash {
+  readonly current: string;
+  readonly retired: readonly string[];
 }
 
 /** A stored counter (`claim_rate_limits`): requests counted in the window starting at `windowStart`. */
@@ -37,23 +53,26 @@ export const CLAIM_RATE_LIMITS = [
  * The buckets one claim request counts against. `emailHash` and `ipHash` are HMACs; neither an
  * email nor an IP address ever reaches a bucket name. Anyone can type anyone's email, so the
  * email's buckets are per workspace: requests in one workspace never use up its limits in
- * another. The user and IP limits hold across workspaces.
+ * another. The user and IP limits hold across workspaces. Hashes under retired keys name the
+ * `retired` buckets.
  */
 export function claimRateLimitBuckets(keys: {
   readonly workspaceId: string;
-  readonly emailHash: string;
+  readonly emailHash: KeyedHash;
   readonly userId: string;
-  readonly ipHash: string;
+  readonly ipHash: KeyedHash;
 }): readonly RateLimitBucket[] {
+  const email = (hash: string) => `${keys.workspaceId}:${hash}`;
   const values = {
-    email: `${keys.workspaceId}:${keys.emailHash}`,
-    user: keys.userId,
+    email: { current: email(keys.emailHash.current), retired: keys.emailHash.retired.map(email) },
+    user: { current: keys.userId, retired: [] },
     ip: keys.ipHash,
   };
   return CLAIM_RATE_LIMITS.map(({ key, window, windowMs, limit }) => ({
-    bucket: `${key}:${values[key]}:${window}`,
+    bucket: `${key}:${values[key].current}:${window}`,
     windowMs,
     limit,
+    retired: values[key].retired.map((value) => `${key}:${value}:${window}`),
   }));
 }
 
@@ -69,14 +88,23 @@ export const CHECKOUT_RATE_LIMITS = [
 /** The buckets one new checkout counts against: `checkout:user:<id>:h` and `checkout:ip:<hash>:h`. */
 export function checkoutRateLimitBuckets(keys: {
   readonly userId: string;
-  readonly ipHash: string;
+  readonly ipHash: KeyedHash;
 }): readonly RateLimitBucket[] {
-  const values = { user: keys.userId, ip: keys.ipHash };
+  const values = { user: { current: keys.userId, retired: [] }, ip: keys.ipHash };
   return CHECKOUT_RATE_LIMITS.map(({ key, window, windowMs, limit }) => ({
-    bucket: `checkout:${key}:${values[key]}:${window}`,
+    bucket: `checkout:${key}:${values[key].current}:${window}`,
     windowMs,
     limit,
+    retired: values[key].retired.map((value) => `checkout:${key}:${value}:${window}`),
   }));
+}
+
+/** The limit on workspace exports (decision 0015): 5 an hour per workspace, for all its owners. */
+export const EXPORT_RATE_LIMIT = { windowMs: HOUR_MS, limit: 5 } as const;
+
+/** The bucket one workspace export counts against: `export:<workspaceId>:h`. */
+export function exportRateLimitBuckets(workspaceId: string): readonly RateLimitBucket[] {
+  return [{ bucket: `export:${workspaceId}:h`, ...EXPORT_RATE_LIMIT, retired: [] }];
 }
 
 /** The start of the window containing `now`. */
@@ -95,9 +123,10 @@ export type RateLimitDecision =
 
 /**
  * Decides one request against `buckets`, given the stored counters (missing ones count as zero,
- * and a counter from an earlier window is stale). This is the rule the database applies
- * atomically (`takeRateLimits` in `packages/db`, tested against this function): a request that
- * any bucket refuses changes no counter, so refused requests never use up a limit.
+ * and a counter from an earlier window is stale). A bucket's `retired` counters in the same
+ * window count towards its limit. This is the rule the database applies atomically
+ * (`takeRateLimits` in `packages/db`, tested against this function): a request that any bucket
+ * refuses changes no counter, so refused requests never use up a limit.
  */
 export function rateLimitDecision(
   buckets: readonly RateLimitBucket[],
@@ -106,11 +135,13 @@ export function rateLimitDecision(
 ): RateLimitDecision {
   const counters: RateLimitCounter[] = [];
   let retryAt: Instant | null = null;
-  for (const { bucket, windowMs, limit } of buckets) {
+  for (const { bucket, windowMs, limit, retired } of buckets) {
     const windowStart = rateLimitWindowStart(windowMs, now);
-    const current = stored.find((c) => c.bucket === bucket && c.windowStart === windowStart);
-    const count = current?.count ?? 0;
-    if (count >= limit) {
+    const countOf = (name: string) =>
+      stored.find((c) => c.bucket === name && c.windowStart === windowStart)?.count ?? 0;
+    const count = countOf(bucket);
+    const earlier = retired.reduce((sum, name) => sum + countOf(name), 0);
+    if (count + earlier >= limit) {
       retryAt = Math.max(retryAt ?? 0, windowStart + windowMs);
     }
     counters.push({ bucket, windowStart, count: count + 1 });

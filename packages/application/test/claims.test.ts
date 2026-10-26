@@ -1266,6 +1266,38 @@ describe("claims by email (path 2)", () => {
     expect(changedTables(before, await snapshotTables(env.DB, {}))).toEqual([]);
   });
 
+  it("confirms again as the same success for the claimant who used the token, writing nothing", async () => {
+    const s = await paddleShop();
+    const { customer } = await unclaimed(s);
+    const user = await signedUp();
+    const { token } = await claimByEmail(s, user, customer.email);
+    const value = token as string;
+    expect(await confirmClaim(serviceContext(), { token: value, user })).toMatchObject({
+      ok: true,
+      outcome: "linked",
+    });
+    // A lost response or a double submit: the claimant confirms again.
+    const before = await snapshotTables(env.DB);
+    expect(await confirmClaim(serviceContext(), { token: value, user })).toEqual({
+      ok: true,
+      workspaceId: s.workspaceId,
+      workspaceSlug: s.slug,
+      outcome: "already_linked",
+    });
+    expect(changedTables(before, await snapshotTables(env.DB))).toEqual([]);
+    expect(await auditOf(s.workspaceId, "claim.rejected")).toEqual([]);
+    // Once the customer is linked to someone else, the used token is refused again.
+    await env.DB.prepare(
+      "UPDATE customers SET subject_id = NULL WHERE workspace_id = ? AND external_customer_id = ?",
+    )
+      .bind(s.workspaceId, customer.id)
+      .run();
+    expect(await confirmClaim(serviceContext(), { token: value, user })).toEqual({
+      ok: false,
+      reason: "already_used",
+    });
+  });
+
   it("claim/token-single-use-and-expiring", async () => {
     const s = await paddleShop();
     const { customer } = await unclaimed(s);
@@ -1356,9 +1388,16 @@ describe("claims by email (path 2)", () => {
       workspaceSlug: s.slug,
       outcome: "already_linked",
     });
-    expect(await confirmClaim(serviceContext(), { token: token as string, user })).toEqual({
+    // Used up: another user is refused. The claimant confirming again gets the same success
+    // (a repeated submit, phase 6 T6), with nothing written.
+    const other = await signedUp();
+    expect(await confirmClaim(serviceContext(), { token: token as string, user: other })).toEqual({
       ok: false,
       reason: "already_used",
+    });
+    expect(await confirmClaim(serviceContext(), { token: token as string, user })).toMatchObject({
+      ok: true,
+      outcome: "already_linked",
     });
   });
 

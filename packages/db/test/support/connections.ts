@@ -64,6 +64,7 @@ export function connectionRow(
     lastSyncedAt: null,
     syncVersion: 0,
     syncToken: null,
+    rateLimitedUntil: null,
     ...overrides,
   };
 }

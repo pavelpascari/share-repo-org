@@ -230,6 +230,7 @@ function refreshRow(ctx: ServiceContext, workspaceId: string, id: string) {
     subjectId: encodeRefreshKey({ workspaceId, source: "simulated", externalSubscriptionId: id }),
     createdAt: now,
     availableAt: now,
+    workspaceId,
   } as const;
 }
 

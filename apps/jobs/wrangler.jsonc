@@ -4,9 +4,13 @@
   "main": "./src/index.ts",
   "compatibility_date": "2026-10-01",
   "compatibility_flags": ["nodejs_compat"],
-  "observability": { "enabled": true },
+  // Workers Issues groups errors and emails the operator about new ones (decision 0014). Repeated
+  // in each environment below.
+  "observability": { "enabled": true, "issues": { "enabled": true } },
   "upload_source_maps": true,
-  // Hourly heartbeat; outbox drain every minute (decision 0003); daily full resync of connections.
+  // Hourly heartbeat. Every minute: the due-evaluation and due-reconcile sweeps, the outbox drain
+  // (decision 0003) and the sweep-health line (decision 0013). Daily: the Paddle sweeps, the rewrap
+  // check, the connection resyncs and the lifecycle jobs, each spread over the day.
   "triggers": { "crons": ["0 * * * *", "* * * * *", "17 3 * * *"] },
   "vars": {
     "ENVIRONMENT": "development",
@@ -23,9 +27,19 @@
   "secrets": { "required": ["GITHUB_APP_PRIVATE_KEY", "CREDENTIAL_KEYS", "CLAIM_SIGNING_KEY"] },
   // Consumes the events queue, and produces to it too: follow-up work a job queued (such as the
   // refresh a Paddle event asks for) goes to the queue rather than waiting for the outbox drain.
+  // A message that uses up its retries goes to the dead-letter queue, which this Worker consumes
+  // as well, to record the failure on its outbox row (decision 0014).
   "queues": {
     "producers": [{ "binding": "EVENTS", "queue": "sharerepo-events-dev" }],
-    "consumers": [{ "queue": "sharerepo-events-dev", "max_batch_size": 10, "max_retries": 5 }]
+    "consumers": [
+      {
+        "queue": "sharerepo-events-dev",
+        "max_batch_size": 10,
+        "max_retries": 5,
+        "dead_letter_queue": "sharerepo-events-dlq-dev"
+      },
+      { "queue": "sharerepo-events-dlq-dev", "max_batch_size": 10, "max_retries": 5 }
+    ]
   },
   // Shared database; see docs/decisions/0002. Replace the ID after `wrangler d1 create sharerepo-dev`.
   "d1_databases": [
@@ -39,6 +53,7 @@
   "env": {
     "production": {
       "name": "sharerepo-jobs-production",
+      "observability": { "enabled": true, "issues": { "enabled": true } },
       "triggers": { "crons": ["0 * * * *", "* * * * *", "17 3 * * *"] },
       "vars": {
         "ENVIRONMENT": "production",
@@ -51,7 +66,15 @@
       },
       "queues": {
         "producers": [{ "binding": "EVENTS", "queue": "sharerepo-events-prod" }],
-        "consumers": [{ "queue": "sharerepo-events-prod", "max_batch_size": 10, "max_retries": 5 }]
+        "consumers": [
+          {
+            "queue": "sharerepo-events-prod",
+            "max_batch_size": 10,
+            "max_retries": 5,
+            "dead_letter_queue": "sharerepo-events-dlq-prod"
+          },
+          { "queue": "sharerepo-events-dlq-prod", "max_batch_size": 10, "max_retries": 5 }
+        ]
       },
       // Replace the ID after `wrangler d1 create sharerepo-prod`.
       "d1_databases": [
@@ -67,6 +90,7 @@
     // mail capture are accepted only when ENVIRONMENT is "e2e" (decision 0006).
     "e2e": {
       "name": "sharerepo-jobs-e2e",
+      "observability": { "enabled": true, "issues": { "enabled": true } },
       "triggers": { "crons": ["0 * * * *", "* * * * *", "17 3 * * *"] },
       "vars": {
         "ENVIRONMENT": "e2e",
@@ -82,7 +106,15 @@
       },
       "queues": {
         "producers": [{ "binding": "EVENTS", "queue": "sharerepo-events-dev" }],
-        "consumers": [{ "queue": "sharerepo-events-dev", "max_batch_size": 10, "max_retries": 5 }]
+        "consumers": [
+          {
+            "queue": "sharerepo-events-dev",
+            "max_batch_size": 10,
+            "max_retries": 5,
+            "dead_letter_queue": "sharerepo-events-dlq-dev"
+          },
+          { "queue": "sharerepo-events-dlq-dev", "max_batch_size": 10, "max_retries": 5 }
+        ]
       },
       // Same local database as the top level, where E2E applies migrations.
       "d1_databases": [

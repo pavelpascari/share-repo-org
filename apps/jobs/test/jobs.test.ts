@@ -1,5 +1,6 @@
 import { env } from "cloudflare:workers";
 import { claimOutbox, enqueueOutbox, getExternalEvent } from "@sharerepo/db";
+import { dailyOffsetMs, EXPIRY_CONFIRMATION_WINDOW_MS } from "@sharerepo/domain";
 import { GitHubApiError, type GitHubAppPort } from "@sharerepo/integrations";
 import { createFakeGitHubApp, type FakeGitHubApp } from "@sharerepo/integrations/testing";
 import { ConflictError, NotFoundError } from "@sharerepo/platform";
@@ -18,7 +19,7 @@ import {
   OUTBOX_MAX_ATTEMPTS,
 } from "../src/handlers.ts";
 import worker from "../src/index.ts";
-import { retryDelaySeconds } from "../src/work.ts";
+import { outboxRetryDelayMs, retryDelaySeconds } from "../src/work.ts";
 import {
   clock,
   connectedCreator,
@@ -29,6 +30,8 @@ import {
   receivedWebhook,
 } from "./support/github.ts";
 import { deliver, jobsWorker, runCron, sentAt } from "./support/worker.ts";
+
+const DAY_MS = 86_400_000;
 
 const resourcesOf = (connectionId: string) =>
   count("SELECT count(*) AS n FROM resources WHERE connection_id = ?", connectionId);
@@ -209,6 +212,33 @@ describe("retryDelaySeconds", () => {
   });
 });
 
+describe("outboxRetryDelayMs", () => {
+  const MINUTE = 60_000;
+  it.each([
+    [0, undefined, MINUTE],
+    [1, undefined, MINUTE],
+    [2, undefined, 2 * MINUTE],
+    [7, undefined, 64 * MINUTE],
+    [8, undefined, 120 * MINUTE],
+    [20, undefined, 120 * MINUTE],
+    [1, 90_000, 90_000],
+    [8, 3 * 60 * MINUTE, 3 * 60 * MINUTE],
+    [3, 1_000, 4 * MINUTE],
+  ])("attempt %i, retry-after %s ms → %i ms", (attempts, retryAfterMs, expected) => {
+    expect(outboxRetryDelayMs(attempts, retryAfterMs)).toBe(expected);
+  });
+
+  it("outlasts the expiry confirmation window before a row's last attempt", () => {
+    // Attempts 1…9 fail and wait; the 10th (OUTBOX_MAX_ATTEMPTS) is the last.
+    let waited = 0;
+    for (let attempt = 1; attempt < OUTBOX_MAX_ATTEMPTS; attempt += 1) {
+      waited += outboxRetryDelayMs(attempt);
+    }
+    expect(waited).toBe(367 * 60_000);
+    expect(waited).toBeGreaterThan(EXPIRY_CONFIRMATION_WINDOW_MS);
+  });
+});
+
 describe("scheduled()", () => {
   async function pendingConnection(github: FakeGitHubApp) {
     const created = await connectedCreator(github);
@@ -262,6 +292,7 @@ describe("scheduled()", () => {
       subjectId: "no-such-connection",
       createdAt: clock.now(),
       availableAt: clock.now(),
+      workspaceId: null,
     });
     await runCron(jobsWorker(createFakeGitHubApp()), CRONS.drainOutbox);
     expect(await sentAt(id)).toBe(clock.now());
@@ -272,17 +303,22 @@ describe("scheduled()", () => {
     const first = await connectedCreator(github);
     const second = await connectedCreator(github);
     await runCron(jobsWorker(github), CRONS.drainOutbox);
+    const at = clock.now();
     await runCron(jobsWorker(github), CRONS.dailyResync);
     const summary = logged().find((line) => line.msg === "daily resync queued");
-    expect(summary?.connections).toBeGreaterThanOrEqual(2);
+    expect(summary?.queued).toBeGreaterThanOrEqual(2);
     for (const { connection } of [first, second]) {
       const queued = await env.DB.prepare(
-        "SELECT count(*) AS n FROM outbox WHERE kind = 'resync_connection' AND subject_id = ? AND sent_at IS NULL",
+        "SELECT count(*) AS n, max(available_at) AS a FROM outbox WHERE kind = 'resync_connection' AND subject_id = ? AND sent_at IS NULL",
       )
         .bind(connection.id)
-        .first<{ n: number }>();
+        .first<{ n: number; a: number }>();
       expect(queued?.n).toBe(1);
+      // Spread over the day by connection (phase-6 plan § Partitioning).
+      expect(queued?.a).toBe(at + dailyOffsetMs("resync_connection", connection.id));
     }
+    // Within a day every resync has come due and the drain runs it.
+    clock.advance(DAY_MS);
     await runCron(jobsWorker(github), CRONS.drainOutbox);
     expect(await resourcesOf(first.connection.id)).toBe(1);
     expect(await resourcesOf(second.connection.id)).toBe(1);
@@ -375,6 +411,7 @@ describe("scheduled()", () => {
         subjectId: "no-such-connection",
         createdAt: 0,
         availableAt: 0,
+        workspaceId: null,
       });
     }
     return () =>

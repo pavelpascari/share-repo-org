@@ -31,9 +31,13 @@ export async function installOnFakeGitHub(
   await page.getByRole("button", { name: "Install" }).click();
 }
 
-export async function connectedCreator(page: Page, account: GitHubAccount = newGitHubAccount()) {
+export async function connectedCreator(
+  page: Page,
+  account: GitHubAccount = newGitHubAccount(),
+  workspaceName = "Creator Studio",
+) {
   await signIn(page, account);
-  const slug = await createWorkspace(page, "Creator Studio");
+  const slug = await createWorkspace(page, workspaceName);
   await startConnect(page, slug);
   await installOnFakeGitHub(page, {
     accountId: account.id,

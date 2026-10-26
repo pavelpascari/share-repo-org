@@ -2,11 +2,13 @@ import { env } from "cloudflare:workers";
 import { type CredentialKeyring, envelopeAad, openSecret, sealSecret } from "@sharerepo/platform";
 import { describe, expect, it } from "vitest";
 import {
+  completePaddleWebhookRotation,
   createPaddleConnection,
   disconnectPaddleConnection,
   getPaddleConnection,
   getPaddleConnectionForWebhook,
   listActivePaddleConnections,
+  listPaddleConnectionIds,
   listPaddlePrices,
   markPaddleEventReceived,
   type PaddleConnection,
@@ -14,6 +16,7 @@ import {
   recordPaddleConnectionChecked,
   replacePaddleCredentials,
   rewrapPaddleEnvelope,
+  startPaddleWebhookRotation,
   updatePaddleConnectionStatus,
   upsertPaddlePrices,
 } from "../src/index.ts";
@@ -32,6 +35,8 @@ function connectionRow(
     lastEventAt: null,
     lastCheckedAt: null,
     catalogSyncedAt: null,
+    destinationNextId: null,
+    webhookSecretNextEnvelope: null,
     ...paddleConnectionRow(workspaceId),
     ...overrides,
   } as PaddleConnection;
@@ -66,6 +71,13 @@ function priceImport(overrides: Partial<PaddlePriceImport> = {}): PaddlePriceImp
   };
 }
 
+/** The destinations a disconnect read: the guard of `disconnectPaddleConnection`. */
+const expectedOf = (connection: PaddleConnection) => ({
+  destinationId: connection.destinationId,
+  destinationNextId: connection.destinationNextId,
+});
+const unchanged = { destinationId: null, destinationNextId: null };
+
 describe("Paddle connections", () => {
   it("creates one with its audit event and reads it back", async () => {
     const { workspaceId, connection, event } = await connected();
@@ -76,6 +88,7 @@ describe("Paddle connections", () => {
       workspaceId,
       status: "active",
       webhookSecretEnvelope: connection.webhookSecretEnvelope,
+      webhookSecretNextEnvelope: null,
     });
     expect(await getPaddleConnectionForWebhook(db, uniqueId("pdc"))).toBeNull();
   });
@@ -121,7 +134,11 @@ describe("Paddle connections", () => {
       ),
     ).toEqual({ ok: false, reason: "stale" });
     expect(
-      await disconnectPaddleConnection(db, { ...wrong, destinationId: null, now: NOW }, [event]),
+      await disconnectPaddleConnection(
+        db,
+        { ...wrong, expected: unchanged, destinationId: null, destinationNextId: null, now: NOW },
+        [event],
+      ),
     ).toEqual({ ok: false, reason: "stale" });
     expect(
       await upsertPaddlePrices(db, { ...wrong, prices: [priceImport()], now: NOW }, [event]),
@@ -235,7 +252,13 @@ describe("Paddle connections", () => {
   it("disconnects once, erasing the credentials and keeping what the creator must delete", async () => {
     const { connection } = await connected();
     const event = workspaceEvent(connection.workspaceId);
-    const input = { ...key(connection), destinationId: connection.destinationId, now: NOW };
+    const input = {
+      ...key(connection),
+      expected: expectedOf(connection),
+      destinationId: connection.destinationId,
+      destinationNextId: null,
+      now: NOW,
+    };
     expect(await disconnectPaddleConnection(db, input, [event])).toEqual({ ok: true });
     expect(await disconnectPaddleConnection(db, input, [workspaceEvent("x")])).toEqual({
       ok: false,
@@ -248,6 +271,7 @@ describe("Paddle connections", () => {
       workspaceId: connection.workspaceId,
       status: "disconnected",
       webhookSecretEnvelope: null,
+      webhookSecretNextEnvelope: null,
     });
     const row = await env.DB.prepare(
       "SELECT api_key_envelope, webhook_secret_envelope, destination_id FROM paddle_connections WHERE id = ?",
@@ -272,12 +296,283 @@ describe("Paddle connections", () => {
 
   it("forgets the destination once it was deleted in Paddle", async () => {
     const { connection } = await connected();
-    await disconnectPaddleConnection(db, { ...key(connection), destinationId: null, now: NOW }, [
-      workspaceEvent(connection.workspaceId),
-    ]);
+    await disconnectPaddleConnection(
+      db,
+      {
+        ...key(connection),
+        expected: expectedOf(connection),
+        destinationId: null,
+        destinationNextId: null,
+        now: NOW,
+      },
+      [workspaceEvent(connection.workspaceId)],
+    );
     expect(
       await count("paddle_connections", "id = ? AND destination_id IS NULL", connection.id),
     ).toBe(1);
+  });
+
+  it("does not disconnect a connection whose destinations changed since they were read", async () => {
+    const { connection } = await connected();
+    const event = workspaceEvent(connection.workspaceId);
+    // A rotation stored its second destination after the disconnect read the row.
+    await env.DB.prepare(
+      "UPDATE paddle_connections SET destination_next_id = 'ntfset_racer', webhook_secret_next_envelope = webhook_secret_envelope WHERE id = ?",
+    )
+      .bind(connection.id)
+      .run();
+    const input = {
+      ...key(connection),
+      expected: expectedOf(connection),
+      destinationId: null,
+      destinationNextId: null,
+      now: NOW,
+    };
+    expect(await disconnectPaddleConnection(db, input, [event])).toEqual({
+      ok: false,
+      reason: "stale",
+    });
+    expect(await auditCount(env.DB, event.correlationId)).toBe(0);
+    expect(await getPaddleConnection(db, connection)).toMatchObject({ status: "active" });
+    // Read again, it disconnects.
+    const reread = { destinationId: connection.destinationId, destinationNextId: "ntfset_racer" };
+    expect(await disconnectPaddleConnection(db, { ...input, expected: reread }, [event])).toEqual({
+      ok: true,
+    });
+  });
+
+  it("lists every connection ID of the workspace, disconnected ones included", async () => {
+    const { connection } = await connected();
+    expect(await listPaddleConnectionIds(db, connection)).toEqual([connection.id]);
+    await disconnectPaddleConnection(
+      db,
+      {
+        ...key(connection),
+        expected: expectedOf(connection),
+        destinationId: null,
+        destinationNextId: null,
+        now: NOW,
+      },
+      [workspaceEvent(connection.workspaceId)],
+    );
+    const again = connectionRow(connection.workspaceId);
+    expect(
+      await createPaddleConnection(db, again, [workspaceEvent(connection.workspaceId)]),
+    ).toEqual({ ok: true });
+    expect(await listPaddleConnectionIds(db, connection)).toEqual([connection.id, again.id].sort());
+    expect(await listPaddleConnectionIds(db, { workspaceId: "no-such-workspace" })).toEqual([]);
+  });
+
+  it("disconnecting mid-rotation erases the next secret and keeps what the creator must delete", async () => {
+    const { connection } = await connected({
+      destinationNextId: "ntfset_next",
+      webhookSecretNextEnvelope: ENVELOPE,
+    });
+    expect(
+      await disconnectPaddleConnection(
+        db,
+        {
+          ...key(connection),
+          expected: expectedOf(connection),
+          destinationId: null,
+          destinationNextId: "ntfset_next",
+          now: NOW,
+        },
+        [workspaceEvent(connection.workspaceId)],
+      ),
+    ).toEqual({ ok: true });
+    const row = await env.DB.prepare(
+      "SELECT destination_id, destination_next_id, webhook_secret_next_envelope FROM paddle_connections WHERE id = ?",
+    )
+      .bind(connection.id)
+      .first();
+    expect(row).toEqual({
+      destination_id: null,
+      destination_next_id: "ntfset_next",
+      webhook_secret_next_envelope: null,
+    });
+  });
+});
+
+describe("Paddle webhook secret rotation (database)", () => {
+  const NEXT_ENVELOPE = '{"v":1,"next":1}';
+  const PROMOTED = '{"v":1,"promoted":1}';
+
+  it("starts once, guarded on the destination and no rotation in progress, auditing once", async () => {
+    const { connection } = await connected();
+    const start = {
+      ...key(connection),
+      destinationId: connection.destinationId as string,
+      expectedNextId: null,
+      destinationNextId: "ntfset_next",
+      webhookSecretNextEnvelope: NEXT_ENVELOPE,
+      now: NOW,
+    };
+    const event = workspaceEvent(connection.workspaceId);
+    expect(await startPaddleWebhookRotation(db, start, [event])).toEqual({ ok: true });
+    expect(await auditCount(env.DB, event.correlationId)).toBe(1);
+    expect(await getPaddleConnectionForWebhook(db, connection.id)).toMatchObject({
+      webhookSecretEnvelope: connection.webhookSecretEnvelope,
+      webhookSecretNextEnvelope: NEXT_ENVELOPE,
+    });
+    // A second start, even for another destination, writes nothing.
+    const again = workspaceEvent(connection.workspaceId);
+    expect(
+      await startPaddleWebhookRotation(db, { ...start, destinationNextId: "ntfset_other" }, [
+        again,
+      ]),
+    ).toEqual({ ok: false, reason: "stale" });
+    expect(await auditCount(env.DB, again.correlationId)).toBe(0);
+    expect(await getPaddleConnection(db, connection)).toMatchObject({
+      destinationNextId: "ntfset_next",
+      updatedAt: NOW,
+    });
+    // Replacing the second destination names the one it replaces.
+    const replace = {
+      ...start,
+      expectedNextId: "ntfset_next",
+      destinationNextId: "ntfset_again",
+      webhookSecretNextEnvelope: '{"v":1,"again":1}',
+    };
+    expect(
+      await startPaddleWebhookRotation(db, { ...replace, expectedNextId: "ntfset_x" }, [
+        workspaceEvent(connection.workspaceId),
+      ]),
+    ).toEqual({ ok: false, reason: "stale" });
+    expect(
+      await startPaddleWebhookRotation(db, replace, [workspaceEvent(connection.workspaceId)]),
+    ).toEqual({ ok: true });
+    expect(await getPaddleConnectionForWebhook(db, connection.id)).toMatchObject({
+      webhookSecretNextEnvelope: '{"v":1,"again":1}',
+    });
+  });
+
+  it("refuses to start for another destination, workspace or a disconnected connection", async () => {
+    const { connection } = await connected();
+    const other = await workspaceWithOwner();
+    const start = {
+      ...key(connection),
+      destinationId: connection.destinationId as string,
+      expectedNextId: null,
+      destinationNextId: "ntfset_next",
+      webhookSecretNextEnvelope: NEXT_ENVELOPE,
+      now: NOW,
+    };
+    const stale = { ok: false, reason: "stale" };
+    expect(
+      await startPaddleWebhookRotation(db, { ...start, destinationId: "ntfset_gone" }, [
+        workspaceEvent(connection.workspaceId),
+      ]),
+    ).toEqual(stale);
+    expect(
+      await startPaddleWebhookRotation(db, { ...start, workspaceId: other.workspaceId }, [
+        workspaceEvent(other.workspaceId),
+      ]),
+    ).toEqual(stale);
+    await disconnectPaddleConnection(
+      db,
+      {
+        ...key(connection),
+        expected: expectedOf(connection),
+        destinationId: null,
+        destinationNextId: null,
+        now: NOW,
+      },
+      [workspaceEvent(connection.workspaceId)],
+    );
+    expect(
+      await startPaddleWebhookRotation(db, start, [workspaceEvent(connection.workspaceId)]),
+    ).toEqual(stale);
+  });
+
+  it("completes once, promoting the next destination and secret", async () => {
+    const { connection } = await connected({
+      destinationNextId: "ntfset_next",
+      webhookSecretNextEnvelope: NEXT_ENVELOPE,
+    });
+    const complete = {
+      ...key(connection),
+      previousDestinationId: connection.destinationId as string,
+      destinationId: "ntfset_next",
+      webhookSecretEnvelope: PROMOTED,
+      now: NOW,
+    };
+    const event = workspaceEvent(connection.workspaceId);
+    expect(await completePaddleWebhookRotation(db, complete, [event])).toEqual({ ok: true });
+    expect(await auditCount(env.DB, event.correlationId)).toBe(1);
+    expect(await getPaddleConnection(db, connection)).toMatchObject({
+      destinationId: "ntfset_next",
+      webhookSecretEnvelope: PROMOTED,
+      destinationNextId: null,
+      webhookSecretNextEnvelope: null,
+      updatedAt: NOW,
+    });
+    const again = workspaceEvent(connection.workspaceId);
+    expect(await completePaddleWebhookRotation(db, complete, [again])).toEqual({
+      ok: false,
+      reason: "stale",
+    });
+    expect(await auditCount(env.DB, again.correlationId)).toBe(0);
+  });
+
+  it("does not complete another rotation, or in another workspace", async () => {
+    const { connection } = await connected({
+      destinationNextId: "ntfset_next",
+      webhookSecretNextEnvelope: NEXT_ENVELOPE,
+    });
+    const other = await workspaceWithOwner();
+    const complete = {
+      ...key(connection),
+      previousDestinationId: connection.destinationId as string,
+      destinationId: "ntfset_next",
+      webhookSecretEnvelope: PROMOTED,
+      now: NOW,
+    };
+    const stale = { ok: false, reason: "stale" };
+    const event = () => [workspaceEvent(connection.workspaceId)] as const;
+    expect(
+      await completePaddleWebhookRotation(db, { ...complete, destinationId: "ntfset_x" }, event()),
+    ).toEqual(stale);
+    expect(
+      await completePaddleWebhookRotation(
+        db,
+        { ...complete, previousDestinationId: "ntfset_x" },
+        event(),
+      ),
+    ).toEqual(stale);
+    expect(
+      await completePaddleWebhookRotation(
+        db,
+        { ...complete, workspaceId: other.workspaceId },
+        event(),
+      ),
+    ).toEqual(stale);
+    expect(await getPaddleConnection(db, connection)).toMatchObject({
+      destinationNextId: "ntfset_next",
+    });
+  });
+
+  it("re-wraps the next secret's envelope like the others", async () => {
+    const { connection } = await connected({
+      destinationNextId: "ntfset_next",
+      webhookSecretNextEnvelope: NEXT_ENVELOPE,
+    });
+    expect(
+      await rewrapPaddleEnvelope(
+        db,
+        {
+          ...key(connection),
+          field: "webhook_secret_next",
+          previous: NEXT_ENVELOPE,
+          next: PROMOTED,
+        },
+        [workspaceEvent(connection.workspaceId)],
+      ),
+    ).toEqual({ ok: true });
+    expect(await getPaddleConnection(db, connection)).toMatchObject({
+      webhookSecretNextEnvelope: PROMOTED,
+      webhookSecretEnvelope: connection.webhookSecretEnvelope,
+    });
   });
 });
 
@@ -457,9 +752,17 @@ describe("Paddle prices", () => {
     await upsertPaddlePrices(db, { ...key(connection), prices: [priceImport()], now: NOW }, [
       workspaceEvent(connection.workspaceId),
     ]);
-    await disconnectPaddleConnection(db, { ...key(connection), destinationId: null, now: NOW }, [
-      workspaceEvent(connection.workspaceId),
-    ]);
+    await disconnectPaddleConnection(
+      db,
+      {
+        ...key(connection),
+        expected: expectedOf(connection),
+        destinationId: null,
+        destinationNextId: null,
+        now: NOW,
+      },
+      [workspaceEvent(connection.workspaceId)],
+    );
     const event = workspaceEvent(connection.workspaceId);
     expect(
       await upsertPaddlePrices(db, { ...key(connection), prices: [priceImport()], now: NOW }, [

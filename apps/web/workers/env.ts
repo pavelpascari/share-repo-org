@@ -6,7 +6,12 @@ import {
   parseMailConfig,
   parsePaddleConfig,
 } from "@sharerepo/integrations";
-import { type CommerceSecrets, parseCommerceSecrets, parseEnv } from "@sharerepo/platform";
+import {
+  type CommerceSecrets,
+  parseCommerceSecrets,
+  parseEnv,
+  parseOperatorGitHubIds,
+} from "@sharerepo/platform";
 import { z } from "zod";
 import { type AuthConfig, parseAuthEnv } from "../app/auth/env.ts";
 
@@ -28,6 +33,8 @@ export type WebEnv = z.output<typeof webEnvSchema> & {
   readonly paddle: PaddleConfig;
   /** How claim emails are sent, or null when no transport is configured. */
   readonly mail: MailTransportConfig | null;
+  /** GitHub account IDs of the operators (decision 0014); empty when none are configured. */
+  readonly operatorGitHubIds: ReadonlySet<string>;
 };
 
 /** Validates the Worker env; failures name keys and issue codes, never values. */
@@ -39,6 +46,7 @@ export function parseWebEnv(env: unknown): WebEnv {
     commerce: parseCommerceSecrets(env),
     paddle: parsePaddleConfig(env),
     mail: parseMailConfig(env),
+    operatorGitHubIds: parseOperatorGitHubIds(env),
   };
 }
 

@@ -1,5 +1,5 @@
 import { type Instant, OutboxKind } from "@sharerepo/domain";
-import { and, asc, eq, gte, inArray, isNull, lt, lte, type SQL, sql } from "drizzle-orm";
+import { and, asc, eq, gt, gte, inArray, isNull, lt, lte, type SQL, sql } from "drizzle-orm";
 import { runBatch } from "./batch.ts";
 import { chunked } from "./chunks.ts";
 import type { Db } from "./client.ts";
@@ -7,9 +7,13 @@ import { outbox } from "./schema/index.ts";
 
 /** A transactional outbox row (decision 0003). Carries IDs only, never authoritative state. */
 export type OutboxRow = typeof outbox.$inferSelect;
+/**
+ * New work. `workspaceId` is the workspace the work is about, or null for system-wide work such
+ * as a sweep (decision 0014): it scopes the row's failure record, so every caller states it.
+ */
 export type NewOutboxRow = Pick<
   OutboxRow,
-  "id" | "kind" | "subjectId" | "createdAt" | "availableAt"
+  "id" | "kind" | "subjectId" | "createdAt" | "availableAt" | "workspaceId"
 >;
 
 const fresh = (row: NewOutboxRow): OutboxRow => ({
@@ -18,6 +22,9 @@ const fresh = (row: NewOutboxRow): OutboxRow => ({
   sentAt: null,
   failedAt: null,
   lastErrorCode: null,
+  dismissedAt: null,
+  dismissedBy: null,
+  dismissReason: null,
 });
 
 /** An outbox insert to put in the same `db.batch()` as the change that causes the work. */
@@ -35,10 +42,11 @@ export function conditionalOutboxInsert(
   condition: ReturnType<typeof sql>,
 ) {
   const r = fresh(row);
+  // Every column, in the table's column order: drizzle names them all in the INSERT.
   return db
     .insert(outbox)
     .select(
-      sql`SELECT ${r.id}, ${r.kind}, ${r.subjectId}, ${r.createdAt}, ${r.availableAt}, ${r.attempts}, ${r.sentAt}, ${r.failedAt}, ${r.lastErrorCode} WHERE ${condition}`,
+      sql`SELECT ${r.id}, ${r.kind}, ${r.subjectId}, ${r.createdAt}, ${r.availableAt}, ${r.attempts}, ${r.sentAt}, ${r.failedAt}, ${r.lastErrorCode}, ${r.workspaceId}, ${r.dismissedAt}, ${r.dismissedBy}, ${r.dismissReason} WHERE ${condition}`,
     );
 }
 
@@ -85,9 +93,29 @@ export function assertReconcileRows(
 /**
  * Adds work on its own unless the same work (kind and key) is already pending. Returns whether
  * the row was queued, so the caller knows whether to hand its ID to the queue.
+ *
+ * A pending row that waits for a later `available_at` and was never claimed (a daily job spread
+ * over the day) is brought forward to this row's `available_at` instead, so work wanted sooner
+ * (a resync a reconcile asked for) is never held back by it. A claimed row's `available_at` is
+ * its lease and is left alone.
  */
 export async function enqueueOutboxOnce(db: Db, row: NewOutboxRow): Promise<boolean> {
-  const [queued] = await runBatch(db, [dedupedOutboxInsert(db, row)]);
+  const [, queued] = await runBatch(db, [
+    db
+      .update(outbox)
+      .set({ availableAt: row.availableAt })
+      .where(
+        and(
+          eq(outbox.kind, row.kind),
+          eq(outbox.subjectId, row.subjectId),
+          isNull(outbox.sentAt),
+          isNull(outbox.failedAt),
+          eq(outbox.attempts, 0),
+          gt(outbox.availableAt, row.availableAt),
+        ),
+      ),
+    dedupedOutboxInsert(db, row),
+  ]);
   return queued === 1;
 }
 
@@ -208,7 +236,7 @@ export async function claimOutbox(
         isNull(outbox.sentAt),
         isNull(outbox.failedAt),
         lte(outbox.availableAt, input.now),
-        // Rows that used every attempt are never claimed again; markOutboxFailed records them.
+        // Rows that used every attempt are never claimed again; failOutboxRow records them.
         lt(outbox.attempts, input.maxAttempts),
       ),
     )
@@ -221,6 +249,30 @@ export async function claimOutbox(
     .returning();
 }
 
+/**
+ * Makes an open (unsent, unfailed) row of this kind and subject due no sooner than `availableAt`:
+ * a retryable failure's backoff. It never brings a row forward. Returns whether the row changed.
+ */
+export async function deferOutboxRow(
+  db: Db,
+  input: { id: string; kind: OutboxKind; subjectId: string; availableAt: Instant },
+): Promise<boolean> {
+  const changed = await db
+    .update(outbox)
+    .set({ availableAt: sql`max(${outbox.availableAt}, ${input.availableAt})` })
+    .where(
+      and(
+        eq(outbox.id, input.id),
+        eq(outbox.kind, input.kind),
+        eq(outbox.subjectId, input.subjectId),
+        isNull(outbox.sentAt),
+        isNull(outbox.failedAt),
+      ),
+    )
+    .returning({ id: outbox.id });
+  return changed.length === 1;
+}
+
 /** Marks rows delivered; they are never claimed again. */
 export async function markOutboxSent(db: Db, ids: readonly string[], now: Instant): Promise<void> {
   if (ids.length === 0) return;
@@ -231,15 +283,26 @@ export async function markOutboxSent(db: Db, ids: readonly string[], now: Instan
 }
 
 /**
- * Marks a row as failed for good (a non-retryable error, or out of attempts) with a classified
- * error code, never a message. It is never claimed again and stays for the operator to inspect.
+ * Marks the row a queue message names delivered, only if the row's kind and subject match the
+ * message (as the dead-letter consumer requires): a message that names one row but carries
+ * another job's kind or subject must not settle that row. Returns whether a row was marked; a
+ * replay of a delivered message marks nothing again.
  */
-export async function markOutboxFailed(
+export async function markQueuedJobSent(
   db: Db,
-  input: { id: string; now: Instant; errorCode: string },
-): Promise<void> {
-  await db
+  input: { id: string; kind: OutboxKind; subjectId: string; now: Instant },
+): Promise<boolean> {
+  const changed = await db
     .update(outbox)
-    .set({ failedAt: input.now, lastErrorCode: input.errorCode })
-    .where(and(eq(outbox.id, input.id), isNull(outbox.sentAt)));
+    .set({ sentAt: input.now })
+    .where(
+      and(
+        eq(outbox.id, input.id),
+        eq(outbox.kind, input.kind),
+        eq(outbox.subjectId, input.subjectId),
+        isNull(outbox.sentAt),
+      ),
+    )
+    .returning({ id: outbox.id });
+  return changed.length === 1;
 }

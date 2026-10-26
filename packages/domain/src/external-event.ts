@@ -35,6 +35,12 @@ export const OutboxKind = {
   CheckPaddleConnection: "check_paddle_connection",
   /** List a Paddle connection's subscriptions and refresh the new or changed ones (repair). */
   SweepPaddleSubscriptions: "sweep_paddle_subscriptions",
+  /** Delete operational data past its retention period, in bounded batches (decision 0015). */
+  PruneData: "prune_data",
+  /** Delete a `deleting` workspace's rows once `delete_after` has passed (decision 0015). */
+  PurgeWorkspace: "purge_workspace",
+  /** Re-seal every credential envelope still under a non-current key (secret rotation). */
+  RewrapCredentials: "rewrap_credentials",
 } as const;
 export type OutboxKind = (typeof OutboxKind)[keyof typeof OutboxKind];
 /** Every outbox kind, in the order the database CHECK lists them. */
@@ -47,4 +53,7 @@ export const OUTBOX_KINDS = [
   OutboxKind.SendClaimEmail,
   OutboxKind.CheckPaddleConnection,
   OutboxKind.SweepPaddleSubscriptions,
+  OutboxKind.PruneData,
+  OutboxKind.PurgeWorkspace,
+  OutboxKind.RewrapCredentials,
 ] as const;

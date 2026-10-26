@@ -60,6 +60,26 @@ describe("paddle_connections constraints", () => {
       { status: "disconnected", webhookSecretEnvelope: null },
     ],
     ["paddle_connections_updated_after_created", { updatedAt: T0 - 1 }],
+    // Webhook secret rotation (migration 0009).
+    [
+      "paddle_connections_webhook_secret_next_envelope_json",
+      { destinationNextId: "ntfset_next", webhookSecretNextEnvelope: "secret" },
+    ],
+    [
+      "paddle_connections_webhook_secret_next_envelope_json",
+      { destinationNextId: "ntfset_next", webhookSecretNextEnvelope: "[]" },
+    ],
+    ["paddle_connections_next_secret_has_destination", { webhookSecretNextEnvelope: '{"v":1}' }],
+    [
+      "paddle_connections_disconnected_erased",
+      {
+        status: "disconnected",
+        apiKeyEnvelope: null,
+        webhookSecretEnvelope: null,
+        destinationNextId: "ntfset_next",
+        webhookSecretNextEnvelope: '{"v":1}',
+      },
+    ],
   ])("CHECK %s rejects %j", async (name, overrides) => {
     const row = paddleConnectionRow(await workspace(), overrides);
     await expect(insertRaw(schema.paddleConnections, row)).rejects.toThrow(checkFailed(name));

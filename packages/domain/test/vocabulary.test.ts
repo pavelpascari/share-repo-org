@@ -3,6 +3,8 @@ import {
   ACCESS_DECISION_REASONS,
   ACCESS_LEVELS,
   ACCESS_POLICY_VERSION,
+  ALERT_NAMES,
+  AlertName,
   AUDIT_ACTOR_TYPES,
   AUDIT_SCOPES,
   CLAIM_REJECTION_REASONS,
@@ -14,8 +16,11 @@ import {
   CredentialKind,
   ENTITLEMENT_SOURCE_TYPES,
   ENTITLEMENT_STATES,
+  ENTITLEMENT_VALIDITIES,
+  EntitlementValidity,
   EVENT_PROVIDERS,
   EventProvider,
+  EXPIRY_CONFIRMATION_WINDOW_MS,
   EXTERNAL_EVENT_STATES,
   GRACE_PERIOD_DAYS_DEFAULT,
   GRACE_PERIOD_DAYS_MAX,
@@ -50,6 +55,7 @@ import {
   PaddleEnvironment,
   PaddlePriceStatus,
   PROVIDER_FAILURE_KINDS,
+  RATE_LIMIT_EXCUSE_MS,
   RECONCILE_IDLE_MS,
   RECONCILE_POLL_MS,
   RECONCILIATION_ACTIONS,
@@ -62,6 +68,8 @@ import {
   SIGN_IN_REFUSAL_REASONS,
   SUBJECT_TYPES,
   SUBSCRIPTION_STATES,
+  SWEEP_LAG_ALERT_INTERVAL_MS,
+  SWEEP_LAG_ALERT_MS,
 } from "../src/index.ts";
 
 // These lists feed database CHECK constraints; changing one needs a migration.
@@ -71,7 +79,11 @@ describe("persisted vocabularies", () => {
     expect(AUDIT_ACTOR_TYPES).toEqual(["user", "system", "operator", "provider"]));
   it("identity providers", () => expect(IDENTITY_PROVIDERS).toEqual(["github"]));
   it("sign-in refusal reasons", () =>
-    expect(SIGN_IN_REFUSAL_REASONS).toEqual(["identity_conflict", "internal_error"]));
+    expect(SIGN_IN_REFUSAL_REASONS).toEqual([
+      "identity_conflict",
+      "internal_error",
+      "account_deleted",
+    ]));
   it("connection statuses", () =>
     expect(CONNECTION_STATUSES).toEqual(["active", "suspended", "deleted"]));
   it("connectable account types", () => expect(CONNECTABLE_ACCOUNT_TYPES).toEqual(["user"]));
@@ -89,6 +101,9 @@ describe("persisted vocabularies", () => {
       "send_claim_email",
       "check_paddle_connection",
       "sweep_paddle_subscriptions",
+      "prune_data",
+      "purge_workspace",
+      "rewrap_credentials",
     ]));
   it("outbox kinds by name", () => expect(Object.values(OutboxKind)).toEqual(OUTBOX_KINDS));
   it("event providers", () => expect(EVENT_PROVIDERS).toEqual(["github", "paddle"]));
@@ -175,6 +190,8 @@ describe("stable decision codes", () => {
       "item_removed",
       "customer_unlinked",
       "subscription_missing",
+      "workspace_deleted",
+      "account_deleted",
     ]));
   it("offer changes", () =>
     expect(OFFER_CHANGES).toEqual(["name", "gracePeriodDays", "items", "accesses"]));
@@ -212,6 +229,7 @@ describe("stable decision codes", () => {
       "no_access",
       "invitation_quota",
       "indirect_access",
+      "expiry_pending",
     ]));
   it("grant error codes", () =>
     expect(GRANT_ERROR_CODES).toEqual([
@@ -260,6 +278,18 @@ describe("stable decision codes", () => {
 });
 
 // Provider-neutral failure kinds that adapters map their errors to.
+// Monitors match these names in log lines (decision 0014); renaming one silences its alert.
+describe("alert names", () => {
+  it("lists them", () =>
+    expect(ALERT_NAMES).toEqual([
+      "job_failed",
+      "reconcile_failing",
+      "connection_lost",
+      "sweep_lagging",
+    ]));
+  it("by name", () => expect(Object.values(AlertName)).toEqual(ALERT_NAMES));
+});
+
 describe("provider failure kinds", () => {
   it("lists them", () =>
     expect(PROVIDER_FAILURE_KINDS).toEqual([
@@ -291,4 +321,18 @@ describe("provisioning constants", () => {
     ]).toEqual([5 * MINUTE, 10, 15 * MINUTE, 6 * HOUR]));
   it("retry backoff", () =>
     expect(RETRY_BACKOFF_MS).toEqual([1 * MINUTE, 5 * MINUTE, 15 * MINUTE, 60 * MINUTE]));
+});
+
+// Expiry confirmation and sweep health (decisions 0013 and 0014).
+describe("timing constants", () => {
+  const MINUTE = 60_000;
+  it("expiry confirmation window", () =>
+    expect(EXPIRY_CONFIRMATION_WINDOW_MS).toBe(6 * 60 * MINUTE));
+  it("entitlement validities", () =>
+    expect(ENTITLEMENT_VALIDITIES).toEqual(["desired", "expiry_pending", "not_desired"]));
+  it("entitlement validities by name", () =>
+    expect(Object.values(EntitlementValidity)).toEqual(ENTITLEMENT_VALIDITIES));
+  it("sweep lag alert", () =>
+    expect([SWEEP_LAG_ALERT_MS, SWEEP_LAG_ALERT_INTERVAL_MS]).toEqual([15 * MINUTE, 15 * MINUTE]));
+  it("rate-limit excuse", () => expect(RATE_LIMIT_EXCUSE_MS).toBe(60 * MINUTE));
 });

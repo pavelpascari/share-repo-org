@@ -2,18 +2,21 @@ import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import {
   claimOutbox,
+  deferOutboxRow,
   enqueueOutbox,
   enqueueOutboxRows,
+  failOutboxRow,
   getExternalEvent,
   listExternalEventsByState,
   markExternalEvent,
-  markOutboxFailed,
   markOutboxSent,
+  markQueuedJobSent,
   type NewExternalEvent,
   type NewOutboxRow,
   outboxInsert,
   recordExternalEvent,
 } from "../src/index.ts";
+import { accountEvent } from "./support/audit.ts";
 import { count, db } from "./support/connections.ts";
 import { seedPaddleConnection } from "./support/paddle.ts";
 import { insertWorkspaceRow, T0, uniqueId } from "./support/rows.ts";
@@ -42,6 +45,8 @@ function work(subjectId: string, overrides: Partial<NewOutboxRow> = {}): NewOutb
     subjectId,
     createdAt: T0,
     availableAt: T0,
+    // Processing an event finds its workspace later, if it has one.
+    workspaceId: null,
     ...overrides,
   };
 }
@@ -177,6 +182,80 @@ describe("markExternalEvent", () => {
   });
 });
 
+describe("deferOutboxRow", () => {
+  const availableAt = async (id: string) =>
+    (
+      await env.DB.prepare("SELECT available_at AS at FROM outbox WHERE id = ?")
+        .bind(id)
+        .first<{ at: number }>()
+    )?.at;
+
+  it("pushes an open row later, never earlier, and only the row its kind and subject name", async () => {
+    const at = T0 + 5_000_000;
+    const row = work(uniqueId("defer"), { availableAt: at });
+    await enqueueOutbox(db, row);
+    const key = { id: row.id, kind: row.kind, subjectId: row.subjectId };
+    expect(await deferOutboxRow(db, { ...key, availableAt: at + 60_000 })).toBe(true);
+    expect(await availableAt(row.id)).toBe(at + 60_000);
+    // Never brought forward.
+    expect(await deferOutboxRow(db, { ...key, availableAt: at })).toBe(true);
+    expect(await availableAt(row.id)).toBe(at + 60_000);
+    // Another subject or kind does not match.
+    expect(
+      await deferOutboxRow(db, { ...key, subjectId: "other", availableAt: at + 120_000 }),
+    ).toBe(false);
+    expect(
+      await deferOutboxRow(db, { ...key, kind: "recompute_offer", availableAt: at + 120_000 }),
+    ).toBe(false);
+    expect(await availableAt(row.id)).toBe(at + 60_000);
+  });
+
+  it("leaves a sent or failed row alone", async () => {
+    const at = T0 + 6_000_000;
+    const sent = work(uniqueId("sent"), { availableAt: at });
+    const failed = work(uniqueId("failed"), { availableAt: at });
+    await enqueueOutbox(db, sent);
+    await enqueueOutbox(db, failed);
+    await markOutboxSent(db, [sent.id], at);
+    await failOutboxRow(db, { id: failed.id, now: at, errorCode: "rejected" }, [accountEvent()]);
+    for (const row of [sent, failed]) {
+      expect(
+        await deferOutboxRow(db, {
+          id: row.id,
+          kind: row.kind,
+          subjectId: row.subjectId,
+          availableAt: at + 60_000,
+        }),
+      ).toBe(false);
+      expect(await availableAt(row.id)).toBe(at);
+    }
+  });
+});
+
+describe("markQueuedJobSent", () => {
+  const sentAt = async (id: string) =>
+    (
+      await env.DB.prepare("SELECT sent_at AS at FROM outbox WHERE id = ?")
+        .bind(id)
+        .first<{ at: number | null }>()
+    )?.at;
+
+  it("queue/outbox-ack-matches-kind-and-subject: marks only the row whose kind and subject match", async () => {
+    const at = T0 + 7_000_000;
+    const row = work(uniqueId("ack"), { availableAt: at });
+    await enqueueOutbox(db, row);
+    const key = { id: row.id, kind: row.kind, subjectId: row.subjectId, now: at };
+    expect(await markQueuedJobSent(db, { ...key, subjectId: "other" })).toBe(false);
+    expect(await markQueuedJobSent(db, { ...key, kind: "recompute_offer" })).toBe(false);
+    expect(await sentAt(row.id)).toBeNull();
+    expect(await markQueuedJobSent(db, key)).toBe(true);
+    expect(await sentAt(row.id)).toBe(at);
+    // A replay marks nothing again and keeps the first delivery's instant.
+    expect(await markQueuedJobSent(db, { ...key, now: at + 1 })).toBe(false);
+    expect(await sentAt(row.id)).toBe(at);
+  });
+});
+
 describe("outbox", () => {
   // Each test uses its own time window, since the outbox table is shared in this file.
   it("claims due rows once per lease, then offers them again", async () => {
@@ -195,6 +274,9 @@ describe("outbox", () => {
         sentAt: null,
         failedAt: null,
         lastErrorCode: null,
+        dismissedAt: null,
+        dismissedBy: null,
+        dismissReason: null,
         availableAt: at + 30_000,
       },
     ]);
@@ -252,7 +334,7 @@ describe("outbox", () => {
     const at = T0 + 4_000_000;
     const row = work("failed", { availableAt: at });
     await enqueueOutbox(db, row);
-    await markOutboxFailed(db, { id: row.id, now: at, errorCode: "rejected" });
+    await failOutboxRow(db, { id: row.id, now: at, errorCode: "rejected" }, [accountEvent()]);
     const claimed = await claimOutbox(db, {
       now: at + 1,
       limit: 1000,
@@ -270,7 +352,7 @@ describe("outbox", () => {
     const sent = work("sent", { availableAt: at });
     await enqueueOutbox(db, sent);
     await markOutboxSent(db, [sent.id], at);
-    await markOutboxFailed(db, { id: sent.id, now: at, errorCode: "late" });
+    await failOutboxRow(db, { id: sent.id, now: at, errorCode: "late" }, [accountEvent()]);
     expect(
       await env.DB.prepare("SELECT failed_at FROM outbox WHERE id = ?").bind(sent.id).first(),
     ).toEqual({ failed_at: null });

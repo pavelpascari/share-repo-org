@@ -1,9 +1,9 @@
-import type { Instant } from "@sharerepo/domain";
-import { and, asc, desc, eq, gte, or, sql } from "drizzle-orm";
+import type { CommercialSource, Instant } from "@sharerepo/domain";
+import { and, asc, desc, eq, getTableColumns, gte, or, sql } from "drizzle-orm";
 import { union } from "drizzle-orm/sqlite-core";
 import type { Db } from "./client.ts";
 import type { Grant } from "./grant-repository.ts";
-import { entitlements, grants, resources, subjects } from "./schema/index.ts";
+import { entitlements, grants, resources, subjects, subscriptions } from "./schema/index.ts";
 import type { Entitlement } from "./subscription-repository.ts";
 
 /** A subscriber and repository the access view has a row for, with their display names. */
@@ -26,8 +26,11 @@ const pairColumns = () => ({
 export interface AccessState {
   /** Each pair with desired or observed access, once, by login then repository name. */
   pairs: AccessPair[];
-  /** Live entitlements and those that ended at or after `endedSince`: live first, newest first. */
-  entitlements: Entitlement[];
+  /**
+   * Live entitlements and those that ended at or after `endedSince`: live first, newest first.
+   * Each with its subscription's source, which the view names (an expiry waits for Paddle).
+   */
+  entitlements: (Entitlement & { source: CommercialSource })[];
   /** All grants, oldest first. */
   grants: Grant[];
 }
@@ -79,8 +82,16 @@ export async function readAccessState(
       sql`${sql.identifier("resource_id")}`,
     ),
     db
-      .select()
+      .select({ ...getTableColumns(entitlements), source: subscriptions.source })
       .from(entitlements)
+      // An entitlement's source is a subscription of its own workspace (composite foreign key).
+      .innerJoin(
+        subscriptions,
+        and(
+          eq(subscriptions.workspaceId, entitlements.workspaceId),
+          eq(subscriptions.id, entitlements.sourceId),
+        ),
+      )
       .where(and(eq(entitlements.workspaceId, workspaceId), visible))
       .orderBy(
         sql`${entitlements.state} <> 'active'`,

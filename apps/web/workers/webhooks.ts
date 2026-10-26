@@ -52,7 +52,14 @@ export async function handleGitHubWebhook(
     clock: deps.clock,
     correlationId: deps.correlationId,
   };
-  const result = await ingestGitHubWebhook(services, { secret, rawBody, headers: request.headers });
+  // While a rotation is under way, the previous secret is accepted too (Phase 6, secret rotation).
+  const previous = env.github?.webhookSecretPrevious;
+  const secrets = previous === undefined ? [secret] : [secret, previous];
+  const result = await ingestGitHubWebhook(services, {
+    secrets,
+    rawBody,
+    headers: request.headers,
+  });
   if (result.status === "rejected") {
     deps.logger.warn("webhook rejected", { provider: "github" });
     return text(401, "Invalid signature.");

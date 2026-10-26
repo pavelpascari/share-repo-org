@@ -2,7 +2,7 @@ import type { IdentityProvider, Instant } from "@sharerepo/domain";
 import { and, eq, sql } from "drizzle-orm";
 import { type AuditEvents, auditInserts, conditionalAuditInserts } from "./audit-repository.ts";
 import type { Db } from "./client.ts";
-import { isUniqueViolation } from "./errors.ts";
+import { isTriggerAbort, isUniqueViolation } from "./errors.ts";
 import { externalIdentities } from "./schema/index.ts";
 
 /** Domain `ExternalIdentity`. Keyed by the provider's immutable user ID; usernames are snapshots. */
@@ -13,7 +13,12 @@ export type InsertExternalIdentityResult =
   /** The provider account is already linked to a ShareRepo user (this one or another). */
   | { ok: false; reason: "identity_taken" }
   /** The user already has an identity for this provider. */
-  | { ok: false; reason: "user_already_linked" };
+  | { ok: false; reason: "user_already_linked" }
+  /** The user's account was deleted (its ID-only row is kept): nothing may link to it again. */
+  | { ok: false; reason: "user_deleted" };
+
+/** The message of the trigger that refuses linking an identity to a deleted user (0011). */
+export const USER_DELETED_ABORT = "external_identities: the user was deleted";
 
 export type UpdateExternalIdentitySnapshotResult =
   | { ok: true }
@@ -63,7 +68,8 @@ export async function findExternalIdentityForUser(
 
 /**
  * Links a provider account to a user, with its audit events, in one atomic batch. Uniqueness
- * conflicts come back as typed results; other constraint errors (an unknown user) propagate.
+ * conflicts and a deleted user come back as typed results; other constraint errors (an unknown
+ * user) propagate.
  */
 export async function insertExternalIdentity(
   db: Db,
@@ -84,6 +90,7 @@ export async function insertExternalIdentity(
     if (isUniqueViolation(error, ["external_identities.user_id", "external_identities.provider"])) {
       return { ok: false, reason: "user_already_linked" };
     }
+    if (isTriggerAbort(error, USER_DELETED_ABORT)) return { ok: false, reason: "user_deleted" };
     throw error;
   }
   return { ok: true, identity };

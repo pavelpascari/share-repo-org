@@ -201,6 +201,14 @@ describe("error classification", () => {
     expect(JSON.stringify(error)).not.toContain("secret detail");
   });
 
+  it("classifies a 2xx body that is not JSON as malformed_response", async () => {
+    const { app } = await client([
+      on("GET", "/app/installations/42", () => new Response("not json", { status: 200 })),
+    ]);
+    const error = await failure(app.getInstallation("42"));
+    expect(error).toMatchObject({ kind: "malformed_response" });
+  });
+
   it("classifies network failures as transient", async () => {
     const app = createGitHubApp({
       appId: "1000",

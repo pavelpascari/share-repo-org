@@ -110,6 +110,11 @@ describe("migration 0006 (Paddle and claims)", () => {
         sent_at: null,
         failed_at: 4,
         last_error_code: "rejected",
+        // Added by migration 0009 (failure records).
+        workspace_id: null,
+        dismissed_at: null,
+        dismissed_by: null,
+        dismiss_reason: null,
       },
     ]);
     await db.prepare(sweep).run();

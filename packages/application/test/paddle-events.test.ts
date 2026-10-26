@@ -1,5 +1,6 @@
 import { env } from "cloudflare:workers";
 import { getExternalEvent, getSubscriptionByExternal, recordExternalEvent } from "@sharerepo/db";
+import { dailyOffsetMs } from "@sharerepo/domain";
 import { describe, expect, it } from "vitest";
 import {
   decodePaddleConnectionKey,
@@ -448,11 +449,13 @@ describe("sweepPaddleSubscriptions and queuePaddleSweeps", () => {
     expect(await sweepPaddleSubscriptions(serviceContext(), ref, s.deps)).toEqual({
       queued: 1,
       truncated: false,
+      destinationsDeleted: 0,
     });
     expect(await pendingOf("refresh_subscription", refreshKey(s, unknown.id))).toBe(1);
     expect(await sweepPaddleSubscriptions(serviceContext(), ref, s.deps)).toEqual({
       queued: 0,
       truncated: false,
+      destinationsDeleted: 0,
     });
     await drainPaddle(s);
     clock.advance(1_000);
@@ -460,6 +463,7 @@ describe("sweepPaddleSubscriptions and queuePaddleSweeps", () => {
     expect(await sweepPaddleSubscriptions(serviceContext(), ref, s.deps)).toEqual({
       queued: 1,
       truncated: false,
+      destinationsDeleted: 0,
     });
     expect(await pendingOf("refresh_subscription", refreshKey(s, known.id))).toBe(1);
   });
@@ -484,6 +488,15 @@ describe("sweepPaddleSubscriptions and queuePaddleSweeps", () => {
     expect(await pendingOf("sweep_paddle_subscriptions", key)).toBe(1);
     await queuePaddleSweeps(serviceContext());
     expect(await pendingOf("sweep_paddle_subscriptions", key)).toBe(1);
+    // Spread over the day by its connection's own offset (phase-6 plan § Partitioning).
+    const row = await env.DB.prepare(
+      "SELECT created_at AS c, available_at AS a FROM outbox WHERE kind = 'sweep_paddle_subscriptions' AND subject_id = ?",
+    )
+      .bind(key)
+      .first<{ c: number; a: number }>();
+    expect((row?.a as number) - (row?.c as number)).toBe(
+      dailyOffsetMs("sweep_paddle_subscriptions", s.connectionId),
+    );
     const decoded = decodePaddleConnectionKey(key);
     expect(decoded).toEqual({
       ok: true,

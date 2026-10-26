@@ -6,15 +6,19 @@ import {
   decodePaddleConnectionKey,
   decodeReconcileKey,
   decodeRefreshKey,
+  decodeRewrapKey,
   type EntitlementSourcePort,
   PaddleUnavailableError,
   paddleEntitlementSource,
   processExternalEvent,
   processPaddleEvent,
+  pruneData,
+  purgeWorkspace,
   recomputeOffer,
   reconcileResource,
   refreshSubscription,
   resyncConnection,
+  rewrapCredentials,
   type ServiceContext,
   sendClaimEmail,
   sweepPaddleSubscriptions,
@@ -37,6 +41,11 @@ export const JobOutcome = {
    * The next daily sweep runs again; webhooks still cover the rest.
    */
   Partial: "partial",
+  /**
+   * The work cannot start yet and changed nothing but its record of why: a workspace purge waits
+   * until the access ShareRepo granted is revoked (decision 0015). The daily cron tries again.
+   */
+  Waiting: "waiting",
 } as const;
 export type JobOutcome = (typeof JobOutcome)[keyof typeof JobOutcome];
 
@@ -171,6 +180,25 @@ export async function runJob(
       const swept = await sweepPaddleSubscriptions(ctx, key, commerceOf(deps));
       return swept?.truncated === true ? JobOutcome.Partial : JobOutcome.Done;
     }
+    case OutboxKind.RewrapCredentials: {
+      // System-wide: every workspace's envelopes under a retired master key. Needs the commerce
+      // secrets (the keyring); without them it waits, like a Paddle job.
+      const generation = decoded(decodeRewrapKey(job.subjectId));
+      await rewrapCredentials(ctx, generation, commerceOf(deps));
+      return JobOutcome.Done;
+    }
+    case OutboxKind.PruneData: {
+      // System-wide retention: the subject names no workspace.
+      await pruneData(ctx);
+      return JobOutcome.Done;
+    }
+    case OutboxKind.PurgeWorkspace: {
+      // The subject is the workspace ID; the purge re-reads the workspace and acts only while it
+      // is being deleted and due. A purge that waits for access to be revoked is done for today:
+      // the reason is recorded, and the daily cron queues it again.
+      const outcome = await purgeWorkspace(ctx, job.subjectId);
+      return outcome === "waiting" ? JobOutcome.Waiting : JobOutcome.Done;
+    }
   }
 }
 
@@ -187,4 +215,24 @@ export function retryDelaySeconds(attempts: number, retryAfterMs?: number): numb
       ? BASE_RETRY_DELAY_SECONDS * 2 ** Math.max(0, attempts - 1)
       : Math.ceil(retryAfterMs / 1000);
   return Math.min(Math.max(seconds, 1), MAX_RETRY_DELAY_SECONDS);
+}
+
+/** The outbox drain's first retry delay after a retryable failure. */
+export const OUTBOX_RETRY_BASE_MS = 60_000;
+/** The outbox drain's longest retry delay. */
+export const OUTBOX_RETRY_MAX_DELAY_MS = 2 * 60 * 60 * 1000;
+
+/**
+ * How long the outbox drain waits before the next attempt of a row that failed retryably on its
+ * `attempts`-th attempt: the provider's reset when known, else 1 minute doubling per attempt, at
+ * most 2 hours. Over `OUTBOX_MAX_ATTEMPTS` (10) attempts the waits add up to just over 6 hours,
+ * longer than the expiry confirmation window (decision 0013): a provider outage shorter than that
+ * never fails a job for good, and access the outage would end is confirmed first.
+ */
+export function outboxRetryDelayMs(attempts: number, retryAfterMs?: number): number {
+  const backoff = Math.min(
+    OUTBOX_RETRY_BASE_MS * 2 ** Math.max(0, attempts - 1),
+    OUTBOX_RETRY_MAX_DELAY_MS,
+  );
+  return Math.max(backoff, retryAfterMs ?? 0);
 }

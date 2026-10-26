@@ -1,24 +1,28 @@
 import {
   type CommerceDeps,
+  checkSweepHealth,
   type EntitlementSourcePort,
   PaddleUnavailableError,
+  queueCredentialRewrap,
+  queueDailyResyncs,
   queueDueEvaluations,
   queueDueReconciles,
+  queueLifecycleJobs,
   queuePaddleSweeps,
+  recordJobFailure,
   type ServiceContext,
 } from "@sharerepo/application";
 import {
   claimOutbox,
   createDb,
   type Db,
-  enqueueOutbox,
-  listActiveConnectionIds,
-  markOutboxFailed,
+  deferOutboxRow,
   markOutboxSent,
+  markQueuedJobSent,
   type OutboxRow,
   pendingOutboxSince,
 } from "@sharerepo/db";
-import { type Clock, type IdGenerator, OutboxKind } from "@sharerepo/domain";
+import { AlertName, type Clock, type IdGenerator, OutboxKind } from "@sharerepo/domain";
 import {
   GitHubApiError,
   type GitHubAppConfig,
@@ -30,6 +34,7 @@ import {
 } from "@sharerepo/integrations";
 import {
   AppError,
+  alert,
   ConflictError,
   correlationIdFrom,
   createLogger,
@@ -40,7 +45,7 @@ import {
 } from "@sharerepo/platform";
 import { type JobsConfig, parseJobsEnv } from "./env.ts";
 import { type JobMessage, jobMessageSchema } from "./messages.ts";
-import { type JobDeps, JobOutcome, retryDelaySeconds, runJob } from "./work.ts";
+import { type JobDeps, JobOutcome, outboxRetryDelayMs, retryDelaySeconds, runJob } from "./work.ts";
 
 export interface JobsWorkerDeps {
   readonly ids: IdGenerator;
@@ -84,10 +89,22 @@ const OUTBOX_LEASE_MS = 60_000;
 export const OUTBOX_DRAIN_BUDGET_MS = 20_000;
 /** After this many attempts a row is marked failed and left for the operator. */
 export const OUTBOX_MAX_ATTEMPTS = 10;
+/**
+ * The events queue's `max_retries` (wrangler.jsonc). A retryable job still failing on the queue's
+ * last retry is handed to the outbox drain instead of the dead-letter queue: the drain's backoff
+ * outlasts a provider outage (see `outboxRetryDelayMs`), and the dead-letter queue would fail it
+ * for good after about 15 minutes.
+ */
+export const QUEUE_MAX_RETRIES = 5;
 /** Subscriptions whose next policy boundary passed, queued per minute (phase-3 plan § Time). */
 export const DUE_EVALUATION_BATCH = 100;
 /** Repositories due for reconciliation, queued per minute (phase-4 plan § Reconciliation job). */
 export const DUE_RECONCILE_BATCH = 100;
+/**
+ * Due repositories queued per minute for one GitHub installation (phase-6 plan § Partitioning),
+ * so one large installation cannot starve the others or spend its rate limit in one minute.
+ */
+export const DUE_RECONCILES_PER_INSTALLATION = 10;
 /**
  * Follow-up work a job's queue consumer hands to the queue at once (decision 0003): a refresh
  * that a Paddle event or a customer link queued, and a Paddle key check. Reconciliations keep
@@ -134,7 +151,16 @@ const isRetryable = (error: unknown): boolean =>
 function logOutcome(logger: Logger, outcome: JobOutcome, fields: Record<string, string>): void {
   if (outcome === JobOutcome.OutOfScope) logger.warn("job has no workspace scope", fields);
   if (outcome === JobOutcome.Partial) logger.warn("job covered only part of its subject", fields);
+  if (outcome === JobOutcome.Waiting) logger.warn("job waits for a precondition", fields);
 }
+
+/**
+ * The dead-letter queue of the events queue (`sharerepo-events-dlq-<env>`, decision 0014): it
+ * receives messages that used up their queue retries, and this Worker consumes it too.
+ */
+export const DEAD_LETTER_QUEUE_PREFIX = "sharerepo-events-dlq-";
+/** The error code of a row whose message reached the dead-letter queue. */
+export const DEAD_LETTERED = "dead_lettered";
 
 /** A classified code for a failed outbox row, never a message. */
 const errorCode = (error: unknown): string =>
@@ -142,12 +168,17 @@ const errorCode = (error: unknown): string =>
 
 export function createJobsWorker(deps: JobsWorkerDeps) {
   const logOptions = { now: () => deps.clock.now() };
-  const services = (db: Db): ServiceContext => ({
-    db,
-    clock: deps.clock,
-    ids: deps.ids,
-    correlationId: deps.ids.next(),
-  });
+  /** A job's service context, with its own correlation ID and a logger for its alert lines. */
+  const services = (db: Db): ServiceContext => {
+    const correlationId = deps.ids.next();
+    return {
+      db,
+      clock: deps.clock,
+      ids: deps.ids,
+      correlationId,
+      logger: createLogger({ correlationId, worker: "jobs" }, logOptions),
+    };
+  };
 
   /** Paddle and claims from validated configuration; null without the commerce secrets. */
   function commerceDeps(config: JobsConfig): CommerceDeps | null {
@@ -157,7 +188,7 @@ export function createJobsWorker(deps: JobsWorkerDeps) {
       paddle: ({ apiKey, environment }) =>
         deps.paddle({ apiKey, apiBaseUrl: apiBaseUrls[environment] }),
       credentialKeys: config.commerce.credentialKeys,
-      claimSigningKey: config.commerce.claimSigningKey,
+      claimSigningKeys: config.commerce.claimSigningKeys,
       baseUrl: config.publicBaseUrl,
       deployment: config.environment,
     };
@@ -188,7 +219,11 @@ export function createJobsWorker(deps: JobsWorkerDeps) {
    * queue far more than one batch a minute), until about {@link OUTBOX_DRAIN_BUDGET_MS} has
    * passed. Work queued during the drain is claimed by it too.
    */
-  async function drainOutbox(db: Db, jobs: JobDeps, logger: Logger): Promise<void> {
+  async function drainOutbox(
+    db: Db,
+    jobs: JobDeps,
+    logger: Logger,
+  ): Promise<{ claimed: number; sent: number }> {
     const started = deps.clock.now();
     let claimed = 0;
     let sent = 0;
@@ -209,6 +244,7 @@ export function createJobsWorker(deps: JobsWorkerDeps) {
       }
     }
     logger.info("outbox drained", { claimed, sent });
+    return { claimed, sent };
   }
 
   /**
@@ -242,18 +278,28 @@ export function createJobsWorker(deps: JobsWorkerDeps) {
     logger: Logger,
     now: number,
   ): Promise<boolean> {
+    const ctx = services(db);
     try {
-      const outcome = await runJob(services(db), row, jobs);
+      const outcome = await runJob(ctx, row, jobs);
       await markOutboxSent(db, [row.id], now);
       logOutcome(logger, outcome, { outboxId: row.id, kind: row.kind });
       return true;
     } catch (error) {
       const final = !isRetryable(error) || row.attempts >= OUTBOX_MAX_ATTEMPTS;
       if (final) {
-        // Will not succeed by waiting: record it once instead of retrying every minute.
-        await markOutboxFailed(db, { id: row.id, now, errorCode: errorCode(error) });
+        // Will not succeed by waiting: record it once (row, `job.failed`, alert line) instead of
+        // retrying every minute.
+        await recordJobFailure(ctx, { outboxId: row.id, errorCode: errorCode(error) });
+      } else {
+        // Backs off past the lease, so a provider outage does not use up the attempts in minutes.
+        const retryAfterMs = isProviderError(error) ? error.retryAfterMs : undefined;
+        await deferOutboxRow(db, {
+          id: row.id,
+          kind: row.kind,
+          subjectId: row.subjectId,
+          availableAt: now + outboxRetryDelayMs(row.attempts, retryAfterMs),
+        });
       }
-      // Otherwise left leased: the row becomes due again when the lease expires.
       logger.warn("outbox job failed", {
         outboxId: row.id,
         kind: row.kind,
@@ -269,46 +315,83 @@ export function createJobsWorker(deps: JobsWorkerDeps) {
    * has passed (and repairs lapsed entitlements), so the drain that follows in the same tick runs
    * them. A failing sweep is logged by its classification only and never stops that drain.
    */
-  async function sweepDueEvaluations(db: Db, logger: Logger): Promise<void> {
+  async function sweepDueEvaluations(db: Db, logger: Logger): Promise<number | null> {
     try {
       const queued = await queueDueEvaluations(services(db), { limit: DUE_EVALUATION_BATCH });
       logger.info("due evaluations queued", { queued });
+      return queued;
     } catch (error) {
       logger.error("due evaluation sweep failed", classify(error));
+      return null;
     }
   }
 
   /**
    * Scheduled reconciliation: queues a `reconcile_resource` for every repository that is due (or
-   * has live access and nothing scheduled), for the drain that follows in the same tick. Like the
-   * evaluation sweep, a failure is logged by its classification only and stops nothing else.
+   * has live access and nothing scheduled), for the drain that follows in the same tick, at most
+   * {@link DUE_RECONCILES_PER_INSTALLATION} per GitHub installation and none of a rate-limited
+   * one. Like the evaluation sweep, a failure is logged by its classification only and stops
+   * nothing else.
    */
-  async function sweepDueReconciles(db: Db, logger: Logger): Promise<void> {
+  async function sweepDueReconciles(db: Db, logger: Logger): Promise<number | null> {
     try {
-      const queued = await queueDueReconciles(services(db), { limit: DUE_RECONCILE_BATCH });
+      const queued = await queueDueReconciles(services(db), {
+        limit: DUE_RECONCILE_BATCH,
+        perConnection: DUE_RECONCILES_PER_INSTALLATION,
+      });
       logger.info("due reconciles queued", { queued });
+      return queued;
     } catch (error) {
       logger.error("due reconcile sweep failed", classify(error));
+      return null;
     }
   }
 
   /**
-   * The daily repair path: queue a resync of every connection that is not deleted. The outbox
-   * drain runs them a batch at a time, so one cron run never does every connection's GitHub calls.
+   * Sweep health (decision 0014): after the tick, one `sweep.heartbeat` line with what it claimed
+   * and the oldest instants still due, which a Monitor counts as the dead-man's switch. When the
+   * oldest due row is more than 15 minutes late, a `sweep_lagging` alert line too, at most once
+   * per 15 minutes. A failing check is logged by its classification only; the missing heartbeat
+   * is then the signal.
+   */
+  async function reportSweepHealth(
+    db: Db,
+    logger: Logger,
+    claimed: {
+      evaluations: number | null;
+      reconciles: number | null;
+      outbox: { claimed: number; sent: number } | null;
+    },
+  ): Promise<void> {
+    try {
+      const health = await checkSweepHealth(services(db), { maxAttempts: OUTBOX_MAX_ATTEMPTS });
+      const due = {
+        oldestEvaluationDueAt: health.evaluationDueAt,
+        oldestReconcileDueAt: health.reconcileDueAt,
+        oldestOutboxDueAt: health.outboxDueAt,
+        lagMs: health.lagMs,
+      };
+      logger.info("sweep.heartbeat", {
+        evaluationsQueued: claimed.evaluations,
+        reconcilesQueued: claimed.reconciles,
+        outboxClaimed: claimed.outbox?.claimed ?? null,
+        outboxSent: claimed.outbox?.sent ?? null,
+        ...due,
+      });
+      if (health.alert) alert(logger, AlertName.SweepLagging, due);
+    } catch (error) {
+      logger.error("sweep health check failed", classify(error));
+    }
+  }
+
+  /**
+   * The daily repair path: queue a resync of every connection that is not deleted, spread over
+   * the next 24 hours by connection. The outbox drain runs them as they come due, so one cron run
+   * never does every connection's GitHub calls.
    */
   async function dailyResync(db: Db, logger: Logger): Promise<void> {
-    const connections = await listActiveConnectionIds(db);
-    const now = deps.clock.now();
-    for (const connection of connections) {
-      await enqueueOutbox(db, {
-        id: deps.ids.next(),
-        kind: OutboxKind.ResyncConnection,
-        subjectId: connection.id,
-        createdAt: now,
-        availableAt: now,
-      });
-    }
-    logger.info("daily resync queued", { connections: connections.length });
+    const queued = await queueDailyResyncs(services(db));
+    logger.info("daily resync queued", { queued });
   }
 
   /**
@@ -321,6 +404,75 @@ export function createJobsWorker(deps: JobsWorkerDeps) {
       logger.info("paddle sweeps queued", { queued });
     } catch (error) {
       logger.error("paddle sweep queueing failed", classify(error));
+    }
+  }
+
+  /**
+   * The dead-letter queue (decision 0014): messages that used up their queue retries. Each is
+   * validated like a job message and never run. Its outbox row is marked failed with
+   * `dead_lettered` (with `job.failed` and an alert line) only if the row matches the message's
+   * kind and subject and is neither sent nor failed, so a replay, a stale message or a forged
+   * one changes nothing (threat O14). Every message is acknowledged once handled; a storage
+   * error retries it.
+   */
+  async function deadLettered(batch: MessageBatch<unknown>, db: Db, logger: Logger) {
+    for (const message of batch.messages) {
+      const parsed = jobMessageSchema.safeParse(message.body);
+      if (!parsed.success) {
+        logger.warn("invalid dead-lettered message dropped", { messageId: message.id });
+        message.ack();
+        continue;
+      }
+      const { kind, subjectId, outboxId } = parsed.data;
+      try {
+        const recorded = await recordJobFailure(services(db), {
+          outboxId,
+          errorCode: DEAD_LETTERED,
+          message: { kind, subjectId },
+        });
+        if (!recorded) {
+          logger.warn("dead-lettered message matched no open job", {
+            messageId: message.id,
+            outboxId,
+          });
+        }
+        message.ack();
+      } catch (error) {
+        logger.error("dead-lettered message not recorded; retrying", {
+          messageId: message.id,
+          ...classify(error),
+        });
+        message.retry();
+      }
+    }
+  }
+
+  /**
+   * The daily credential check (secret rotation): queues a `rewrap_credentials` run while any
+   * envelope is still sealed under a retired `CREDENTIAL_KEYS` key. A failure is logged by its
+   * classification only.
+   */
+  async function dailyRewrapCheck(db: Db, config: JobsConfig, logger: Logger): Promise<void> {
+    if (config.commerce === null) return;
+    try {
+      const queued = await queueCredentialRewrap(services(db), config.commerce);
+      logger.info("credential rewrap check", { queued });
+    } catch (error) {
+      logger.error("credential rewrap check failed", classify(error));
+    }
+  }
+
+  /**
+   * The daily data lifecycle (decision 0015): queues the retention run and the purge of every
+   * workspace whose deletion is due, each spread over the day. A failure is logged by its
+   * classification only.
+   */
+  async function dailyLifecycle(db: Db, logger: Logger): Promise<void> {
+    try {
+      const queued = await queueLifecycleJobs(services(db));
+      logger.info("lifecycle jobs queued", { queued });
+    } catch (error) {
+      logger.error("lifecycle job queueing failed", classify(error));
     }
   }
 
@@ -345,8 +497,9 @@ export function createJobsWorker(deps: JobsWorkerDeps) {
 
     /**
      * Crons: heartbeat; every minute, the due-evaluation and due-reconcile sweeps then the outbox
-     * drain (each runs even when another fails); daily, the Paddle sweeps and the connection
-     * resync. Invalid configuration fails the run.
+     * drain (each runs even when another fails), then the sweep's health line; daily, the Paddle
+     * sweeps and the connection resyncs, each spread over the day. Invalid configuration fails
+     * the run.
      */
     async scheduled(controller: ScheduledController, env: Env): Promise<void> {
       const logger = createLogger(
@@ -372,19 +525,28 @@ export function createJobsWorker(deps: JobsWorkerDeps) {
       const db = createDb(config.db);
       if (controller.cron === CRONS.dailyResync) {
         await dailyPaddleSweeps(db, logger);
+        await dailyRewrapCheck(db, config, logger);
         await dailyResync(db, logger);
+        await dailyLifecycle(db, logger);
         return;
       }
-      await sweepDueEvaluations(db, logger);
-      await sweepDueReconciles(db, logger);
-      await drainOutbox(db, jobDeps(config, config.github), logger);
+      const evaluations = await sweepDueEvaluations(db, logger);
+      const reconciles = await sweepDueReconciles(db, logger);
+      let outbox: { claimed: number; sent: number } | null = null;
+      try {
+        outbox = await drainOutbox(db, jobDeps(config, config.github), logger);
+      } finally {
+        // Even when the drain failed: the heartbeat then shows nothing drained.
+        await reportSweepHealth(db, logger, { evaluations, reconciles, outbox });
+      }
     },
 
     /**
      * The fast path for handed-off work. Each message is acknowledged unless a retry can help:
      * poison messages and work without a workspace are dropped with a warning; GitHub and Paddle
      * outages and rate limits, an unavailable Paddle connection or commerce configuration, and
-     * concurrent writers are retried with a delay; other failures (including a key that does not
+     * concurrent writers are retried with a delay, and from the queue's last retry on are left to
+     * the outbox drain's longer backoff (never the dead-letter queue); other failures (including a key that does not
      * decode, or an unavailable entitlement source) are marked failed on the outbox row with a
      * classified code and acknowledged.
      */
@@ -395,6 +557,10 @@ export function createJobsWorker(deps: JobsWorkerDeps) {
       );
       const config = configFrom(env, batchLogger);
       const db = createDb(config.db);
+      if (batch.queue.startsWith(DEAD_LETTER_QUEUE_PREFIX)) {
+        await deadLettered(batch, db, batchLogger);
+        return;
+      }
       const jobs = config.github === null ? null : jobDeps(config, config.github);
 
       for (const message of batch.messages) {
@@ -418,12 +584,37 @@ export function createJobsWorker(deps: JobsWorkerDeps) {
         const startedAt = deps.clock.now();
         try {
           const outcome = await runJob(ctx, job, jobs);
-          await markOutboxSent(db, [job.outboxId], deps.clock.now());
+          const marked = await markQueuedJobSent(db, {
+            id: job.outboxId,
+            kind: job.kind,
+            subjectId: job.subjectId,
+            now: deps.clock.now(),
+          });
+          // A message whose kind or subject does not match its row (or a replay of a delivered
+          // one) settles nothing: the row stays for the drain, which runs its own job.
+          if (!marked)
+            logger.info("job message matched no open outbox row", { outboxId: job.outboxId });
           logOutcome(logger, outcome, { outboxId: job.outboxId });
           await handOff(env, db, startedAt, logger);
           message.ack();
         } catch (error) {
-          if (isRetryable(error)) {
+          if (isRetryable(error) && message.attempts >= QUEUE_MAX_RETRIES) {
+            // The queue's retries are nearly spent: the outbox drain takes the row over with its
+            // longer backoff, rather than the dead-letter queue failing it for good.
+            const retryAfterMs = isProviderError(error) ? error.retryAfterMs : undefined;
+            await deferOutboxRow(db, {
+              id: job.outboxId,
+              kind: job.kind,
+              subjectId: job.subjectId,
+              availableAt: deps.clock.now() + outboxRetryDelayMs(message.attempts, retryAfterMs),
+            });
+            logger.warn("job handed to the outbox drain", {
+              outboxId: job.outboxId,
+              attempts: message.attempts,
+              ...classify(error),
+            });
+            message.ack();
+          } else if (isRetryable(error)) {
             const retryAfterMs = isProviderError(error) ? error.retryAfterMs : undefined;
             const delaySeconds = retryDelaySeconds(message.attempts, retryAfterMs);
             logger.warn("job will be retried", {
@@ -433,11 +624,12 @@ export function createJobsWorker(deps: JobsWorkerDeps) {
             });
             message.retry({ delaySeconds });
           } else {
-            // Final: record it on the outbox row too, so the drain does not pick it up again.
-            await markOutboxFailed(db, {
-              id: job.outboxId,
-              now: deps.clock.now(),
+            // Final: record it on the outbox row too, so the drain does not pick it up again,
+            // with `job.failed` and an alert line.
+            await recordJobFailure(ctx, {
+              outboxId: job.outboxId,
               errorCode: errorCode(error),
+              message: { kind: job.kind, subjectId: job.subjectId },
             });
             logger.error("job failed", { outboxId: job.outboxId, ...classify(error) });
             message.ack();
