@@ -95,6 +95,8 @@ describe("parseManualAccessEndDate", () => {
     ["26/10/2026", { ok: false, error: "end_date_invalid" }],
     ["2026-10-26T00:00", { ok: false, error: "end_date_invalid" }],
     ["x2026-10-26", { ok: false, error: "end_date_invalid" }],
+    ["2026-02-30", { ok: false, error: "end_date_invalid" }],
+    ["+002026-10-26", { ok: false, error: "end_date_invalid" }],
   ])("%j", (input, result) => {
     expect(parseManualAccessEndDate(input)).toEqual(result);
   });

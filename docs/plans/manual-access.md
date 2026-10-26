@@ -86,7 +86,6 @@ The product owner (2026-10-25) made two previously accepted risks normal creator
 
 The product owner's rule for now (2026-10-26): build the main path and note the exceptions; they will be examined when ShareRepo opens up as a SaaS. Security and workspace isolation are part of the main path.
 
-- **Impossible calendar dates.** `parseManualAccessEndDate` checks the `YYYY-MM-DD` shape and that it parses. A day past the month's end (`2026-02-30`) rolls over to the next month, as JavaScript dates do. The page's date input sends only real dates.
 - **The recipient's view of an end date.** My access shows the stored instant like a purchase's cancellation, so a grant ending after 2026-10-26 reads "Cancels 2026-10-27" (12:00 UTC). The creator's page reads "Access ends after 2026-10-26".
 - **Several grants or purchases for one workspace.** My access lists each as its own card, as it does for several subscriptions.
 - **A recipient's account renamed on GitHub.** The grant follows the immutable ID; the creator's list shows the login snapshot until the account is next resolved.
