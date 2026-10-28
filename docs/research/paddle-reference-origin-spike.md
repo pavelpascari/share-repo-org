@@ -118,3 +118,5 @@ All three references had digest `290498269bba` on the subscription.
 - **Seller-side change vs. buyer-side checkout: distinguishable.** (b): the first transaction has no reference; it arrives in a later `subscription.updated`. (c): the first transaction has origin `web` and carries the reference from creation. Neither says *who*: a seller-side change is the creator or anyone with their API key or dashboard access.
 
 What ShareRepo does with this is a product decision for [decision 0016](../decisions/0016-manual-access-source.md) § Checkout references.
+
+**Decided (2026-10-28): refuse.** The product owner chose to refuse the automatic link: path 1 uses a checkout claim only when the claim's transaction (`GET /transactions/{id}`) names the subscription that carried the reference. Otherwise `claim.rejected` with `not_this_checkout`, and the claim is not consumed; while `subscription_id` is still empty, nothing happens until a later refresh. Recorded in decision 0016 and as an amendment to [decision 0012](../decisions/0012-purchase-claims.md).

@@ -7,7 +7,7 @@
 The product owner (2026-10-25) made two previously accepted risks normal creator features:
 
 1. A creator gives an offer's repositories to a GitHub account with no purchase, for early buyers and trials (**manual access**). It is attributable to the owner and removable by hand.
-2. A link a creator made through a checkout reference (T12) is legitimate. The owner sees how every link was made and can remove it. The pre-registered-customer risk stays accepted, with removal by hand as its creator-side recovery.
+2. A link a creator made through a checkout reference (T12) is legitimate. The owner sees how every link was made and can remove it. (Superseded 2026-10-28: such a link is now refused, see Decided below.) The pre-registered-customer risk stays accepted, with removal by hand as its creator-side recovery.
 
 ## Scope
 
@@ -72,14 +72,14 @@ The product owner (2026-10-25) made two previously accepted risks normal creator
 ## Code and documentation conflicts found
 
 - `docs/domain-model.md` § State sketches used to say an active entitlement past `validUntil` "has already ended… never extends it", which contradicted decision 0013. Resolved by Phase 6 T7, which rewrote the sketch to describe expiry pending; the merged text agrees with the code.
-- The threat model listed T12's mitigation as deferred "until Paddle reports the transaction". Paddle does report it on the transaction, but that would not identify the actor; see decision 0016.
+- The threat model listed T12's mitigation as deferred "until Paddle reports the transaction". Paddle does report it on the transaction. It does not identify the actor, but the spike showed it reliably tells a genuine checkout from a copied reference, and since 2026-10-28 path 1 refuses the copy; see decision 0016.
 
 ## Decided (2026-10-26)
 
 1. **My access for recipients.** "Yes it should. but it should not look any different than if they went through the purchase." Done: My access lists manual access through the recipient's own GitHub ID, as purchases are, with the same component and wording. An end date shows as a scheduled cancellation; there is no source label and no note (`isolation/cross-workspace-read-denied` in `packages/db/test/customer-links.test.ts`, and the E2E journey).
 2. **End date.** "let's pick end of day at the recipients timezone." ShareRepo cannot know the recipient's time zone, so access ends at the end of the chosen date anywhere on Earth: 12:00 UTC the next day ([decision 0017](../decisions/0017-manual-access-end-of-day.md)). The page says "Access ends after <date>". Nothing has shipped, so no stored row needs a migration.
 3. **Limits.** 100 open grants and 50 new grants a day per workspace are confirmed for now: "we can adjust later".
-4. **Checkout-reference attribution.** "Let's spike it." Prepared: `pnpm spike:paddle-origin` and [the procedure](../research/paddle-reference-origin-spike.md). **Open item:** pending the product owner's sandbox run and results.
+4. **Checkout-reference attribution.** "Let's spike it." `pnpm spike:paddle-origin` and [the procedure](../research/paddle-reference-origin-spike.md), run in the sandbox 2026-10-28: a reference that reached another subscription is detectable (not who moved it). **Decided 2026-10-28: refuse the automatic link.** Path 1 reads the claim's checkout transaction (`getTransaction`) before a claim's first use and rejects with `not_this_checkout` unless it names the subscription carrying the reference; the claim is not consumed (`claim/checkout-reference-from-other-subscription-rejected`).
 5. **Who can grant.** "No. Only owners." As implemented (`workspace.manage`).
 
 ## Known edge cases (deferred)
@@ -93,3 +93,7 @@ The product owner's rule for now (2026-10-26): build the main path and note the 
 - **A crash between a grant's writes and a resubmitted form** can count the rate limit twice (`crash/every-batch-boundary-converges`).
 - **Reactivating an ended grant** is done by editing its end date. Revoked grants are final; the owner grants again.
 - **Grants for organizations, teams or bots** are refused, not supported.
+- **Paddle has not yet set the claim's transaction's `subscription_id`.** Path 1 then does nothing and waits for a later refresh. The spike saw it set when read right after `subscription.created`, so the window is small. If it is ever missed and the customer becomes linked another way, or no later refresh comes, the buyer can claim by email (path 2). No retry is scheduled for it.
+- **A copy presented while ShareRepo's own checkout is unpaid** reads as pending too (no subscription on the transaction yet), so it is neither linked nor rejected until a refresh after the genuine checkout completes. It uses nothing either way.
+- **A claim whose transaction was never stored** (Paddle's response to `POST /transactions` lost, or a crash before it was recorded) is refused with `not_this_checkout`. The buyer never received its checkout URL in that case, so no genuine payment is expected; the buyer can start a new checkout or claim by email.
+- **A second genuine subscription through the same checkout transaction is impossible:** a completed Paddle transaction cannot be paid again. A buyer's later purchase is a new checkout with its own claim. A later subscription of an already-linked customer carrying the used reference keeps it linked without a transaction check (renewal rule).

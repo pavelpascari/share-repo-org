@@ -27,6 +27,7 @@ A **claim** links a Paddle customer (`ctm_…`) in a workspace to a ShareRepo us
 - **Linking.**
   - The Paddle adapter reports the subscription's `custom_data.sharerepo_claim`. The refresh verifies the MAC in constant time and loads the checkout claim within the subscription's workspace.
   - The reference must not have expired, and must not be consumed by another customer. A buyer can rewrite custom data in the browser (T11), so an unverified, unknown, expired, or other-workspace reference is ignored and audited as `claim.rejected`.
+  - **The claim's transaction must belong to this subscription** (amendment below, decision 0016). Before the first use of a claim, the refresh reads the checkout transaction ShareRepo created for it (`GET /transactions/{id}`). Unless its `subscription_id` is the subscription that carried the reference, the refresh records `claim.rejected` with reason `not_this_checkout` and uses nothing.
   - **The link follows the purchase, not the customer.** At checkout the buyer can enter any email, and Paddle then puts the new subscription on the existing customer with that email. Linking that customer would hand all of its subscriptions, including those of the email's owner, to whoever started the checkout (threat T13). A customer is therefore linked only when every subscription Paddle holds for it, in any status, carries this same reference. Otherwise the refresh records `claim.rejected` with reason `customer_has_other_purchases`.
     - A customer that ShareRepo recorded before the claim was created is refused without asking Paddle. ShareRepo records a customer with its first subscription, and that subscription cannot carry a reference that did not exist yet.
     - Otherwise the refresh lists the customer's subscriptions (`GET /subscriptions?customer_id=&status=<every status>`) through the workspace's active connection. A list cut short at the page cap is refused, and so is an empty list.
@@ -100,3 +101,14 @@ A **claim** links a Paddle customer (`ctm_…`) in a workspace to a ShareRepo us
 - **Rejected alternative:** waiting out the claim windows before switching keys. It still resets the counters at the switch, and it needs a two-step deploy with a timed wait in between. Counting across keys costs one HMAC per listed key per request.
 
 The runbook ([secret-rotation.md](../runbooks/secret-rotation.md) § 2) keeps a retired key listed for at least 8 days (the 7-day checkout claim lifetime, plus the 1-day rate-limit window), then removes it. Removing a key ends its acceptance (threat O16).
+
+## Amendment — the checkout's own subscription only (decision 0016, 2026-10-28)
+
+A reference can reach a subscription that ShareRepo's checkout did not create: the seller can edit custom data, and a buyer can pass a copied reference into a Paddle.js checkout (T11, T12). The product owner decided (2026-10-28) to refuse such links. Path 1 now also requires the claim's checkout transaction to belong to the subscription that carried the reference:
+
+- Checked after the reference is verified and the claim is usable, before the link decision, and only for a claim this customer has not used. Renewals ask Paddle nothing.
+- A claim without a stored transaction, a transaction Paddle does not know, or one naming another subscription: `claim.rejected` with `not_this_checkout`. The claim is not consumed, including on the already-linked (Noop) and Conflict paths, so a copied reference cannot use up the buyer's claim.
+- `subscription_id` not set yet: nothing is linked, consumed or recorded; the next refresh of an unlinked customer looks again.
+- Paddle cannot be read: the refresh fails and is retried, as for the purchase rule.
+
+The [sandbox spike](../research/paddle-reference-origin-spike.md) showed Paddle names the subscription on the transaction by the time ShareRepo reads after `subscription.created`. Details in [decision 0016](0016-manual-access-source.md) § Checkout references.

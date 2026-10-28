@@ -1,6 +1,6 @@
 # 0016 — Manual access: an entitlement source without a payment provider
 
-**Status:** Accepted (manual access and the creator link are a product decision, 2026-10-25)
+**Status:** Accepted (manual access and the creator link are a product decision, 2026-10-25; a checkout reference that reached another subscription is refused, product decision 2026-10-28)
 
 ## Context
 
@@ -71,15 +71,19 @@ A recipient with a ShareRepo account sees their manual access on **My access**, 
 
 ### Checkout references and removable links (risk T12)
 
-- **Whether a creator's link can be told apart.** It cannot, reliably:
-  - The subscription entity ShareRepo re-reads names no transaction ([paddle-billing.md](../research/paddle-billing.md) § 4: only `subscription.created` carries `transaction_id`, and webhooks are hints).
-  - A reference can reach another subscription in two ways. The seller can edit its custom data (dashboard or API). A buyer can also pass a reference into another checkout through Paddle.js `customData` (threat T11). Only the first is the creator.
-  - The checkout claim does store the transaction ShareRepo created, and `GET /transactions/{id}` (`transaction.read`, already required) reports its `subscription_id`. Comparing it would show only that the reference arrived *some other way*, not *who* made it arrive. Whether Paddle sets `subscription_id` before `subscription.created` is delivered is unconfirmed, so a genuine checkout could be misread. Neither the fake nor the recorded fixtures cover that call.
-- **So the link is made legitimate and visible instead.**
+- **Whether a link came through ShareRepo's checkout: it can be told, and is refused otherwise** (product owner, 2026-10-28: refuse).
+  - A reference can reach another subscription in two ways. The seller can edit its custom data (dashboard or API). A buyer can also pass a reference into another checkout through Paddle.js `customData` (threat T11).
+  - The checkout claim stores the transaction ShareRepo created (`checkout_claims.transaction_id`), and `GET /transactions/{id}` (`transaction.read`, already required) reports its `subscription_id`. The [sandbox spike](../research/paddle-reference-origin-spike.md) showed that for a genuine checkout it names the subscription carrying the reference as soon as it can be read after `subscription.created`; in both other ways it names another subscription.
+  - **Rule.** Path 1 uses a claim only when the claim's transaction belongs to the subscription that carried the reference. It is checked after the reference is verified and the claim is usable, before any link decision, and only for a claim this customer has not used (renewals ask Paddle nothing).
+    - No transaction on the claim, a transaction Paddle does not know, or one naming another subscription: `claim.rejected` with reason `not_this_checkout`. The claim is **not** consumed, so a foreign subscription cannot burn the genuine buyer's claim, and the Noop and Conflict paths never consume it either.
+    - `subscription_id` still empty: nothing is linked, consumed or audited. The next refresh evaluates an unlinked customer again. This is the moment before Paddle sets it on a genuine checkout, and also any copy presented while ShareRepo's own checkout is still unpaid; that copy is rejected on a refresh after the checkout completes.
+    - Paddle cannot be read: the error propagates and the refresh is retried, as for the purchase rule.
+  - It still does not say *who* moved the reference (a seller-side change is the creator or anyone with their key or dashboard), and it does not need to: the link is refused either way. The creator's deliberate paths are a manual link (path 3) and manual access.
+- **Links made earlier, and links through a genuine checkout, stay legitimate and visible.**
   - The Customers page shows how each link was made, read from the audit trail: ShareRepo checkout, emailed claim, a manual link, or the simulator.
   - An owner can remove any link, with a reason (`customer.unlinked_manually`). The customer's subscriptions are refreshed, so their entitlements end (`customer_unlinked`).
   - The checkout claim that customer used never links it again: path 1 returns early for a customer that used the claim and was unlinked since. An emailed claim (path 2) or a manual link can link it.
-  - A link a creator makes through a checkout reference stays `claim.completed` by the system. The creator's own deliberate path is a manual link (path 3), or manual access.
+  - A link made through a checkout reference is `claim.completed` by the system. Since 2026-10-28 a creator can no longer make one by copying a reference; their deliberate path is a manual link (path 3), or manual access.
 
 ## Consequences
 
@@ -88,4 +92,4 @@ A recipient with a ShareRepo account sees their manual access on **My access**, 
 - The minute tick does a little local work besides queueing. Its heartbeat reports `manualAccessesEvaluated`, and the evaluation backlog includes due manual accesses.
 - A recompute's due mark is an unaudited scheduling hint, like the subscription sweep clearing its timer; the evaluation that follows is audited.
 - Amends: decision 0009 (entitlement sources), 0013 (a timer without expiry confirmation), 0015 (deletion, export, purge order).
-- **Spike run (2026-10-28):** the [sandbox spike](../research/paddle-reference-origin-spike.md) shows a link whose reference arrived outside ShareRepo's checkout **can** be detected (the claim's transaction names another subscription), and a seller-side edit can be told from a buyer's Paddle.js checkout, but not who made either. Pending a product decision on what to do with it; until then the design above stands.
+- **Spike run and decision (2026-10-28):** the [sandbox spike](../research/paddle-reference-origin-spike.md) showed a reference that arrived outside ShareRepo's checkout can be detected (the claim's transaction names another subscription). The product owner chose to refuse such links (§ Checkout references): path 1 reads `GET /transactions/{id}` on each refresh that would first use a claim, a new rejection reason `not_this_checkout`, and amends decision 0012 (path 1 also requires the claim's transaction to belong to the subscription).

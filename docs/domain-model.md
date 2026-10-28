@@ -386,6 +386,7 @@ Do not grant repository access from an unverified email match alone. The simulat
 - A customer ShareRepo recorded before the claim was created is refused at once.
 - Otherwise ShareRepo lists the customer's subscriptions for every status. The list must include the subscription that carried the reference and every subscription ShareRepo stores for the customer. An empty list, or one cut short at the page cap, is refused.
 - A refusal is audited as `claim.rejected` with `customer_has_other_purchases`. The buyer can still claim by email (path 2).
+- Before that, and before any link decision, a claim's first use requires its checkout transaction to belong to the subscription that carried the reference (decision 0016). A reference that reached another subscription, by a seller's edit or a buyer's own Paddle.js checkout, is `claim.rejected` with `not_this_checkout` and uses up nothing. While Paddle has not yet set the transaction's subscription, nothing happens until a later refresh.
 - If Paddle cannot be read, nothing is linked or refused, and the refresh is retried.
 - Once linked, a customer stays linked: renewals need no new check. Path 1 never moves an existing link (`claim.conflict`); paths 2 and 3 do.
 

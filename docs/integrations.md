@@ -205,6 +205,7 @@ Paddle is the commercial source. It reports who paid for what; the entitlement e
 | `listCustomersByEmail` | `GET /customers?email=&per_page=200` | Claiming by email (path 2) |
 | `getCustomer` | `GET /customers/{id}` | Customer lookups |
 | `createTransaction` | `POST /transactions` with `custom_data.sharerepo_claim` | Starting a checkout (path 1) |
+| `getTransaction` | `GET /transactions/{id}` (`transaction.read`) | Path 1: the claim's checkout transaction must name the subscription that carried the reference, so a reference copied onto another subscription (a seller's edit, a buyer's Paddle.js checkout) uses no claim ([decision 0016](decisions/0016-manual-access-source.md) § Checkout references). Read before a claim's first use only; `subscription_id` still null is waited for, not refused |
 | `createNotificationSetting`, `getNotificationSetting`, `listNotificationSettings`, `deleteNotificationSetting` | `/notification-settings` | The webhook destination, and the sweep of orphaned ones |
 
 Every request sends `Paddle-Version: 1` and has a 20-second timeout. Every response is parsed with Zod. Lists follow `meta.pagination.next` while `has_more`, up to 30 pages. The next-page URL must stay under the API base URL, because the request carries the seller's key. The sweep and the purchase rule accept a list cut short at the cap and say so; other lists fail as `malformed`.
@@ -249,6 +250,7 @@ signed Paddle webhook
      api_key.*: queue check_paddle_connection
      anything else: ignored
   -> refresh: GET /subscriptions/{id}, normalize, verify the claim reference
+     (first use of a claim: GET /transactions/{claim's transaction} must name this subscription)
   -> persist Subscription, link the customer if the purchase rule allows
   -> recompute Entitlements
   -> queue reconciliation
