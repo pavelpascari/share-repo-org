@@ -366,6 +366,20 @@ describe("planManualEntitlements", () => {
     });
   });
 
+  it("expires a still-valid entitlement when the end date is moved into the past", () => {
+    expect(
+      plan({
+        access: access({ endsAt: NOW - 1 }),
+        live: [live("e1", { validUntil: NOW + DAY })],
+      }),
+    ).toEqual({
+      create: [],
+      update: [],
+      end: [{ id: "e1", state: "expired", reason: "manual_ended" }],
+      nextEvaluationAt: null,
+    });
+  });
+
   it("expires a lapsed entitlement as manual_ended after the confirmation window too", () => {
     expect(
       plan({
