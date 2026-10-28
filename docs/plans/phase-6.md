@@ -515,6 +515,10 @@ Where the build differs from, or adds to, the design above.
 
 Fixes for the risks the [operations threat model](../security/operations-threat-model.md#status-after-phase-6-risk-fixes) had accepted, R1–R8 there.
 
+The user approved the behaviour changes on 2026-10-26: operator retry and dismiss need a session under 2 hours old; a cross-site link to `/ops` shows "Continue to operations"; ShareRepo describes its Paddle destinations and deletes its own unused ones; a Worker refuses to start with a whitespace-only secret.
+
+**Working rule from here (user, 2026-10-26):** build the green path and record edge cases rather than engineering them; they are examined before opening ShareRepo as a public SaaS (Phase 8). Security and workspace isolation are not edge cases.
+
 - **Orphaned Paddle destinations (R1).** `destination-tag.ts` describes each destination with its workspace and creation instant. `PaddlePort.listNotificationSettings` is new (client, fake, E2E fake server, contract). `sweepDestinations` in `packages/application/src/paddle.ts` runs first in `sweepPaddleSubscriptions`, best effort after connect, reconnect and rotation, and before `destination_limit`; disconnect deletes all of the workspace's and its write is guarded on the destination IDs it read (`disconnectPaddleConnection`'s `expected`). Reconnect's re-created destination gets a `?v=` marker. New audit action `paddle.destinations_swept`; new crash-matrix case.
 - **Rewrap cursor (R2).** `listEnvelopesUnderKeys` takes `after`; the cursor is `system_state` `rewrap.cursor`. A run continues only after a full batch.
 - **Deleted users (R3, R8).** Migration 0011 adds `users.deleted_at` and the trigger `external_identities_user_not_deleted`, with upgrade fixture `at-0011.sql`. `insertExternalIdentity` reports `user_deleted`; the sign-in refusal reason `account_deleted` is new.
