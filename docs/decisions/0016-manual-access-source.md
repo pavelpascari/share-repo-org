@@ -88,4 +88,4 @@ A recipient with a ShareRepo account sees their manual access on **My access**, 
 - The minute tick does a little local work besides queueing. Its heartbeat reports `manualAccessesEvaluated`, and the evaluation backlog includes due manual accesses.
 - A recompute's due mark is an unaudited scheduling hint, like the subscription sweep clearing its timer; the evaluation that follows is audited.
 - Amends: decision 0009 (entitlement sources), 0013 (a timer without expiry confirmation), 0015 (deletion, export, purge order).
-- **Open (2026-10-26):** a [sandbox spike](../research/paddle-reference-origin-spike.md) checks whether a link whose reference arrived outside ShareRepo's checkout can at least be flagged. Until it is run, the design above stands.
+- **Spike run (2026-10-28):** the [sandbox spike](../research/paddle-reference-origin-spike.md) shows a link whose reference arrived outside ShareRepo's checkout **can** be detected (the claim's transaction names another subscription), and a seller-side edit can be told from a buyer's Paddle.js checkout, but not who made either. Pending a product decision on what to do with it; until then the design above stands.

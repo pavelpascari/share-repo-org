@@ -1,6 +1,6 @@
 # Spike — where did a subscription's checkout reference come from?
 
-**Status:** Prepared, not yet run (2026-10-26). Needs the Paddle sandbox, which only the product owner can access. Open item of [decision 0016](../decisions/0016-manual-access-source.md) § Checkout references; plan: [manual access](../plans/manual-access.md).
+**Status:** Run 2026-10-28 against the product owner's sandbox. Results and conclusion below. Open item of [decision 0016](../decisions/0016-manual-access-source.md) § Checkout references; plan: [manual access](../plans/manual-access.md).
 
 ## Question
 
@@ -97,13 +97,24 @@ pnpm --filter @sharerepo/db exec wrangler d1 execute DB --local -c ../../apps/we
 
 ## Results
 
-Fill in after running. Paste the relevant JSON fields, never keys or references.
+Run 2026-10-28, one sandbox account, one monthly price with a trial (every subscription starts `trialing`). The scenarios were set up with the API key and a headless browser, not through ShareRepo itself:
 
-| Scenario | Run at | `checkoutTransaction.subscriptionId` | First sub transaction `origin` | Reference on first transaction? | Event order (types) | Notes |
+- (a) `POST /transactions` with the price and `custom_data.sharerepo_claim`, exactly as ShareRepo's `createTransaction` sends it, then Paddle's checkout on the default payment link (`?_ptxn=`), paid with the test card.
+- (b) The same without custom data, then `PATCH /subscriptions/{id}` with the reference from (a). The API stands in for the dashboard edit; both are seller-side changes.
+- (c) `Paddle.Checkout.open({ items, customData })` on the payment link page, paid with the test card.
+
+All three references had digest `290498269bba` on the subscription.
+
+| Scenario | Run at (UTC) | `checkoutTransaction.subscriptionId` | First sub transaction `origin` | Reference on first transaction? | Event order (types) | Notes |
 |---|---|---|---|---|---|---|
-| (a) right after paying | | | | | | |
-| (a) a minute later | | | | | | |
-| (b) dashboard paste | | | | | | |
-| (c) Paddle.js checkout | | | | | | |
+| (a) right after paying | 22:19:20, 6 s after `subscription.created` | `sub_A` | `api` (it is `txn_A`) | Yes | `subscription.created` (`transaction_id = txn_A`) and `subscription.trialing` at 14.026 s, then `transaction.updated` ×2, `transaction.completed` at 14.866 s | `subscription.created` comes **before** `transaction.completed` and names the transaction. |
+| (a) 90 s later | 22:20:44 | `sub_A` | `api` | Yes | unchanged | |
+| (b) reference added after purchase | 22:19:56 | `sub_A`, not `sub_B` | `api` | **No** | `subscription.trialing`, `transaction.updated` ×2, `transaction.completed`, then `subscription.updated` 10 s later carrying the digest | `subscription.created` for `sub_B` never appeared in `GET /events` (still missing a minute later). A sandbox gap; not relied on below. |
+| (c) Paddle.js checkout | 22:20:25 | `sub_A`, not `sub_C` | **`web`** | Yes, from creation | `subscription.created` (`transaction_id = txn_C`), `subscription.trialing`, `transaction.updated` ×2, `transaction.completed` | |
 
-**Conclusion:** _pending_.
+**Conclusion (2026-10-28): detectable, not attributable to a person.**
+
+- **Through ShareRepo's checkout or not: detectable.** In (a) the claim's transaction names the subscription (`subscription_id = sub_A`) as soon as it can be read after `subscription.created`, and `subscription.created` itself carries `transaction_id = txn_A`. In (b) and (c) the claim's transaction names another subscription. So "the claim's transaction belongs to this subscription" is a reliable check. The race the decision feared did not show: ShareRepo reads after a webhook, and the event already names the transaction. One run per scenario is not proof that no race exists; reading `GET /transactions/{claim transaction}` and requiring `subscription_id` to equal the subscription, retrying while it is still empty, covers it.
+- **Seller-side change vs. buyer-side checkout: distinguishable.** (b): the first transaction has no reference; it arrives in a later `subscription.updated`. (c): the first transaction has origin `web` and carries the reference from creation. Neither says *who*: a seller-side change is the creator or anyone with their API key or dashboard access.
+
+What ShareRepo does with this is a product decision for [decision 0016](../decisions/0016-manual-access-source.md) § Checkout references.
