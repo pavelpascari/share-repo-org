@@ -27,6 +27,7 @@ import {
   type PaddleNotificationSetting,
   type PaddlePort,
   type PaddleSubscription,
+  type PaddleTransactionDetails,
   parseDestinationDescription,
   parsePaddleApiKey,
   parsePaddleEnvelope,
@@ -1429,8 +1430,10 @@ export async function processPaddleEvent(
  * active connection and normalizes it. A subscription Paddle does not know is `found: false`. No
  * active connection, or a refused key, fails as `PaddleUnavailableError`, so the refresh writes
  * nothing and the outbox retries. The customer link is never decided from Paddle's data: the
- * refresh verifies the claim reference instead, and lists the customer's subscriptions so a
- * customer is linked only when all of them came through the checkout (decision 0012).
+ * refresh verifies the claim reference instead, reads the claim's checkout transaction so only the
+ * subscription that checkout created uses the claim (decision 0016), and lists the customer's
+ * subscriptions so a customer is linked only when all of them came through the checkout
+ * (decision 0012).
  */
 export function paddleEntitlementSource(
   ctx: ServiceContext,
@@ -1458,6 +1461,23 @@ export function paddleEntitlementSource(
           })),
           truncated: list.truncated,
         };
+      },
+      async checkoutTransactionOwner({ workspaceId, transactionId }) {
+        const connection = await connected(workspaceId);
+        let transaction: PaddleTransactionDetails;
+        try {
+          transaction = await withPaddle(ctx, deps, connection, (client) =>
+            client.getTransaction(transactionId),
+          );
+        } catch (error) {
+          if (error instanceof PaddleApiError && error.kind === "not_found") {
+            return { kind: "not_found" };
+          }
+          throw error;
+        }
+        return transaction.subscriptionId === null
+          ? { kind: "pending" }
+          : { kind: "subscription", externalSubscriptionId: transaction.subscriptionId };
       },
     },
     async refreshSubscription({ workspaceId, externalSubscriptionId }) {

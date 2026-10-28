@@ -36,6 +36,13 @@ export const ClaimRejectionReason = {
    * else's email at checkout must not adopt that person's customer.
    */
   CustomerHasOtherPurchases: "customer_has_other_purchases",
+  /**
+   * The reference reached a subscription other than the one its checkout created: the claim's
+   * transaction belongs to another subscription, Paddle does not know it, or the claim has none.
+   * A seller's edit of the custom data, or a buyer's own checkout carrying a copied reference
+   * (threats T11, T12), must not use the claim (decision 0016).
+   */
+  NotThisCheckout: "not_this_checkout",
 } as const;
 export type ClaimRejectionReason = (typeof ClaimRejectionReason)[keyof typeof ClaimRejectionReason];
 /** Every claim rejection reason, as stored in audit details. */
@@ -47,6 +54,7 @@ export const CLAIM_REJECTION_REASONS = [
   ClaimRejectionReason.ConsumedByOtherCustomer,
   ClaimRejectionReason.AlreadyUsed,
   ClaimRejectionReason.CustomerHasOtherPurchases,
+  ClaimRejectionReason.NotThisCheckout,
 ] as const;
 
 /** The reasons a checkout reference (path 1) can be rejected for. */
@@ -57,6 +65,7 @@ export const CHECKOUT_REJECTION_REASONS = [
   ClaimRejectionReason.Expired,
   ClaimRejectionReason.ConsumedByOtherCustomer,
   ClaimRejectionReason.CustomerHasOtherPurchases,
+  ClaimRejectionReason.NotThisCheckout,
 ] as const;
 /** The reasons an emailed claim token (path 2) can be rejected for. */
 export const EMAIL_REJECTION_REASONS = [

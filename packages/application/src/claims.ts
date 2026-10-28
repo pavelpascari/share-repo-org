@@ -175,7 +175,13 @@ async function claimantSubjectId(
  * Applies the checkout reference a refresh found on a subscription (decision 0012, path 1). The
  * reference is untrusted (threat T11): it must parse, name a checkout claim of this workspace,
  * carry that claim's MAC (workspace, claim, user, offer), and the claim must be usable for this
- * customer. Then an unlinked customer is linked to the buyer's subject, consuming the claim in the
+ * customer. The claim's checkout transaction must belong to the subscription that carried the
+ * reference (decision 0016): a reference that reached another subscription, through a seller's
+ * edit of its custom data or a buyer's own checkout (threats T11, T12), or a claim with no
+ * transaction, is audited `claim.rejected` with `not_this_checkout` and the claim is not used.
+ * While the source has not yet named the transaction's subscription, nothing happens and a later
+ * refresh looks again. A claim this customer already used skips this check (renewals ask the
+ * source nothing). Then an unlinked customer is linked to the buyer's subject, consuming the claim in the
  * same batch, and audited `claim.completed`; anything else is audited `claim.rejected`. A customer
  * linked to another subject is never moved (threat T8): `claim.conflict`. A customer already
  * linked, to the buyer or to someone else, still uses up a claim it presents first (audited
@@ -242,6 +248,27 @@ export async function linkCheckoutReference(
   if (!verified) return reject(ClaimRejectionReason.SignatureInvalid, null);
   const usable = checkoutClaimUsable(claim, { now, customerId: customer.id });
   if (!usable.usable) return reject(usable.reason, claim.id);
+  // Only the subscription this claim's checkout created may use it (decision 0016): a reference
+  // copied onto another subscription, by the seller or through a buyer's own checkout, is
+  // rejected and uses up nothing, so it cannot burn the buyer's claim either. Checked before any
+  // link decision. A claim this customer already used was checked then: renewals ask nothing.
+  if (!usedByCustomer) {
+    const notThisCheckout = () => reject(ClaimRejectionReason.NotThisCheckout, claim.id);
+    if (claim.transactionId === null) return notThisCheckout();
+    const owner = await source.checkoutTransactionOwner({
+      workspaceId,
+      transactionId: claim.transactionId,
+    });
+    // The source has not named the transaction's subscription yet: nothing is linked, used or
+    // recorded, and the next refresh of an unlinked customer looks again.
+    if (owner.kind === "pending") return;
+    if (
+      owner.kind === "not_found" ||
+      owner.externalSubscriptionId !== reported.externalSubscriptionId
+    ) {
+      return notThisCheckout();
+    }
+  }
 
   const claimant = await claimantIn(ctx, workspaceId, claim.userId);
   const decision = decideCustomerLink({
