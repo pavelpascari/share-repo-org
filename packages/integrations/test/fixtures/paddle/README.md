@@ -20,6 +20,7 @@ builds the same state in `FakePaddle`, so these values and the fake must agree.
 | (same file, filtered) | `GET /subscriptions?customer_id=…&per_page=200`: the contract stub applies Paddle's `customer_id` filter to `subscriptions-page-1.json` |
 | `customers.json` | `GET /customers?email=jo%40example.com&per_page=200` |
 | `customer.json` | `GET /customers/{id}` |
+| `transaction.json` | `GET /transactions/{id}` for a completed checkout: `subscription_id` names the subscription it created. **A sanitised sandbox recording** (2026-10-28, the [reference-origin spike](../../../../../docs/research/paddle-reference-origin-spike.md)'s transaction): IDs, names, invoice number, payment and card details replaced with fictional values, `custom_data.sharerepo_claim` with the placeholder reference |
 | `transaction-created.json` | `POST /transactions` → 201, `checkout.url` on the default payment link |
 | `notification-setting-created.json` | `POST /notification-settings` → 201 (also served for `GET /notification-settings/{id}`), with a fictional `endpoint_secret_key` |
 | `notification-settings.json` | `GET /notification-settings?per_page=200`: ShareRepo's destination and another app's inactive one, each with its `endpoint_secret_key` (never kept) |

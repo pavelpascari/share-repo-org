@@ -1,0 +1,204 @@
+{
+  "data": {
+    "id": "txn_01jcheckout000000000000001",
+    "status": "completed",
+    "customer_id": "ctm_01jjo000000000000000000001",
+    "address_id": "add_01jjo000000000000000000001",
+    "business_id": null,
+    "custom_data": {
+      "sharerepo_claim": "v1.ckc_fixture.mac"
+    },
+    "origin": "api",
+    "collection_mode": "automatic",
+    "subscription_id": "sub_01jcourse00000000000000001",
+    "invoice_id": "inv_01jinvoice0000000000000001",
+    "invoice_number": "325-10001",
+    "billing_details": null,
+    "billing_period": {
+      "starts_at": "2026-10-28T22:19:13.365116Z",
+      "ends_at": "2026-11-28T22:19:13.365116Z"
+    },
+    "currency_code": "EUR",
+    "discount_id": null,
+    "created_at": "2026-10-28T22:18:45.688154Z",
+    "updated_at": "2026-10-28T22:19:14.853633Z",
+    "revised_at": null,
+    "billed_at": "2026-10-28T22:19:13.677625Z",
+    "items": [
+      {
+        "price": {
+          "id": "pri_01jmonthly0000000000000001",
+          "description": "Monthly",
+          "type": "standard",
+          "name": "Monthly",
+          "product_id": "pro_01jcourse00000000000000001",
+          "billing_cycle": {
+            "interval": "month",
+            "frequency": 1
+          },
+          "trial_period": {
+            "interval": "month",
+            "frequency": 1,
+            "requires_payment_method": true,
+            "unit_price": {
+              "amount": "1000",
+              "currency_code": "EUR"
+            }
+          },
+          "tax_mode": "location",
+          "unit_price": {
+            "amount": "1000",
+            "currency_code": "EUR"
+          },
+          "unit_price_overrides": [],
+          "custom_data": null,
+          "quantity": {
+            "minimum": 1,
+            "maximum": 999999
+          },
+          "status": "active",
+          "created_at": "2026-10-28T22:05:38.944Z",
+          "updated_at": "2026-10-28T22:05:38.944Z",
+          "import_meta": null
+        },
+        "quantity": 1,
+        "proration": null
+      }
+    ],
+    "details": {
+      "tax_rates_used": [
+        {
+          "tax_rate": "0.19",
+          "totals": {
+            "subtotal": "840",
+            "discount": "0",
+            "tax": "160",
+            "total": "1000"
+          }
+        }
+      ],
+      "totals": {
+        "subtotal": "840",
+        "tax": "160",
+        "discount": "0",
+        "total": "1000",
+        "grand_total": "1000",
+        "grand_total_tax": "160",
+        "fee": "95",
+        "credit": "0",
+        "credit_to_balance": "0",
+        "balance": "0",
+        "earnings": "745",
+        "currency_code": "EUR",
+        "exchange_rate": "1"
+      },
+      "adjusted_totals": {
+        "subtotal": "840",
+        "tax": "160",
+        "total": "1000",
+        "grand_total": "1000",
+        "grand_total_tax": "160",
+        "fee": "95",
+        "retained_fee": "0",
+        "earnings": "745",
+        "currency_code": "EUR"
+      },
+      "payout_totals": {
+        "subtotal": "918",
+        "tax": "175",
+        "discount": "0",
+        "total": "1093",
+        "credit": "0",
+        "credit_to_balance": "0",
+        "balance": "0",
+        "grand_total": "1093",
+        "grand_total_tax": "175",
+        "fee": "104",
+        "fee_rate": "0.05",
+        "earnings": "814",
+        "currency_code": "USD",
+        "exchange_rate": "1.09321254"
+      },
+      "adjusted_payout_totals": {
+        "subtotal": "918",
+        "tax": "175",
+        "total": "1093",
+        "fee": "104",
+        "retained_fee": "0",
+        "chargeback_fee": {
+          "amount": "0",
+          "original": null
+        },
+        "earnings": "814",
+        "currency_code": "USD",
+        "exchange_rate": "1.09321254"
+      },
+      "line_items": [
+        {
+          "id": "txnitm_01jline0000000000000000001",
+          "price_id": "pri_01jmonthly0000000000000001",
+          "quantity": 1,
+          "totals": {
+            "subtotal": "840",
+            "tax": "160",
+            "discount": "0",
+            "total": "1000"
+          },
+          "product": {
+            "id": "pro_01jcourse00000000000000001",
+            "name": "Course code",
+            "description": null,
+            "type": "standard",
+            "tax_category": "standard",
+            "image_url": null,
+            "custom_data": null,
+            "status": "active",
+            "import_meta": null,
+            "created_at": "2026-10-28T22:04:22.438Z",
+            "updated_at": "2026-10-28T22:04:22.438Z"
+          },
+          "tax_rate": "0.19",
+          "unit_totals": {
+            "subtotal": "840",
+            "tax": "160",
+            "discount": "0",
+            "total": "1000"
+          },
+          "proration": null
+        }
+      ]
+    },
+    "payments": [
+      {
+        "payment_attempt_id": "00000000-0000-4000-8000-000000000001",
+        "stored_payment_method_id": "00000000-0000-4000-8000-000000000002",
+        "payment_method_id": "paymtd_01jpayment0000000000000001",
+        "amount": "1000",
+        "status": "captured",
+        "error_code": null,
+        "method_details": {
+          "type": "card",
+          "underlying_details": null,
+          "south_korea_local_card": null,
+          "card": {
+            "type": "visa",
+            "last4": "4242",
+            "expiry_month": 1,
+            "expiry_year": 2030,
+            "cardholder_name": "Jo Example"
+          },
+          "paypal": null
+        },
+        "created_at": "2026-10-28T22:19:11.688259Z",
+        "captured_at": "2026-10-28T22:19:13.365116Z"
+      }
+    ],
+    "checkout": {
+      "url": "https://octo.example/pay?_ptxn=txn_01jcheckout000000000000001"
+    },
+    "receipt_data": null
+  },
+  "meta": {
+    "request_id": "6c3f9d2b-4e5a-4f7b-8c8d-1e2f3a4b5c6d"
+  }
+}

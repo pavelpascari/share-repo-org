@@ -25,6 +25,7 @@ export const SUB_JO = "sub_01jcourse00000000000000001";
 export const SUB_SAM = "sub_01jcourse00000000000000002";
 export const UNKNOWN_SUB = "sub_01jcourse00000000000000099";
 export const UNKNOWN_CUSTOMER = "ctm_01jnobody00000000000000099";
+export const UNKNOWN_TRANSACTION = "txn_01jnobody00000000000000099";
 export const UNKNOWN_SETTING = "ntfset_01jnobody00000000000000099";
 export const CLAIM_REFERENCE = "v1.ckc_fixture.mac";
 export const PAYMENT_LINK = "https://octo.example/pay";

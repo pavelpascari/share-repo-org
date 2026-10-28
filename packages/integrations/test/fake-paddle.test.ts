@@ -190,6 +190,39 @@ describe("fake Paddle catalog, customers and checkout", () => {
     expect(() => w.fake.transaction("txn_nope")).toThrow(/unknown transaction/);
   });
 
+  it("reads a transaction: no subscription until the checkout completes, then the one it created", async () => {
+    const w = world();
+    const { id } = await w.fake.createTransaction({
+      priceId: w.price.id,
+      customData: { sharerepo_claim: "v1.ref" },
+    });
+    await expect(w.fake.getTransaction(id)).resolves.toEqual({ id, subscriptionId: null });
+    const sub = w.fake.completeCheckout(id, { customerId: w.customer.id });
+    await expect(w.fake.getTransaction(id)).resolves.toEqual({ id, subscriptionId: sub.id });
+    // A subscription created any other way, or given the reference later, is not the transaction's.
+    w.fake.createSubscription({ customerId: w.customer.id, priceIds: [w.price.id] });
+    await expect(w.fake.getTransaction(id)).resolves.toEqual({ id, subscriptionId: sub.id });
+    const unknown = `txn_${"0".repeat(25)}9`;
+    expect((await failure(w.fake.getTransaction(unknown))).kind).toBe("not_found");
+    expect((await failure(w.fake.getTransaction("txn_nope"))).kind).toBe("rejected");
+  });
+
+  it("leaves a completed transaction's subscription unset while pending, until settled", async () => {
+    const w = world();
+    const { id } = await w.fake.createTransaction({ priceId: w.price.id, customData: { a: "b" } });
+    const sub = w.fake.completeCheckout(id, {
+      customerId: w.customer.id,
+      transactionPending: true,
+    });
+    await expect(w.fake.getTransaction(id)).resolves.toEqual({ id, subscriptionId: null });
+    expect(() => w.fake.completeCheckout(id, { customerId: w.customer.id })).toThrow(
+      /already completed/,
+    );
+    w.fake.settleTransaction(id);
+    await expect(w.fake.getTransaction(id)).resolves.toEqual({ id, subscriptionId: sub.id });
+    expect(() => w.fake.settleTransaction(id)).toThrow(/not pending/);
+  });
+
   it("refuses subscriptions it cannot create", () => {
     const { fake, price, customer } = world();
     const oneTime = fake.addPrice({ billingCycle: null });

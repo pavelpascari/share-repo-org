@@ -31,6 +31,7 @@ import prices1 from "./fixtures/paddle/prices-page-1.json";
 import prices2 from "./fixtures/paddle/prices-page-2.json";
 import subscription from "./fixtures/paddle/subscription.json";
 import subscriptions from "./fixtures/paddle/subscriptions-page-1.json";
+import checkoutTransaction from "./fixtures/paddle/transaction.json";
 import transaction from "./fixtures/paddle/transaction-created.json";
 import webhookBody from "./fixtures/paddle/webhook-subscription-updated.json";
 import {
@@ -53,6 +54,7 @@ import {
   UNKNOWN_CUSTOMER,
   UNKNOWN_SETTING,
   UNKNOWN_SUB,
+  UNKNOWN_TRANSACTION,
 } from "./support/paddle.ts";
 import { jsonResponse, on, stubFetch } from "./support/stub-fetch.ts";
 
@@ -65,6 +67,8 @@ const PERIOD_END = Date.parse("2026-11-01T09:00:00Z");
 
 interface Subject {
   readonly port: PaddlePort;
+  /** The transaction of Jo's checkout, which created `SUB_JO`. */
+  readonly checkoutTransactionId: string;
   /** The key is revoked or expired: Paddle answers 403. */
   revokeKey(): void;
   /** The next call of `operation` is rate limited, with `Retry-After: 30`. */
@@ -99,13 +103,14 @@ async function seededFake() {
   fake.scheduleCancel(SUB_JO);
   clock.set(NOW);
   fake.markPastDue(SUB_SAM);
-  return { fake, clock };
+  return { fake, clock, checkoutTransactionId: id };
 }
 
 async function fakePort(): Promise<Subject> {
-  const { fake } = await seededFake();
+  const { fake, checkoutTransactionId } = await seededFake();
   return {
     port: fake,
+    checkoutTransactionId,
     revokeKey: () => fake.revokeKey(),
     rateLimitNext: (operation) =>
       fake.failNext(operation, "rate_limited", { retryAfterMs: 30_000 }),
@@ -169,6 +174,9 @@ function realPort(): Subject {
         : jsonResponse(200, { ...customers, data: [] });
     },
     on("GET", `/customers/${CUSTOMER_JO.id}`, () => jsonResponse(200, customer)),
+    on("GET", `/transactions/${checkoutTransaction.data.id}`, () =>
+      jsonResponse(200, checkoutTransaction),
+    ),
     on("POST", "/transactions", () =>
       paymentLink ? jsonResponse(201, transaction) : jsonResponse(400, paymentLinkError),
     ),
@@ -202,6 +210,7 @@ function realPort(): Subject {
       fetch,
       clock: new FakeClock(NOW),
     }),
+    checkoutTransactionId: checkoutTransaction.data.id,
     revokeKey: () => {
       revoked = true;
     },
@@ -289,6 +298,7 @@ describe.each([
     const calls = [
       port.getSubscription("../sub"),
       port.getCustomer("ctm_UPPER"),
+      port.getTransaction("txn_../x"),
       port.getNotificationSetting("ntfset_1"),
       port.deleteNotificationSetting("../x"),
       port.createTransaction({ priceId: "pri_x", customData: { a: "b" } }),
@@ -338,6 +348,18 @@ describe.each([
     await expect(port.listCustomersByEmail(CUSTOMER_JO.email)).resolves.toEqual([CUSTOMER_JO]);
     await expect(port.listCustomersByEmail("nobody@example.com")).resolves.toEqual([]);
     await expect(port.getCustomer(CUSTOMER_JO.id)).resolves.toEqual(CUSTOMER_JO);
+  });
+
+  it("reads a checkout's transaction, naming the subscription it created", async () => {
+    const { port, checkoutTransactionId } = await make();
+    await expect(port.getTransaction(checkoutTransactionId)).resolves.toEqual({
+      id: checkoutTransactionId,
+      subscriptionId: SUB_JO,
+    });
+    expect(await failure(port.getTransaction(UNKNOWN_TRANSACTION))).toMatchObject({
+      kind: "not_found",
+      status: 404,
+    });
   });
 
   it("creates a transaction whose checkout opens on the default payment link", async () => {
@@ -447,6 +469,7 @@ describe.each([
     "getSubscription",
     "listSubscriptions",
     "listCustomerSubscriptions",
+    "getTransaction",
     "createNotificationSetting",
     "listNotificationSettings",
   ] as const)("reports a rate limit on %s with the delay before retrying", async (operation) => {
@@ -458,6 +481,7 @@ describe.each([
       getSubscription: () => port.getSubscription(SUB_JO),
       listSubscriptions: () => port.listSubscriptions(),
       listCustomerSubscriptions: () => port.listCustomerSubscriptions(CUSTOMER_JO.id),
+      getTransaction: () => port.getTransaction(UNKNOWN_TRANSACTION),
       listNotificationSettings: () => port.listNotificationSettings(),
       createNotificationSetting: () =>
         port.createNotificationSetting({
