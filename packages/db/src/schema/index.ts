@@ -21,6 +21,7 @@ export {
 export { connectionIntents, connections } from "./connections.ts";
 export { externalEvents, outbox } from "./events.ts";
 export { externalIdentities } from "./identities.ts";
+export { manualAccesses } from "./manual.ts";
 export { paddleConnections, paddlePrices } from "./paddle.ts";
 export { resources } from "./resources.ts";
 export { simulatedSubscriptions } from "./simulation.ts";

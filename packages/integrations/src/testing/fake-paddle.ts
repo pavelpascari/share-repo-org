@@ -65,6 +65,7 @@ const REQUIRED_PERMISSION: Record<FakePaddleOperation, string | null> = {
   listCustomerSubscriptions: "subscription.read",
   listCustomersByEmail: "customer.read",
   getCustomer: "customer.read",
+  getTransaction: "transaction.read",
   createTransaction: "transaction.write",
   createNotificationSetting: "notification_setting.write",
   getNotificationSetting: "notification_setting.read",
@@ -170,12 +171,19 @@ export interface FakePaddle extends PaddlePort {
   /**
    * The buyer pays: the subscription is created from the transaction, its custom data copied. The
    * buyer is an existing customer (`customerId`), or enters an `email` at checkout: as Paddle
-   * does, an existing customer with exactly that email is reused, else one is created now.
+   * does, an existing customer with exactly that email is reused, else one is created now. The
+   * transaction then names the subscription (`getTransaction`), unless `transactionPending`: it
+   * reads `subscription_id: null` until `settleTransaction`, as in the moment before Paddle sets it.
    */
   completeCheckout(
     transactionId: string,
-    input: FakeCheckoutBuyer & { readonly subscriptionId?: string },
+    input: FakeCheckoutBuyer & {
+      readonly subscriptionId?: string;
+      readonly transactionPending?: boolean;
+    },
   ): PaddleSubscription;
+  /** A transaction completed with `transactionPending` now names its subscription. */
+  settleTransaction(transactionId: string): void;
   /** A subscription created outside a ShareRepo checkout (for example a shared Paddle link). */
   createSubscription(input: FakeSubscriptionInput): PaddleSubscription;
   /** Trial ends or a past-due payment succeeds: `active`, with a period starting now. */
@@ -337,6 +345,8 @@ export function createFakePaddle(options: FakePaddleOptions = {}): FakePaddle {
   const customers = new Map<string, PaddleCustomer>();
   const subscriptions = new Map<string, WireSubscription>();
   const transactions = new Map<string, FakeTransaction>();
+  /** Completed with `transactionPending`: transaction → the subscription it created. */
+  const pendingTransactions = new Map<string, string>();
   const settings = new Map<string, Setting>();
   const counters = new Map<string, number>();
   const idSeed = options.idSeed ?? "";
@@ -590,6 +600,14 @@ export function createFakePaddle(options: FakePaddleOptions = {}): FakePaddle {
       return { ...customer };
     },
 
+    async getTransaction(transactionId) {
+      paddleId("txn", transactionId);
+      begin("getTransaction");
+      const transaction = transactions.get(transactionId);
+      if (transaction === undefined) throw notFound("get transaction");
+      return { id: transaction.id, subscriptionId: transaction.subscriptionId };
+    },
+
     async createTransaction({ priceId, customData }) {
       paddleId("pri", priceId);
       const body = customDataBody(customData);
@@ -696,9 +714,9 @@ export function createFakePaddle(options: FakePaddleOptions = {}): FakePaddle {
       return structuredClone(found);
     },
 
-    completeCheckout(transactionId, { subscriptionId, ...buyer }) {
+    completeCheckout(transactionId, { subscriptionId, transactionPending, ...buyer }) {
       const transaction = fake.transaction(transactionId);
-      if (transaction.subscriptionId !== null) {
+      if (transaction.subscriptionId !== null || pendingTransactions.has(transactionId)) {
         throw new Error(`fake: transaction ${transactionId} is already completed`);
       }
       const customerId =
@@ -712,8 +730,18 @@ export function createFakePaddle(options: FakePaddleOptions = {}): FakePaddle {
         priceIds: [transaction.priceId],
         customData: { ...transaction.customData },
       });
-      transactions.set(transactionId, { ...transaction, subscriptionId: created.id });
+      if (transactionPending === true) pendingTransactions.set(transactionId, created.id);
+      else transactions.set(transactionId, { ...transaction, subscriptionId: created.id });
       return created;
+    },
+
+    settleTransaction(transactionId) {
+      const subscriptionId = pendingTransactions.get(transactionId);
+      if (subscriptionId === undefined) {
+        throw new Error(`fake: transaction ${transactionId} is not pending`);
+      }
+      pendingTransactions.delete(transactionId);
+      transactions.set(transactionId, { ...fake.transaction(transactionId), subscriptionId });
     },
 
     createSubscription: create,

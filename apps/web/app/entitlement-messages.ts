@@ -17,6 +17,9 @@ import type {
   SubscriptionState,
 } from "@sharerepo/domain";
 
+/** Where an entitlement comes from: a subscription's source, or an owner's manual access. */
+type AccessSource = CommercialSource | "manual";
+
 // User-facing copy for the offers, access and simulator pages. Every map is total over its codes
 // (the Record types make a missing code a type error), so a raw code is never shown alone.
 // The language is repository-centric: "repository" and "subscriber", never "resource" or "subject".
@@ -104,6 +107,9 @@ const ACCESS_REASONS: Record<AccessDecisionReason, string> = {
   subscription_missing: "Subscription no longer found",
   workspace_deleted: "Workspace being deleted",
   account_deleted: "Subscriber deleted their account",
+  manual: "Manual access, granted by an owner",
+  manual_ended: "Manual access ended on its end date",
+  manual_revoked: "Manual access revoked by an owner",
 };
 
 /** Human text for a stored decision reason; an unrecognized one still reads as a sentence. */
@@ -157,9 +163,13 @@ const WAITS: Partial<Record<ReconciliationReason, string>> = {
   expiry_pending: "Ending: confirming the subscription",
 };
 
-/** An expiry-pending wait names Paddle when Paddle is the source it confirms with (0013). */
-const EXPIRY_PENDING_WITH: Partial<Record<CommercialSource, string>> = {
+/**
+ * An expiry-pending wait names Paddle when Paddle is the source it confirms with (0013); a manual
+ * access needs no confirmation, and its end is recorded at the next minute's sweep (0016).
+ */
+const EXPIRY_PENDING_WITH: Partial<Record<AccessSource, string>> = {
   paddle: "Ending: confirming with Paddle",
+  manual: "Ending: the end date passed",
 };
 
 /**
@@ -172,7 +182,7 @@ export function plannedActionText(
   action: ReconciliationAction,
   reason: ReconciliationReason,
   retryAt: number | null = null,
-  source: CommercialSource | null = null,
+  source: AccessSource | null = null,
 ): { label: string; detail: string } {
   const why = PLANNED_REASONS[reason];
   let label = PLANNED_ACTIONS[action];

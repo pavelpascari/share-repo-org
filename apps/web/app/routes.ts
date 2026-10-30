@@ -32,6 +32,7 @@ export default [
       route("simulator", "routes/w.$slug.simulator.tsx"),
       route("billing", "routes/w.$slug.billing.tsx"),
       route("customers", "routes/w.$slug.customers.tsx"),
+      route("manual-access", "routes/w.$slug.manual-access.tsx"),
     ]),
   ]),
 ] satisfies RouteConfig;

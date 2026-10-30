@@ -24,6 +24,8 @@ import {
   toPrice,
   toSubscription,
   toSubscriptionSummary,
+  toTransactionDetails,
+  transactionReadSchema,
   transactionSchema,
 } from "./wire.ts";
 
@@ -196,6 +198,12 @@ export function createPaddleClient(options: PaddleClientOptions): PaddlePort {
       const path = `/customers/${paddleId("ctm", customerId)}`;
       const body = await read("get customer", single(customerSchema), "GET", path);
       return toCustomer(body.data);
+    },
+
+    async getTransaction(transactionId) {
+      const path = `/transactions/${paddleId("txn", transactionId)}`;
+      const body = await read("get transaction", single(transactionReadSchema), "GET", path);
+      return toTransactionDetails(body.data);
     },
 
     async createTransaction({ priceId, customData }) {

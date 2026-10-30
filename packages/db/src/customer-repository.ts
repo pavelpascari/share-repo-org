@@ -113,6 +113,50 @@ export async function listCustomersWithLinks(
   }));
 }
 
+/**
+ * How a customer's current link was made, from the audit trail (decision 0016): a checkout
+ * reference (`checkout`, path 1), an emailed claim (`email`, path 2), an owner's manual link
+ * (`manual`, path 3), or the source itself (`source`: the simulator names its subscriber).
+ */
+export type CustomerLinkVia = "checkout" | "email" | "manual" | "source";
+
+/**
+ * The way each customer of the workspace was last linked, by customer ID, read from its audit
+ * events: the latest `claim.completed`, `customer.relinked`, `customer.linked_manually`, or
+ * system `customer.linked` to a subject. A customer whose latest such event unlinked it, or that
+ * has none, is absent. Audit events are append-only, so this cannot be rewritten after the fact.
+ */
+export async function listCustomerLinkPaths(
+  db: Db,
+  workspaceId: string,
+): Promise<Map<string, CustomerLinkVia>> {
+  const rows = await db.all<{ target_id: string; action: string; path: string | null }>(
+    sql`SELECT target_id, action,
+        CASE WHEN action IN ('claim.completed', 'customer.relinked')
+          THEN json_extract(details, '$.path')
+          WHEN action = 'customer.linked' AND json_extract(details, '$.subjectId') IS NULL
+          THEN 'unlinked' END AS path
+      FROM audit_events
+      WHERE workspace_id = ${workspaceId} AND target_type = 'customer'
+        AND action IN ('claim.completed', 'customer.relinked', 'customer.linked_manually',
+          'customer.linked', 'customer.unlinked_manually')
+      ORDER BY occurred_at, rowid`,
+  );
+  const via = new Map<string, CustomerLinkVia>();
+  for (const row of rows) {
+    if (row.action === "customer.unlinked_manually" || row.path === "unlinked") {
+      via.delete(row.target_id);
+    } else if (row.action === "customer.linked_manually") {
+      via.set(row.target_id, "manual");
+    } else if (row.action === "customer.linked") {
+      via.set(row.target_id, "source");
+    } else {
+      via.set(row.target_id, row.path as CustomerLinkVia);
+    }
+  }
+  return via;
+}
+
 export type ApplyCustomerLinkResult =
   | { ok: true }
   /**
@@ -144,7 +188,8 @@ export async function applyCustomerLink(
     workspaceId: string;
     customerId: string;
     expectedSubjectId: string | null;
-    subjectId: string;
+    /** The subject to link to, or null to unlink (an owner removing a link, decision 0016). */
+    subjectId: string | null;
     now: Instant;
     makeRefreshRow: (subscription: {
       source: CommercialSource;

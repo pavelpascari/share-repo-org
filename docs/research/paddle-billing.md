@@ -170,7 +170,7 @@ Sources:
 
 | Event | When |
 |---|---|
-| `subscription.created` | When an automatically-collected transaction completes, or a manually-collected one is billed. Only this event carries `transaction_id`. |
+| `subscription.created` | When an automatically-collected transaction completes, or a manually-collected one is billed. Of the subscription events, only this one carries `transaction_id`; the subscription entity names no transaction. The other direction is readable: the transaction entity (`GET /transactions/{id}`) carries `subscription_id` once the subscription exists. The sandbox spike (2026-10-28, [paddle-reference-origin-spike.md](paddle-reference-origin-spike.md)) found it set when read right after `subscription.created`, which arrives before `transaction.completed`. |
 | `subscription.trialing` / `subscription.activated` | Enters trial / becomes `active`: any trial has ended and Paddle has billed the customer. |
 | `subscription.updated` | Any change: items, scheduled change created or removed, billing period, and status changes that have no dedicated event. It may follow a lifecycle event immediately. |
 | `subscription.past_due` | The subscription has an unpaid transaction. |

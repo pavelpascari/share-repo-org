@@ -16,7 +16,7 @@ test("an owner exports the workspace as a JSON file", async ({ page }) => {
     formatVersion: number;
     workspace: { slug: string; name: string };
   };
-  expect(document.formatVersion).toBe(1);
+  expect(document.formatVersion).toBe(2);
   expect(document.workspace).toEqual(expect.objectContaining({ slug, name: "Exported" }));
 });
 

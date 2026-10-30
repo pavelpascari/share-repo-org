@@ -55,6 +55,14 @@ How a customer becomes linked to a subject ([decision 0012](decisions/0012-purch
 
 Each path is audited. A link queues a refresh of the customer's subscriptions, so entitlements follow it.
 
+An owner can also remove a link, whichever path made it, with a reason (`customer.unlinked_manually`, [decision 0016](decisions/0016-manual-access-source.md)). The Customers page shows how each link was made, read from the audit trail. A checkout claim the customer already used never links it again; paths 2 and 3 can.
+
+### Manual access
+
+An owner's grant of an offer's repositories to a subject, with no customer or subscription ([decision 0016](decisions/0016-manual-access-source.md)). It has an optional end date (a UTC instant), an optional note, and can be revoked. It is an entitlement source of its own: its entitlements have `sourceType` `manual`. Its status is derived: `active`, `ended` (the end date passed; a later end date grants it again) or `revoked` (final).
+
+Not to be confused with a manual customer link (claim path 3): that links a Paddle customer, and access still follows its subscriptions.
+
 ### Subscription
 
 The normalized commercial agreement observed from an entitlement source. It records facts such as provider state, billing period, cancellation timing, and customer. It does not itself represent repository access.
@@ -222,14 +230,25 @@ Subscription
   cancelAt
   lastObservedAt
 
+ManualAccess     (decision 0016)
+  id
+  workspaceId
+  offerId
+  subjectId
+  endsAt
+  note
+  revokedAt
+  revokeCause
+  nextEvaluationAt
+
 Entitlement
   id
   workspaceId
   subjectId
   resourceId
   accessLevel
-  sourceType
-  sourceId
+  sourceType       (subscription | manual)
+  sourceId         (the subscription or the manual access)
   policyVersion
   state
   validFrom
@@ -287,21 +306,22 @@ Provider-specific details can live in validated metadata or integration tables w
 3. Provider identities use immutable provider IDs; usernames and emails are snapshots.
 4. A connection is authorized independently from any user's login identity.
 5. An external event is unique by provider and stable provider event ID within the relevant connection scope.
-6. An entitlement always explains its source, policy version, validity, subject, resource, and access level.
+6. An entitlement always explains its source, policy version, validity, subject, resource, and access level. Its source is a subscription or a manual access (`sourceType` `subscription` or `manual`), each checked by its own composite foreign key.
 7. A grant never creates an entitlement. Provider state cannot become commercial truth.
 8. Access mutations are derived from a reconciliation plan, not directly from webhook event names.
 9. Revocation timing follows policy and effective dates, not receipt time alone.
 10. Audit history is append-only; corrections are represented by later events. The one exception is a workspace's purge: its audit events are deleted while it is `purging`, and an account-scoped tombstone records the counts (decision 0015).
 11. Removal of a user-facing account does not silently destroy records required for access repair or legitimate audit retention.
 12. Only supported provider capabilities can be selected for an offer.
+13. A subject has at most one open (not revoked) manual access per offer. Its terms (end date, revocation) are changed only by a workspace owner, or revoked by the account holder's account deletion; every change is audited with the actor. The system only re-plans its entitlements.
 
 ## State sketches
 
 ### Entitlement
 
 ```text
-active -> expired    (validity ended: grace ran out, cancellation took effect, subscription expired)
-active -> revoked    (the source stopped mapping it: paused, offer access removed or archived, customer unlinked, subscription gone)
+active -> expired    (validity ended: grace ran out, cancellation took effect, subscription expired, a manual access's end date passed)
+active -> revoked    (the source stopped mapping it: paused, offer access removed or archived, customer unlinked, subscription gone, manual access revoked)
 ```
 
 Stored states are only `active`, `expired` and `revoked` ([decision 0009](decisions/0009-entitlement-policy-v1.md)):
@@ -366,6 +386,7 @@ Do not grant repository access from an unverified email match alone. The simulat
 - A customer ShareRepo recorded before the claim was created is refused at once.
 - Otherwise ShareRepo lists the customer's subscriptions for every status. The list must include the subscription that carried the reference and every subscription ShareRepo stores for the customer. An empty list, or one cut short at the page cap, is refused.
 - A refusal is audited as `claim.rejected` with `customer_has_other_purchases`. The buyer can still claim by email (path 2).
+- Before that, and before any link decision, a claim's first use requires its checkout transaction to belong to the subscription that carried the reference (decision 0016). A reference that reached another subscription, by a seller's edit or a buyer's own Paddle.js checkout, is `claim.rejected` with `not_this_checkout` and uses up nothing. While Paddle has not yet set the transaction's subscription, nothing happens until a later refresh.
 - If Paddle cannot be read, nothing is linked or refused, and the refresh is retried.
 - Once linked, a customer stays linked: renewals need no new check. Path 1 never moves an existing link (`claim.conflict`); paths 2 and 3 do.
 

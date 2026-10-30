@@ -26,7 +26,6 @@ import {
 } from "@sharerepo/domain";
 import {
   CLAIM_REFERENCE_KEY,
-  GitHubApiError,
   type GitHubAppPort,
   type MailPort,
   PaddleApiError,
@@ -61,6 +60,7 @@ import {
   type ClaimRequestRef,
   encodeClaimRequestKey,
 } from "./entitlement-source.ts";
+import { resolveGitHubAccount } from "./github-accounts.ts";
 import {
   activePaddleConnection,
   type CatalogPrice,
@@ -175,7 +175,13 @@ async function claimantSubjectId(
  * Applies the checkout reference a refresh found on a subscription (decision 0012, path 1). The
  * reference is untrusted (threat T11): it must parse, name a checkout claim of this workspace,
  * carry that claim's MAC (workspace, claim, user, offer), and the claim must be usable for this
- * customer. Then an unlinked customer is linked to the buyer's subject, consuming the claim in the
+ * customer. The claim's checkout transaction must belong to the subscription that carried the
+ * reference (decision 0016): a reference that reached another subscription, through a seller's
+ * edit of its custom data or a buyer's own checkout (threats T11, T12), or a claim with no
+ * transaction, is audited `claim.rejected` with `not_this_checkout` and the claim is not used.
+ * While the source has not yet named the transaction's subscription, nothing happens and a later
+ * refresh looks again. A claim this customer already used skips this check (renewals ask the
+ * source nothing). Then an unlinked customer is linked to the buyer's subject, consuming the claim in the
  * same batch, and audited `claim.completed`; anything else is audited `claim.rejected`. A customer
  * linked to another subject is never moved (threat T8): `claim.conflict`. A customer already
  * linked, to the buyer or to someone else, still uses up a claim it presents first (audited
@@ -242,6 +248,27 @@ export async function linkCheckoutReference(
   if (!verified) return reject(ClaimRejectionReason.SignatureInvalid, null);
   const usable = checkoutClaimUsable(claim, { now, customerId: customer.id });
   if (!usable.usable) return reject(usable.reason, claim.id);
+  // Only the subscription this claim's checkout created may use it (decision 0016): a reference
+  // copied onto another subscription, by the seller or through a buyer's own checkout, is
+  // rejected and uses up nothing, so it cannot burn the buyer's claim either. Checked before any
+  // link decision. A claim this customer already used was checked then: renewals ask nothing.
+  if (!usedByCustomer) {
+    const notThisCheckout = () => reject(ClaimRejectionReason.NotThisCheckout, claim.id);
+    if (claim.transactionId === null) return notThisCheckout();
+    const owner = await source.checkoutTransactionOwner({
+      workspaceId,
+      transactionId: claim.transactionId,
+    });
+    // The source has not named the transaction's subscription yet: nothing is linked, used or
+    // recorded, and the next refresh of an unlinked customer looks again.
+    if (owner.kind === "pending") return;
+    if (
+      owner.kind === "not_found" ||
+      owner.externalSubscriptionId !== reported.externalSubscriptionId
+    ) {
+      return notThisCheckout();
+    }
+  }
 
   const claimant = await claimantIn(ctx, workspaceId, claim.userId);
   const decision = decideCustomerLink({
@@ -249,6 +276,10 @@ export async function linkCheckoutReference(
     proposedSubjectId: claimant.subjectId,
     path: LinkPath.Checkout,
   });
+  // The customer used this claim before and has been unlinked since, by an owner (decision 0016)
+  // or an account deletion (decision 0015): a used claim never links again, so nothing is asked
+  // of Paddle. An emailed claim or a manual link can link it.
+  if (decision === CustomerLinkDecision.Link && usable.renewal) return;
   // A customer that is already linked uses up the claim it first presents, as a link would: a
   // leaked copy of the reference must never link another customer to the claimant later.
   const useUp = (event: AuditEvent) =>
@@ -1059,24 +1090,12 @@ export async function linkCustomerManually(
   const fail = (error: ManualLinkError) => ({ ok: false, error }) as const;
   const reason = input.reason.trim();
   if (reason === "" || reason.length > REASON_MAX_LENGTH) return fail("reason_required");
-  const login = parseGitHubLogin(input.githubLogin.trim());
-  if (!login.ok) return fail("login_invalid");
+  if (!parseGitHubLogin(input.githubLogin.trim()).ok) return fail("login_invalid");
   const customer = await repo.getCustomer(ctx.db, { workspaceId, customerId: input.customerId });
   if (customer === null) throw new NotFoundError("customer not found in workspace");
-  const connection = (await repo.listConnectionsForWorkspace(ctx.db, workspaceId)).find(
-    (candidate) => candidate.status === "active",
-  );
-  if (connection === undefined) return fail("connection_missing");
-  let user: Awaited<ReturnType<GitHubAppPort["getUserByLogin"]>>;
-  try {
-    user = await deps.github.getUserByLogin(connection.installationId, login.value);
-  } catch (error) {
-    if (error instanceof GitHubApiError && error.kind === "not_found") {
-      return fail("login_not_found");
-    }
-    throw error;
-  }
-  if (user.type !== "User") return fail("account_not_user");
+  const resolved = await resolveGitHubAccount(ctx, workspaceId, input.githubLogin, deps.github);
+  if (!resolved.ok) return fail(resolved.error);
+  const user = resolved.account;
 
   const by = asAuditActor(actor);
   const subject = await subjectFor(
@@ -1110,6 +1129,58 @@ export async function linkCustomerManually(
   return { ok: true, outcome: "linked" };
 }
 
+export type ManualUnlinkResult =
+  | { readonly ok: true; readonly outcome: "unlinked" | "already_unlinked" }
+  | { readonly ok: false; readonly error: "reason_required" };
+
+/**
+ * Removes a customer's link by hand (decision 0016), whichever path made it, for example a link a
+ * creator made through a checkout reference, or one a buyer made for someone else's purchase.
+ * Needs `workspace.manage` and a reason. Its subscriptions are refreshed, so their entitlements
+ * end (`customer_unlinked`) and reconciliation removes the access. The checkout claim the customer
+ * used never links it again; the payer can claim by email (path 2), or an owner can link it (path
+ * 3). Audited `customer.unlinked_manually` with the actor, the reason and the previous subject.
+ */
+export async function unlinkCustomerManually(
+  context: ServiceContext,
+  actor: UserActor,
+  slug: string,
+  input: { readonly customerId: string; readonly reason: string },
+): Promise<ManualUnlinkResult> {
+  const ctx = atOneInstant(context);
+  const { scope } = await openWorkspace(ctx, actor, slug, "workspace.manage");
+  const { workspaceId } = scope;
+  const reason = input.reason.trim();
+  if (reason === "" || reason.length > REASON_MAX_LENGTH) {
+    return { ok: false, error: "reason_required" };
+  }
+  const customer = await repo.getCustomer(ctx.db, { workspaceId, customerId: input.customerId });
+  if (customer === null) throw new NotFoundError("customer not found in workspace");
+  if (customer.subjectId === null) return { ok: true, outcome: "already_unlinked" };
+  const result = await repo.applyCustomerLink(
+    ctx.db,
+    {
+      workspaceId,
+      customerId: customer.id,
+      expectedSubjectId: customer.subjectId,
+      subjectId: null,
+      now: ctx.clock.now(),
+      makeRefreshRow: refreshRows(ctx, workspaceId),
+    },
+    [
+      workspaceEvent(ctx, "customer.unlinked_manually", {
+        workspaceId,
+        actor: asAuditActor(actor),
+        targetId: customer.id,
+        reason,
+        details: { previousSubjectId: customer.subjectId },
+      }),
+    ],
+  );
+  if (!result.ok) throw new ConflictError("the customer's link changed concurrently; retry");
+  return { ok: true, outcome: "unlinked" };
+}
+
 // Views -------------------------------------------------------------------------------------
 
 export interface CustomerSummary {
@@ -1122,6 +1193,11 @@ export interface CustomerSummary {
     readonly subjectId: string;
     readonly login: string;
     readonly externalSubjectId: string;
+    /**
+     * How the link was made, from the audit trail: a checkout reference, an emailed claim, an
+     * owner's manual link, or the source (the simulator). Null when the trail does not say.
+     */
+    readonly via: repo.CustomerLinkVia | null;
   } | null;
   readonly subscriptions: readonly repo.CustomerSubscriptionSummary[];
 }
@@ -1133,7 +1209,10 @@ export async function listCustomers(
   slug: string,
 ): Promise<CustomerSummary[]> {
   const { scope } = await openWorkspace(context, actor, slug, "workspace.manage");
-  const rows = await repo.listCustomersWithLinks(context.db, { workspaceId: scope.workspaceId });
+  const [rows, via] = await Promise.all([
+    repo.listCustomersWithLinks(context.db, { workspaceId: scope.workspaceId }),
+    repo.listCustomerLinkPaths(context.db, scope.workspaceId),
+  ]);
   return rows.map(({ customer, subject, subscriptions }) => ({
     id: customer.id,
     source: customer.source,
@@ -1145,6 +1224,7 @@ export async function listCustomers(
             subjectId: subject.id,
             login: subject.login,
             externalSubjectId: subject.externalSubjectId,
+            via: via.get(customer.id) ?? null,
           },
     subscriptions,
   }));
@@ -1159,5 +1239,5 @@ export function myAccess(
   context: ServiceContext,
   user: UserActor,
 ): Promise<repo.MyAccessSubscription[]> {
-  return repo.listMyAccess(context.db, { userId: user.userId });
+  return repo.listMyAccess(context.db, { userId: user.userId, now: context.clock.now() });
 }

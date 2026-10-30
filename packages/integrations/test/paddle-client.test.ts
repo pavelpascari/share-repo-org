@@ -115,6 +115,25 @@ describe("Paddle requests", () => {
     ).resolves.toEqual({ id: transaction.data.id, checkoutUrl: null });
   });
 
+  it("reads a transaction whose checkout has not completed: no subscription yet", async () => {
+    const id = transaction.data.id;
+    const { port, calls } = client([
+      on("GET", `/transactions/${id}`, () => jsonResponse(200, transaction)),
+    ]);
+    await expect(port.getTransaction(id)).resolves.toEqual({ id, subscriptionId: null });
+    expect(calls.map((call) => call.method)).toEqual(["GET"]);
+  });
+
+  it("is malformed when a transaction names something that is not a subscription", async () => {
+    const id = transaction.data.id;
+    const { port } = client([
+      on("GET", `/transactions/${id}`, () =>
+        jsonResponse(200, { data: { ...transaction.data, subscription_id: "ctm_x" } }),
+      ),
+    ]);
+    expect(await failure(port.getTransaction(id))).toMatchObject({ kind: "malformed" });
+  });
+
   it("asks for customers by one exact email, URL-encoded", async () => {
     const { port, calls } = client([
       on("GET", "/customers", () =>

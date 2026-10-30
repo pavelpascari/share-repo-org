@@ -140,6 +140,18 @@ Each scenario has a stable name used as the test title so coverage of the matrix
 | `drift/manual-removal-is-repaired` | Matrix: manual access drift; AGENTS: drift both directions | Service | 4 |
 | `drift/unmanaged-access-is-not-revoked` | Same; Integrations: ownership | Service | 4 |
 | `drift/indirect-access-reported-accurately` | Integrations: ownership | Service | 4 |
+| `manual/grant-provisions-without-subscription` | [Decision 0016](decisions/0016-manual-access-source.md): manual access | Service | 6 |
+| `manual/duplicate-grant-is-noop` | Decision 0016; AGENTS: duplicate requests | Service | 6 |
+| `manual/revoke-removes-access` | Decision 0016; threat model M2 | Service | 6 |
+| `manual/end-date-expires-via-sweep` | Decisions 0013, 0016; threat model M2 | Service, entry point | 6 |
+| `manual/follows-current-offer-version` | Decision 0016 | Service | 6 |
+| `manual/workspace-deletion-withdraws-and-restores` | Decisions 0015, 0016 | Service | 6 |
+| `manual/account-deletion-revokes-manual-access` | Decisions 0015, 0016; threat model M2 | Service | 6 |
+| `manual/open-limit-and-rate-limit` | Decision 0016; threat model M1 | Service | 6 |
+| `manual/concurrent-changes-converge` | Decision 0016; threat model M4 (security review) | DB, service | 6 |
+| `manual/owner-grants-and-revokes-by-login` | Decision 0016 | Entry point, E2E | 6 |
+| `claim/owner-unlink-removes-access` | Decision 0016; claim threat model T12 | Service | 6 |
+| `claim/checkout-reference-from-other-subscription-rejected` | Decision 0016 § Checkout references; claim threat model T11, T12 | Service, contract | 6 |
 | `audit/every-state-change-has-audit-event` | Matrix: audit completeness; AGENTS: audit completeness | Service, property | 1 onward |
 | `audit/no-secrets-in-logs-or-audit` | Matrix: secret redaction; AGENTS: without secret leakage | Service | 0 onward |
 

@@ -85,6 +85,13 @@
       "when": 1792966166945,
       "tag": "0011_deleted_users",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "6",
+      "when": 1792994312717,
+      "tag": "0012_manual_access",
+      "breakpoints": true
     }
   ]
 }

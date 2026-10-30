@@ -13,6 +13,7 @@ import {
   type PaddlePrice,
   type PaddleSubscription,
   type PaddleSubscriptionSummary,
+  type PaddleTransactionDetails,
 } from "./port.ts";
 
 // Paddle Billing API version 1 response shapes (developer.paddle.com/api-reference), reduced to
@@ -27,6 +28,7 @@ const PADDLE_ID = {
   sub: /^sub_[a-z\d]{26}$/,
   ctm: /^ctm_[a-z\d]{26}$/,
   pri: /^pri_[a-z\d]{26}$/,
+  txn: /^txn_[a-z\d]{26}$/,
   ntfset: /^ntfset_[a-z\d]{26}$/,
 } as const;
 export type PaddleIdKind = keyof typeof PADDLE_ID;
@@ -181,6 +183,22 @@ export const transactionSchema = z.object({
   id: id("txn"),
   checkout: z.object({ url: z.url().nullable() }).nullable(),
 });
+
+/**
+ * `GET /transactions/{id}`, reduced to whether the transaction created a subscription yet. Paddle
+ * sets `subscription_id` once the checkout completes and the subscription exists (the
+ * reference-origin spike, 2026-10-28).
+ */
+export const transactionReadSchema = z.object({
+  id: id("txn"),
+  subscription_id: id("sub").nullable(),
+});
+
+export function toTransactionDetails(
+  transaction: z.output<typeof transactionReadSchema>,
+): PaddleTransactionDetails {
+  return { id: transaction.id, subscriptionId: transaction.subscription_id };
+}
 
 export const notificationSettingSchema = z.object({
   id: id("ntfset"),

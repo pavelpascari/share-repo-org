@@ -291,6 +291,10 @@ export function startFakePaddle(options: { port?: number } = {}) {
       });
       return single({ id: created.id, status: "ready", checkout: { url: created.checkoutUrl } });
     }
+    if (method === "GET" && resource === "transactions" && id !== undefined) {
+      const transaction = await fake.getTransaction(id);
+      return single({ id: transaction.id, subscription_id: transaction.subscriptionId });
+    }
     if (method === "POST" && resource === "notification-settings") {
       const input = JSON.parse(body) as {
         description?: string;

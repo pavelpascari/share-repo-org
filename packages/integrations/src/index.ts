@@ -111,6 +111,7 @@ export {
   type PaddleSubscriptionStatus,
   type PaddleSubscriptionSummary,
   type PaddleTransaction,
+  type PaddleTransactionDetails,
 } from "./paddle/port.ts";
 export {
   PADDLE_SIGNATURE_MAX_AGE_MS,

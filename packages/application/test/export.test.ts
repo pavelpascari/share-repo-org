@@ -72,7 +72,7 @@ describe("export/contains-no-secrets", { timeout: 60_000 }, () => {
     if (!result.ok) throw new Error(result.reason);
     const { document } = result;
     expect(document).toMatchObject({
-      formatVersion: 1,
+      formatVersion: 2,
       exportedAt: clock.now(),
       workspace: { id: s.workspaceId, slug: s.slug, status: "active" },
       members: [{ userId: s.userId, role: "owner" }],
@@ -97,7 +97,7 @@ describe("export/contains-no-secrets", { timeout: 60_000 }, () => {
 
     const events = await listAuditEventsByCorrelationId(serviceContext().db, ctx.correlationId);
     expect(events.map((e) => [e.action, e.details])).toEqual([
-      ["workspace.exported", { formatVersion: 1 }],
+      ["workspace.exported", { formatVersion: 2 }],
     ]);
   });
 

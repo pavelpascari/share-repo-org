@@ -141,6 +141,17 @@ export interface PaddleTransaction {
   readonly checkoutUrl: string | null;
 }
 
+/** A transaction as read back (`GET /transactions/{id}`), reduced to what ShareRepo checks. */
+export interface PaddleTransactionDetails {
+  /** `txn_…`. */
+  readonly id: string;
+  /**
+   * `sub_…`: the subscription this transaction's checkout created. `null` until the checkout
+   * completes (and for a transaction that creates none).
+   */
+  readonly subscriptionId: string | null;
+}
+
 export interface CreateNotificationSettingInput {
   /** Shown in the Paddle dashboard; ShareRepo's tag (`destinationDescription`), 1–500 characters. */
   readonly description: string;
@@ -189,6 +200,11 @@ export interface PaddlePort {
   listCustomersByEmail(email: string): Promise<PaddleCustomer[]>;
   /** `not_found` for an unknown customer. */
   getCustomer(customerId: string): Promise<PaddleCustomer>;
+  /**
+   * `GET /transactions/{id}` (`transaction.read`): which subscription the transaction created, if
+   * any yet. `not_found` for an unknown transaction.
+   */
+  getTransaction(transactionId: string): Promise<PaddleTransactionDetails>;
   /** A draft transaction for one price, to open a checkout. */
   createTransaction(input: CreateTransactionInput): Promise<PaddleTransaction>;
   /**

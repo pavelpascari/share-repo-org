@@ -111,6 +111,7 @@ const LAPSE_REASONS: ReadonlyMap<AccessDecisionReason, AccessDecisionReason> = n
   ["cancel_scheduled", "cancellation_effective"],
   ["past_due_in_grace", "grace_expired"],
   ["canceled_until_end", "canceled"],
+  ["manual", "manual_ended"],
 ] as const);
 
 /** Decisions that end access because time ran out; any other ending is a revocation. */
@@ -119,10 +120,12 @@ const EXPIRING_REASONS: ReadonlySet<AccessDecisionReason> = new Set([
   "cancellation_effective",
   "canceled",
   "expired",
+  "manual_ended",
 ]);
 
-interface Desired {
-  readonly offer: PlanOffer;
+/** What a source desires for one offer, resource and subject. */
+export interface Desired {
+  readonly offer: { readonly offerId: string; readonly version: number };
   readonly resourceId: string;
   readonly accessLevel: AccessLevel;
   readonly decision: AccessDecision;
@@ -157,11 +160,6 @@ interface Desired {
 export function planEntitlements(input: EntitlementPlanInput): EntitlementPlan {
   const { now, subscription, subjectId } = input;
   const offers = keyed(input.offers, (offer) => offer.offerId, "offers");
-  const live = keyed(
-    input.live,
-    (e) => entitlementKey(e.offerId, e.resourceId, e.subjectId),
-    "live entitlements",
-  );
   const desired = new Map<string, Desired>();
   let nextEvaluationAt: Instant | null = null;
 
@@ -170,14 +168,68 @@ export function planEntitlements(input: EntitlementPlanInput): EntitlementPlan {
       if (offer.status !== "active" || !intersects(offer.items, subscription.items)) continue;
       const decision = decideAccess(subscription, offer.gracePeriodDays, now);
       nextEvaluationAt = earliest(nextEvaluationAt, decision.nextEvaluationAt);
-      for (const { resourceId, accessLevel } of offer.accesses) {
-        const key = entitlementKey(offer.offerId, resourceId, subjectId);
-        if (desired.has(key)) throw new Error("duplicate resource in offer accesses");
-        desired.set(key, { offer, resourceId, accessLevel, decision });
-      }
+      desire(desired, offer, subjectId, decision);
     }
   }
 
+  const diff = diffEntitlements({
+    now,
+    subjectId,
+    live: input.live,
+    desired,
+    lostMapping: (entitlement) => lostMapping(entitlement, input),
+  });
+  return { ...diff, nextEvaluationAt };
+}
+
+/**
+ * Adds one desired entitlement per access of `offer`, for the subject, under one decision.
+ * Throws on a resource the offer lists twice: a caller defect.
+ */
+export function desire(
+  desired: Map<string, Desired>,
+  offer: Desired["offer"] & {
+    readonly accesses: readonly {
+      readonly resourceId: string;
+      readonly accessLevel: AccessLevel;
+    }[];
+  },
+  subjectId: string,
+  decision: AccessDecision,
+): void {
+  for (const { resourceId, accessLevel } of offer.accesses) {
+    const key = entitlementKey(offer.offerId, resourceId, subjectId);
+    if (desired.has(key)) throw new Error("duplicate resource in offer accesses");
+    desired.set(key, { offer, resourceId, accessLevel, decision });
+  }
+}
+
+/** The input of {@link diffEntitlements}: one source's live entitlements and its desired ones. */
+export interface EntitlementDiffInput {
+  readonly now: Instant;
+  /** The subject desired entitlements are for, or null when none is desired. */
+  readonly subjectId: string | null;
+  readonly live: readonly LiveEntitlement[];
+  /** Keyed by offer, resource and subject, as {@link desire} builds it. */
+  readonly desired: ReadonlyMap<string, Desired>;
+  /** Why a live entitlement that nothing desires any more ends (it is revoked). */
+  readonly lostMapping: (entitlement: LiveEntitlement) => AccessDecisionReason;
+}
+
+/**
+ * The writes that bring one source's live entitlements to what it desires (the rules listed on
+ * {@link planEntitlements}). Shared by every entitlement source: subscriptions and manual access
+ * (decision 0016). Throws on duplicate live entitlements.
+ */
+export function diffEntitlements(
+  input: EntitlementDiffInput,
+): Omit<EntitlementPlan, "nextEvaluationAt"> {
+  const { now, desired } = input;
+  const live = keyed(
+    input.live,
+    (e) => entitlementKey(e.offerId, e.resourceId, e.subjectId),
+    "live entitlements",
+  );
   const create: NewEntitlementPlan[] = [];
   const update: EntitlementUpdatePlan[] = [];
   const end: EntitlementEndPlan[] = [];
@@ -195,14 +247,14 @@ export function planEntitlements(input: EntitlementPlanInput): EntitlementPlan {
     }
     if (wanted === undefined) {
       const entitlement = current as LiveEntitlement;
-      end.push({ id: entitlement.id, state: "revoked", reason: lostMapping(entitlement, input) });
+      end.push({ id: entitlement.id, state: "revoked", reason: input.lostMapping(entitlement) });
     } else if (!wanted.decision.granted) {
       if (current !== undefined) end.push(ended(current.id, wanted.decision.reason));
     } else if (current === undefined) {
-      create.push(newEntitlement(wanted, subjectId as string, now));
+      create.push(newEntitlement(wanted, input.subjectId as string, now));
     } else if (current.accessLevel !== wanted.accessLevel) {
       end.push({ id: current.id, state: "revoked", reason: "offer_access_changed" });
-      create.push(newEntitlement(wanted, subjectId as string, now));
+      create.push(newEntitlement(wanted, input.subjectId as string, now));
     } else {
       const set = {
         validUntil: wanted.decision.validUntil,
@@ -221,7 +273,7 @@ export function planEntitlements(input: EntitlementPlanInput): EntitlementPlan {
     }
   }
 
-  return { create, update, end, nextEvaluationAt };
+  return { create, update, end };
 }
 
 /** Why a live entitlement no longer maps to desired access, most specific cause first. */

@@ -40,6 +40,7 @@ describe("claim constants (decision 0012)", () => {
       "expired",
       "consumed_by_other_customer",
       "customer_has_other_purchases",
+      "not_this_checkout",
     ]));
   it("email rejection reasons", () =>
     expect(EMAIL_REJECTION_REASONS).toEqual(["unknown_claim", "expired", "already_used"]));

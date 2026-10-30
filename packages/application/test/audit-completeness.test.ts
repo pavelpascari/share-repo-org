@@ -15,6 +15,8 @@ import {
   createSimulatedSubscriber,
   createUserForSignIn,
   createWorkspace,
+  evaluateDueManualAccesses,
+  grantManualAccess,
   type ProviderProfile,
   queueDueEvaluations,
   recomputeOffer,
@@ -22,8 +24,10 @@ import {
   recordSignOut,
   refreshSubscription,
   renameWorkspace,
+  revokeManualAccess,
   type ServiceContext,
   simulateSubscriptionAction,
+  updateManualAccessEnd,
   updateOffer,
 } from "../src/index.ts";
 import {
@@ -250,6 +254,50 @@ describe("audit/every-state-change-has-audit-event (entitlement services)", () =
     expect(changedTables).toEqual([]);
     const after = await audited((c) => refresh(s, sub.id, c));
     expect(after.changedTables).toContain("entitlements");
+  });
+
+  it("audits manual access (decision 0016); an offer recompute changes only its timers", async () => {
+    const s = await shop();
+    const sold = await offer(s, { items: ["sim_manual_audit"] });
+    const user = githubUser(s);
+    const granted = await audited((ctx) =>
+      grantManualAccess(
+        ctx,
+        s,
+        s.slug,
+        { offerId: sold.id, githubLogin: user.login, endsAt: null, note: "trial" },
+        { github: s.github },
+      ),
+    );
+    expect(granted.changedTables).toEqual(
+      expect.arrayContaining(["entitlements", "manual_accesses", "subjects"]),
+    );
+    if (!granted.result.ok) throw new Error("setup");
+    const manualAccessId = granted.result.manualAccessId;
+    await audited((ctx) =>
+      updateManualAccessEnd(ctx, s, s.slug, { manualAccessId, endsAt: clock.now() + DAY }),
+    );
+    const ignore = {
+      ...UNAUDITED_TABLES,
+      manual_accesses:
+        "a recompute makes the offer's manual accesses due (next_evaluation_at, a scheduling hint); the evaluation that follows is audited",
+    };
+    const ctx = serviceContext();
+    const recomputed = await expectAuditedChange(
+      env.DB,
+      ctx.correlationId,
+      () => recomputeOffer(ctx, { workspaceId: s.workspaceId, offerId: sold.id }),
+      ignore,
+    );
+    expect(recomputed.changedTables).toEqual([]);
+    const swept = await audited((c) => evaluateDueManualAccesses(c, { limit: 1000 }));
+    expect(swept.changedTables).toContain("manual_accesses");
+    await audited((c) => revokeManualAccess(c, s, s.slug, { manualAccessId }));
+    expect(live(await entitlementsOf(s.workspaceId))).toEqual([]);
+    const member = await memberOf(s);
+    await expectNoChangeOnFailure(env.DB, () =>
+      revokeManualAccess(serviceContext(), member, s.slug, { manualAccessId }),
+    );
   });
 
   it("refused and failed entitlement changes leave no trace", async () => {

@@ -14,6 +14,7 @@ import {
 } from "../src/index.ts";
 import { auditCount, workspaceEvent } from "./support/audit.ts";
 import {
+  asRead,
   customerRow,
   entitlementRow,
   outboxRow,
@@ -106,7 +107,7 @@ describe("applySubscriptionRefresh: new subscription", () => {
         workspaceId: ws.workspaceId,
         subscriptionId: ws.subscription.id,
       }),
-    ).toEqual([ws.entitlement]);
+    ).toEqual([asRead(ws.entitlement)]);
   });
 
   it("uses an existing customer, and writes outbox rows", async () => {
@@ -308,8 +309,13 @@ describe("applySubscriptionRefresh: existing subscription", () => {
         subscriptionId: ws.subscription.id,
       }),
     ).toEqual([
-      { ...ws.entitlement, validUntil: NOW + 5, decisionReason: "past_due", updatedAt: NOW },
-      replacement,
+      asRead({
+        ...ws.entitlement,
+        validUntil: NOW + 5,
+        decisionReason: "past_due",
+        updatedAt: NOW,
+      }),
+      asRead(replacement),
     ]);
     expect(await count("outbox", "id = ?", outbox.id)).toBe(1);
     expect(await auditCount(env.DB, event.correlationId)).toBe(1);

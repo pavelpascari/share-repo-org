@@ -7,6 +7,7 @@ import {
   entitlements,
   externalIdentities,
   grants,
+  manualAccesses,
   offerAccesses,
   offerItems,
   offers,
@@ -213,7 +214,9 @@ export async function readWorkspaceExport(db: Db, workspaceId: string) {
       subjectId: entitlements.subjectId,
       resourceId: entitlements.resourceId,
       accessLevel: entitlements.accessLevel,
-      subscriptionId: entitlements.sourceId,
+      sourceType: entitlements.sourceType,
+      subscriptionId: entitlements.subscriptionId,
+      manualAccessId: entitlements.manualAccessId,
       offerId: entitlements.offerId,
       offerVersion: entitlements.offerVersion,
       policyVersion: entitlements.policyVersion,
@@ -226,6 +229,20 @@ export async function readWorkspaceExport(db: Db, workspaceId: string) {
     .from(entitlements)
     .where(eq(entitlements.workspaceId, workspaceId))
     .orderBy(asc(entitlements.createdAt), asc(entitlements.id));
+  const manualAccessRows = await db
+    .select({
+      id: manualAccesses.id,
+      offerId: manualAccesses.offerId,
+      subjectId: manualAccesses.subjectId,
+      endsAt: manualAccesses.endsAt,
+      note: manualAccesses.note,
+      revokedAt: manualAccesses.revokedAt,
+      revokeCause: manualAccesses.revokeCause,
+      createdAt: manualAccesses.createdAt,
+    })
+    .from(manualAccesses)
+    .where(eq(manualAccesses.workspaceId, workspaceId))
+    .orderBy(asc(manualAccesses.createdAt), asc(manualAccesses.id));
   const grantRows = await db
     .select({
       id: grants.id,
@@ -274,6 +291,7 @@ export async function readWorkspaceExport(db: Db, workspaceId: string) {
     customers: customerRows,
     subscriptions: subscriptionRows,
     subscriptionItems: subscriptionItemRows,
+    manualAccesses: manualAccessRows,
     entitlements: entitlementRows,
     grants: grantRows,
     auditEvents: audit,

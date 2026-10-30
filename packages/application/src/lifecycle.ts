@@ -141,9 +141,11 @@ export async function purgeWorkspace(
     const block = purgeBlock(await repo.countRemainingAccess(ctx.db, workspaceId));
     if (block !== null) {
       await repo.recordPurgeBlocked(ctx.db, { workspaceId, reason: block, now });
-      // The repair path: refreshes end the entitlements of a workspace being deleted.
+      // The repair path: refreshes, and evaluations of manual accesses, end the entitlements of a
+      // workspace being deleted.
       if (block === PurgeBlock.EntitlementsRemaining) {
         await repo.queueWorkspaceRefreshes(ctx.db, { workspaceId, sources: ALL_SOURCES, now });
+        await repo.markManualAccessesDue(ctx.db, { workspaceId, now });
       }
       return "waiting";
     }
@@ -450,7 +452,8 @@ export type DeleteAccountResult =
  * login, and refused while they own a workspace that is not being deleted. First, workspace by
  * workspace, every subject of their GitHub account (linked to their identity, or naming no user,
  * as a simulated subscription, a manual link or an earlier deletion leaves it) is cleared: it is
- * unlinked from the identity, its customers are unlinked, its live entitlements end
+ * unlinked from the identity, its customers are unlinked, a creator's open manual accesses to it
+ * are revoked (decision 0016), its live entitlements end
  * (`account_deleted`), and reconciles of the repositories and refreshes of the customers'
  * subscriptions are queued, so reconciliation revokes managed access. Then one batch deletes
  * their claims, claim requests and consumed claim tokens, connection intents, memberships,
@@ -498,7 +501,14 @@ export async function deleteAccount(
     );
     const linked = ofAccount.filter((subject) => stillLinked.has(subject.id));
     // Nothing left to clear here (an earlier run, or a crash after this workspace's batch).
-    if (linked.length + access.customers.length + access.liveEntitlements.length === 0) continue;
+    const open = access.manualAccesses;
+    if (
+      linked.length + access.customers.length + access.liveEntitlements.length + open.length ===
+      0
+    ) {
+      continue;
+    }
+    const externalIdOf = new Map(ofAccount.map((s) => [s.id, s.externalSubjectId]));
     const event = (action: Parameters<typeof auditEvent>[0], targetId: string, details: object) =>
       auditEvent(action, { workspaceId, actor: by, targetId, details } as never, ctx);
     const audit: AuditEvent[] = [
@@ -512,6 +522,16 @@ export async function deleteAccount(
         event("customer.linked", customer.id, {
           previousSubjectId: customer.subjectId,
           subjectId: null,
+        }),
+      ),
+      // A creator's manual access to the account is revoked too (decision 0016), so no later
+      // evaluation grants it again.
+      ...open.map((manual) =>
+        event("access.revoked_manually", manual.id, {
+          offerId: manual.offerId,
+          subjectId: manual.subjectId,
+          externalSubjectId: externalIdOf.get(manual.subjectId),
+          cause: "account_deleted",
         }),
       ),
       ...access.liveEntitlements.map((entitlement) =>

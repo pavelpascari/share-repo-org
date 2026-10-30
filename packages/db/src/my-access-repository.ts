@@ -13,6 +13,7 @@ import {
   entitlements,
   externalIdentities,
   grants,
+  manualAccesses,
   resources,
   subjects,
   subscriptions,
@@ -50,8 +51,11 @@ export interface MyAccessEntitlement {
 export interface MyAccessSubscription {
   workspace: { id: string; slug: string; name: string };
   subjectId: string;
-  customerId: string;
-  source: CommercialSource;
+  /** The customer, or null for a creator's manual access (decision 0016). */
+  customerId: string | null;
+  /** `manual` for a creator's manual access; the page shows it like any purchase. */
+  source: CommercialSource | "manual";
+  /** The subscription, or the manual access, by ShareRepo ID. */
   subscriptionId: string;
   externalSubscriptionId: string;
   state: SubscriptionState;
@@ -75,10 +79,10 @@ const userSubjects = (userId: string) =>
 /** The user's linked subscriptions, by workspace slug then subscription, with their access. */
 export async function listMyAccess(
   db: Db,
-  key: { userId: string },
+  key: { userId: string; now: Instant },
 ): Promise<MyAccessSubscription[]> {
   const mine = userSubjects(key.userId);
-  const [subscriptionRows, entitlementRows, grantRows] = await Promise.all([
+  const [subscriptionRows, entitlementRows, grantRows, manualRows] = await Promise.all([
     db
       .select({
         workspace: { id: workspaces.id, slug: workspaces.slug, name: workspaces.name },
@@ -129,6 +133,24 @@ export async function listMyAccess(
         and(eq(grants.workspaceId, subjects.workspaceId), eq(grants.subjectId, subjects.id)),
       )
       .orderBy(asc(grants.accessLevel), asc(grants.id)),
+    // A creator's manual access to the user's GitHub account (decision 0016), reached through
+    // the same identity and subjects as a purchase.
+    db
+      .select({
+        workspace: { id: workspaces.id, slug: workspaces.slug, name: workspaces.name },
+        access: manualAccesses,
+      })
+      .from(externalIdentities)
+      .innerJoin(subjects, mine)
+      .innerJoin(workspaces, eq(workspaces.id, subjects.workspaceId))
+      .innerJoin(
+        manualAccesses,
+        and(
+          eq(manualAccesses.workspaceId, subjects.workspaceId),
+          eq(manualAccesses.subjectId, subjects.id),
+        ),
+      )
+      .orderBy(asc(workspaces.slug), asc(manualAccesses.createdAt), asc(manualAccesses.id)),
   ]);
 
   const grantsOf = new Map<string, MyAccessGrant[]>();
@@ -162,18 +184,50 @@ export async function listMyAccess(
     });
     entitlementsOf.set(at, list);
   }
-  return subscriptionRows.map(({ workspace, subjectId, customerId, subscription: s }) => ({
-    workspace,
-    subjectId,
-    customerId,
-    source: s.source,
-    subscriptionId: s.id,
-    externalSubscriptionId: s.externalSubscriptionId,
-    state: s.state,
-    currentPeriodEnd: s.currentPeriodEnd,
-    cancelAt: s.cancelAt,
-    endedAt: s.endedAt,
-    pastDueSince: s.pastDueSince,
-    entitlements: entitlementsOf.get(`${s.workspaceId}:${subjectId}:${s.id}`) ?? [],
-  }));
+  const purchased = subscriptionRows.map(
+    ({ workspace, subjectId, customerId, subscription: s }) => ({
+      workspace,
+      subjectId,
+      customerId,
+      source: s.source,
+      subscriptionId: s.id,
+      externalSubscriptionId: s.externalSubscriptionId,
+      state: s.state,
+      currentPeriodEnd: s.currentPeriodEnd,
+      cancelAt: s.cancelAt,
+      endedAt: s.endedAt,
+      pastDueSince: s.pastDueSince,
+      entitlements: entitlementsOf.get(`${s.workspaceId}:${subjectId}:${s.id}`) ?? [],
+      createdAt: s.createdAt,
+    }),
+  );
+  // A manual access reads exactly like a purchase (decision 0016): active, with its end date as a
+  // scheduled cancellation; once it ended or was revoked, canceled with that end.
+  const manual = manualRows.map(({ workspace, access: a }) => {
+    const ended = a.revokedAt ?? (a.endsAt !== null && a.endsAt <= key.now ? a.endsAt : null);
+    return {
+      workspace,
+      subjectId: a.subjectId,
+      customerId: null,
+      source: "manual" as const,
+      subscriptionId: a.id,
+      externalSubscriptionId: a.id,
+      state: ended === null ? ("active" as const) : ("canceled" as const),
+      currentPeriodEnd: null,
+      cancelAt: ended === null ? a.endsAt : null,
+      endedAt: ended,
+      pastDueSince: null,
+      entitlements: entitlementsOf.get(`${a.workspaceId}:${a.subjectId}:${a.id}`) ?? [],
+      createdAt: a.createdAt,
+    };
+  });
+  // By workspace slug, then creation, then ID, as the queries order each list: one key in
+  // code-unit order (NUL never occurs in slugs or IDs; instants are padded to compare as text).
+  const keyOf = (x: { workspace: { slug: string }; createdAt: Instant; subscriptionId: string }) =>
+    [x.workspace.slug, String(x.createdAt).padStart(16, "0"), x.subscriptionId].join("\u0000");
+  const byKey = new Map([...purchased, ...manual].map((item) => [keyOf(item), item]));
+  return [...byKey.keys()].sort().map((k) => {
+    const { createdAt: _createdAt, ...item } = byKey.get(k) as (typeof purchased)[number];
+    return item;
+  });
 }

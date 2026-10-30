@@ -3,7 +3,7 @@ import { and, isNotNull, isNull, lt, lte, min } from "drizzle-orm";
 import type { Db } from "./client.ts";
 import { SWEEP_HEARTBEAT_KEY } from "./failure-repository.ts";
 import { oldestExcusedReconcileDue } from "./reconcile-repository.ts";
-import { outbox, subscriptions, systemState } from "./schema/index.ts";
+import { manualAccesses, outbox, subscriptions, systemState } from "./schema/index.ts";
 
 // The per-minute sweep's health (phase-6 plan § Sweep health; decision 0014): what is still due
 // after a tick, and when the lag alert was last raised. Reads across every workspace, like the
@@ -11,7 +11,10 @@ import { outbox, subscriptions, systemState } from "./schema/index.ts";
 
 /** The oldest instant still due of each kind the sweep handles; null when none is due. */
 export interface SweepBacklog {
-  /** The oldest `subscriptions.next_evaluation_at` at or before now. */
+  /**
+   * The oldest `subscriptions.next_evaluation_at` or `manual_accesses.next_evaluation_at` (decision
+   * 0016) at or before now.
+   */
   readonly evaluationDueAt: Instant | null;
   /**
    * The oldest reconcile late at now: a repository's `next_reconcile_at`, pushed back to its
@@ -26,18 +29,27 @@ export interface SweepBacklog {
   readonly outboxDueAt: Instant | null;
 }
 
+const earliest = (a: Instant | null, b: Instant | null): Instant | null =>
+  a === null ? b : b === null ? a : Math.min(a, b);
+
 /** What is still due at `now`. Each query uses its column's index. */
 export async function readSweepBacklog(
   db: Db,
   input: { now: Instant; maxAttempts: number },
 ): Promise<SweepBacklog> {
   const { now } = input;
-  const [evaluation, reconcile, work] = await db.batch([
+  const [evaluation, manual, reconcile, work] = await db.batch([
     db
       .select({ at: min(subscriptions.nextEvaluationAt) })
       .from(subscriptions)
       .where(
         and(isNotNull(subscriptions.nextEvaluationAt), lte(subscriptions.nextEvaluationAt, now)),
+      ),
+    db
+      .select({ at: min(manualAccesses.nextEvaluationAt) })
+      .from(manualAccesses)
+      .where(
+        and(isNotNull(manualAccesses.nextEvaluationAt), lte(manualAccesses.nextEvaluationAt, now)),
       ),
     oldestExcusedReconcileDue(db, now),
     db
@@ -53,7 +65,7 @@ export async function readSweepBacklog(
       ),
   ]);
   return {
-    evaluationDueAt: evaluation[0]?.at ?? null,
+    evaluationDueAt: earliest(evaluation[0]?.at ?? null, manual[0]?.at ?? null),
     reconcileDueAt: reconcile[0]?.at ?? null,
     outboxDueAt: work[0]?.at ?? null,
   };

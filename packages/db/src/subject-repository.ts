@@ -28,6 +28,19 @@ export async function findSubjectByExternalId(
   return rows[0] ?? null;
 }
 
+/** The workspace's subject by ID; null for an unknown ID or another workspace's subject. */
+export async function getSubject(
+  db: Db,
+  key: { workspaceId: string; subjectId: string },
+): Promise<Subject | null> {
+  const rows = await db
+    .select()
+    .from(subjects)
+    .where(and(eq(subjects.workspaceId, key.workspaceId), eq(subjects.id, key.subjectId)))
+    .limit(1);
+  return rows[0] ?? null;
+}
+
 /**
  * Inserts a subject with its audit events, in one batch. A subject with the same external ID in
  * the workspace fails the UNIQUE constraint as is (nothing is written); the caller re-reads it

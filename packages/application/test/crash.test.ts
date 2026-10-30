@@ -9,6 +9,8 @@ import {
   confirmClaim,
   connectPaddle,
   deleteAccount,
+  evaluateManualAccess,
+  grantManualAccess,
   paddleEntitlementSource,
   processPaddleEvent,
   purgeWorkspace,
@@ -24,7 +26,16 @@ import {
   sweepPaddleSubscriptions,
   syncPaddleCatalog,
 } from "../src/index.ts";
-import { drain, offer, refresh, type Shop, shop, subscribe } from "./support/commerce.ts";
+import {
+  DAY,
+  drain,
+  githubUser,
+  offer,
+  refresh,
+  type Shop,
+  shop,
+  subscribe,
+} from "./support/commerce.ts";
 import { clock, serviceContext, signedUpUser } from "./support/context.ts";
 import {
   buyerIp,
@@ -611,6 +622,65 @@ describe("crash/every-batch-boundary-converges", { timeout: TIMEOUT }, () => {
           if ((await purgeWorkspace(ctx(), f.workspaceId)) !== "continuing") return;
         }
         throw new Error("purge did not finish");
+      },
+    });
+  });
+
+  // Decision 0016: a grant writes the account's subject, the rate-limit counter, then the access
+  // with its entitlements in one batch. A resubmitted form finds the access granted.
+  it("a manual access grant", async () => {
+    await expectEveryBoundaryConverges({
+      name: "manual grant",
+      setup: async () => {
+        const s = await shop(1, createFakeGitHubApp({ clock }));
+        const sold = await offer(s, { items: ["sim_pro"] });
+        await drain(s.workspaceId);
+        const user = githubUser(s);
+        return { ...(await shopFixture(s, "", user.login)), offerId: sold.id, login: user.login };
+      },
+      run: (f, ctx) =>
+        grantManualAccess(
+          ctx,
+          f.s,
+          f.s.slug,
+          {
+            offerId: f.offerId,
+            githubLogin: f.login,
+            endsAt: clock.now() + 30 * DAY,
+            note: "trial",
+          },
+          { github: f.s.github },
+        ),
+    });
+  });
+
+  it("a manual access's end date, at the sweep", async () => {
+    await expectEveryBoundaryConverges({
+      name: "manual expiry",
+      setup: async () => {
+        const s = await shop(1, createFakeGitHubApp({ clock }));
+        const sold = await offer(s, { items: ["sim_pro"] });
+        await drain(s.workspaceId);
+        const user = githubUser(s);
+        const granted = await grantManualAccess(
+          serviceContext(),
+          s,
+          s.slug,
+          { offerId: sold.id, githubLogin: user.login, endsAt: clock.now() + DAY, note: "" },
+          { github: s.github },
+        );
+        if (!granted.ok) throw new Error(granted.error);
+        return {
+          ...(await shopFixture(s, "", user.login)),
+          manualAccessId: granted.manualAccessId,
+        };
+      },
+      run: async (f, ctx) => {
+        const at = { ...ctx, clock: { now: () => clock.now() + 2 * DAY } };
+        return evaluateManualAccess(at, {
+          workspaceId: f.workspaceId,
+          manualAccessId: f.manualAccessId,
+        });
       },
     });
   });

@@ -1,4 +1,9 @@
-export { type AccessPair, type AccessState, readAccessState } from "./access-repository.ts";
+export {
+  type AccessPair,
+  type AccessSource,
+  type AccessState,
+  readAccessState,
+} from "./access-repository.ts";
 export {
   type AuditEvents,
   appendAuditEvents,
@@ -56,10 +61,12 @@ export {
   type ApplyCustomerLinkResult,
   applyCustomerLink,
   type Customer,
+  type CustomerLinkVia,
   type CustomerSubscriptionSummary,
   type CustomerWithLink,
   findCustomer,
   getCustomer,
+  listCustomerLinkPaths,
   listCustomersWithLinks,
 } from "./customer-repository.ts";
 export { isForeignKeyViolation, isUniqueViolation, uniqueViolationColumns } from "./errors.ts";
@@ -132,6 +139,19 @@ export {
   unlinkSubjectsFromIdentity,
   type WorkspaceDeletionState,
 } from "./lifecycle-repository.ts";
+export {
+  applyManualAccessWrite,
+  type DueManualAccess,
+  getManualAccess,
+  listDueManualAccesses,
+  listLiveEntitlementsForManualAccess,
+  listManualAccesses,
+  type ManualAccess,
+  type ManualAccessListing,
+  type ManualAccessWrite,
+  type ManualAccessWriteResult,
+  markManualAccessesDue,
+} from "./manual-access-repository.ts";
 export {
   listMyAccess,
   type MyAccessEntitlement,
@@ -256,6 +276,7 @@ export {
 export {
   findOrCreateSubjectForIdentity,
   findSubjectByExternalId,
+  getSubject,
   insertSubject,
   listSubjects,
   type Subject,

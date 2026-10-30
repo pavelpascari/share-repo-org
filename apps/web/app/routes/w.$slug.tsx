@@ -42,6 +42,9 @@ export default function WorkspaceLayout({ loaderData }: Route.ComponentProps) {
             <Link to={`/w/${workspace.slug}/customers`} className="underline">
               Customers
             </Link>
+            <Link to={`/w/${workspace.slug}/manual-access`} className="underline">
+              Manual access
+            </Link>
             <Link to={`/w/${workspace.slug}/billing`} className="underline">
               Billing
             </Link>

@@ -18,6 +18,7 @@ import { accountEvent, auditCount, workspaceEvent } from "./support/audit.ts";
 import {
   customerRow,
   entitlementRow,
+  seedOffer,
   seedSubject,
   subscribedWorkspace,
   subscriptionRow,
@@ -448,6 +449,80 @@ describe("applyCustomerLink", () => {
 });
 
 describe("listMyAccess", () => {
+  // Decision 0016: a creator's manual access reads exactly like a purchase on "My access".
+  it("isolation/cross-workspace-read-denied: shows the user's manual access like a subscription, and nobody else's", async () => {
+    const ws = await subscribedWorkspace();
+    const subject = await seedSubject(ws.workspaceId);
+    const { userId } = await githubUser(subject.externalSubjectId);
+    const access = (id: string, overrides: Record<string, unknown>) => ({
+      id,
+      workspaceId: ws.workspaceId,
+      offerId: ws.offer.offer.id,
+      subjectId: subject.id,
+      endsAt: null,
+      note: "a note the recipient never sees",
+      revokedAt: null,
+      revokeCause: null,
+      nextEvaluationAt: null,
+      version: 1,
+      createdAt: T0,
+      updatedAt: T0,
+      ...overrides,
+    });
+    const open = uniqueId("ma");
+    const ended = uniqueId("ma");
+    const revoked = uniqueId("ma");
+    const other = await seedOffer({
+      workspaceId: ws.workspaceId,
+      userId: ws.userId,
+      resourceIds: [ws.resource.id],
+    });
+    const third = await seedOffer({
+      workspaceId: ws.workspaceId,
+      userId: ws.userId,
+      resourceIds: [ws.resource.id],
+    });
+    await db.insert(schema.manualAccesses).values([
+      access(open, { endsAt: NOW + DAY, nextEvaluationAt: NOW + DAY }),
+      access(ended, { offerId: other.offer.id, endsAt: NOW - 1, createdAt: T0 - 2, updatedAt: T0 }),
+      access(revoked, {
+        offerId: third.offer.id,
+        revokedAt: T0 + 5,
+        revokeCause: "owner",
+        createdAt: T0 - 1,
+      }),
+    ] as never);
+    const entitlement = entitlementRow(
+      {
+        workspaceId: ws.workspaceId,
+        subjectId: subject.id,
+        resourceId: ws.resource.id,
+        subscriptionId: open,
+        offerId: ws.offer.offer.id,
+      },
+      { sourceType: "manual", validUntil: NOW + DAY, decisionReason: "manual" },
+    );
+    await db.insert(schema.entitlements).values(entitlement);
+
+    const mine = await listMyAccess(db, { userId, now: NOW });
+    expect(mine.map((s) => [s.subscriptionId, s.state, s.cancelAt, s.endedAt])).toEqual([
+      [ended, "canceled", null, NOW - 1],
+      [revoked, "canceled", null, T0 + 5],
+      [open, "active", NOW + DAY, null],
+    ]);
+    expect(mine[2]).toMatchObject({
+      customerId: null,
+      currentPeriodEnd: null,
+      pastDueSince: null,
+      entitlements: [expect.objectContaining({ id: entitlement.id, state: "active" })],
+    });
+    expect(JSON.stringify(mine)).not.toContain("a note the recipient never sees");
+    // Another user, and the workspace's owner, see none of it.
+    const stranger = await githubUser();
+    expect(await listMyAccess(db, { userId: stranger.userId, now: NOW })).toEqual([]);
+    expect(await listMyAccess(db, { userId: ws.userId, now: NOW })).toEqual([]);
+  });
+
   it("lists the user's linked subscriptions with entitlements and grants, across workspaces", async () => {
     const ws = await subscribedWorkspace();
     const { userId } = await githubUser(ws.subject.externalSubjectId);
@@ -483,7 +558,7 @@ describe("listMyAccess", () => {
     );
     await db.insert(schema.entitlements).values(ended);
 
-    const access = await listMyAccess(db, { userId });
+    const access = await listMyAccess(db, { userId, now: T0 });
     const workspaceSlugs = await env.DB.prepare(
       "SELECT id, slug, name FROM workspaces WHERE id IN (?, ?)",
     )
@@ -536,15 +611,15 @@ describe("listMyAccess", () => {
     const ws = await subscribedWorkspace();
     await githubUser(ws.subject.externalSubjectId);
     const stranger = await githubUser();
-    expect(await listMyAccess(db, { userId: stranger.userId })).toEqual([]);
+    expect(await listMyAccess(db, { userId: stranger.userId, now: T0 })).toEqual([]);
     // A user whose subject exists but whose customer is unlinked sees nothing.
     const unlinked = await subscribedWorkspace();
     await env.DB.prepare("UPDATE customers SET subject_id = NULL WHERE id = ?")
       .bind(unlinked.customer.id)
       .run();
     const owner = await githubUser(unlinked.subject.externalSubjectId);
-    expect(await listMyAccess(db, { userId: owner.userId })).toEqual([]);
-    expect(await listMyAccess(db, { userId: uniqueId("usr") })).toEqual([]);
+    expect(await listMyAccess(db, { userId: owner.userId, now: T0 })).toEqual([]);
+    expect(await listMyAccess(db, { userId: uniqueId("usr"), now: T0 })).toEqual([]);
   });
 
   it("omits entitlements of a subscription that belong to another subject after a relink", async () => {
@@ -555,8 +630,8 @@ describe("listMyAccess", () => {
     await env.DB.prepare("UPDATE customers SET subject_id = ? WHERE id = ?")
       .bind(next.id, ws.customer.id)
       .run();
-    expect(await listMyAccess(db, { userId: previous.userId })).toEqual([]);
-    const [mine] = await listMyAccess(db, { userId: nextUser.userId });
+    expect(await listMyAccess(db, { userId: previous.userId, now: T0 })).toEqual([]);
+    const [mine] = await listMyAccess(db, { userId: nextUser.userId, now: T0 });
     expect(mine?.subscriptionId).toBe(ws.subscription.id);
     expect(mine?.entitlements).toEqual([]);
   });

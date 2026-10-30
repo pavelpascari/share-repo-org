@@ -1,7 +1,7 @@
 import { type CommercialSource, type Instant, OutboxKind } from "@sharerepo/domain";
 import { and, asc, eq, isNotNull, lte, or, type SQL, sql } from "drizzle-orm";
 import { type AuditEvents, conditionalAuditInserts } from "./audit-repository.ts";
-import { insertWhere, runBatch, type Statement } from "./batch.ts";
+import { insertWhere, runBatch, type Statement, type StoredRow } from "./batch.ts";
 import type { Db } from "./client.ts";
 import type { Customer } from "./customer-repository.ts";
 import { isUniqueViolation } from "./errors.ts";
@@ -23,7 +23,7 @@ export type SubscriptionWithItems = Subscription & { items: string[] };
 /** Domain `Entitlement`: desired access. Only `active` rows are live. */
 export type Entitlement = typeof entitlements.$inferSelect;
 /** A complete entitlement row to create (`state` `active`, `endedAt` null). */
-export type NewEntitlement = Entitlement;
+export type NewEntitlement = StoredRow<typeof entitlements>;
 
 /** What a refresh may change on a live entitlement. `updated_at` is always set to `now`. */
 export type EntitlementChanges = Partial<
@@ -184,6 +184,7 @@ export async function listLiveEntitlementsForSubscription(
     .where(
       and(
         eq(entitlements.workspaceId, key.workspaceId),
+        eq(entitlements.sourceType, "subscription"),
         eq(entitlements.sourceId, key.subscriptionId),
         live,
       ),
@@ -364,6 +365,7 @@ export async function applySubscriptionRefresh(
   const liveOfSubscription = (id: string) =>
     and(
       eq(entitlements.workspaceId, workspaceId),
+      eq(entitlements.sourceType, "subscription"),
       eq(entitlements.sourceId, subscription.id),
       eq(entitlements.id, id),
       live,
@@ -466,7 +468,7 @@ export async function claimDueEvaluations(
     .limit(input.limit);
   // Driven by `entitlements_state_valid_until_idx`: the few live entitlements past their end,
   // rather than a probe per subscription (decision 0013).
-  const lapsed = sql`(${subscriptions.workspaceId}, ${subscriptions.id}) IN (SELECT ${entitlements.workspaceId}, ${entitlements.sourceId} FROM ${entitlements} WHERE ${entitlements.state} = 'active' AND ${entitlements.validUntil} <= ${input.now})`;
+  const lapsed = sql`(${subscriptions.workspaceId}, ${subscriptions.id}) IN (SELECT ${entitlements.workspaceId}, ${entitlements.subscriptionId} FROM ${entitlements} WHERE ${entitlements.sourceType} = 'subscription' AND ${entitlements.state} = 'active' AND ${entitlements.validUntil} <= ${input.now})`;
   const repair =
     due.length < input.limit
       ? await db

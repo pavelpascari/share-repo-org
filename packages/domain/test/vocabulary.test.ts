@@ -33,7 +33,13 @@ import {
   INVITATION_WINDOW_MS,
   LINK_PATHS,
   LinkPath,
+  MANUAL_ACCESS_NOTE_MAX_LENGTH,
+  MANUAL_ACCESS_OPEN_LIMIT,
+  MANUAL_ACCESS_RATE_LIMIT,
+  MANUAL_ACCESS_REVOKE_CAUSES,
   MAX_MUTATIONS_PER_RUN,
+  ManualAccessRevokeCause,
+  ManualAccessStatus,
   MUTATION_OPERATIONS,
   MUTATION_STATUSES,
   MUTATION_STOP_REASONS,
@@ -143,7 +149,12 @@ describe("persisted vocabularies", () => {
     ]));
   it("entitlement states", () =>
     expect(ENTITLEMENT_STATES).toEqual(["active", "expired", "revoked"]));
-  it("entitlement source types", () => expect(ENTITLEMENT_SOURCE_TYPES).toEqual(["subscription"]));
+  it("entitlement source types", () =>
+    expect(ENTITLEMENT_SOURCE_TYPES).toEqual(["subscription", "manual"]));
+  it("manual access revoke causes", () =>
+    expect(MANUAL_ACCESS_REVOKE_CAUSES).toEqual(["owner", "account_deleted"]));
+  it("manual access revoke causes by name", () =>
+    expect(Object.values(ManualAccessRevokeCause)).toEqual(MANUAL_ACCESS_REVOKE_CAUSES));
   it("access levels", () => expect(ACCESS_LEVELS).toEqual(["read", "write"]));
   it("access policy version", () => expect(ACCESS_POLICY_VERSION).toBe(1));
   it("grant states", () =>
@@ -192,7 +203,12 @@ describe("stable decision codes", () => {
       "subscription_missing",
       "workspace_deleted",
       "account_deleted",
+      "manual",
+      "manual_ended",
+      "manual_revoked",
     ]));
+  it("manual access statuses", () =>
+    expect(Object.values(ManualAccessStatus)).toEqual(["active", "ended", "revoked"]));
   it("offer changes", () =>
     expect(OFFER_CHANGES).toEqual(["name", "gracePeriodDays", "items", "accesses"]));
   it("reconciliation actions", () =>
@@ -270,11 +286,18 @@ describe("stable decision codes", () => {
       "consumed_by_other_customer",
       "already_used",
       "customer_has_other_purchases",
+      "not_this_checkout",
     ]));
   it("claim rejection reasons by name", () =>
     expect(Object.values(ClaimRejectionReason)).toEqual(CLAIM_REJECTION_REASONS));
   it("offer limits", () =>
     expect([OFFER_NAME_MAX_LENGTH, OFFER_ITEMS_MAX, OFFER_ACCESSES_MAX]).toEqual([100, 100, 100]));
+  it("manual access limits", () =>
+    expect([
+      MANUAL_ACCESS_NOTE_MAX_LENGTH,
+      MANUAL_ACCESS_OPEN_LIMIT,
+      MANUAL_ACCESS_RATE_LIMIT,
+    ]).toEqual([500, 100, { windowMs: 86_400_000, limit: 50 }]));
 });
 
 // Provider-neutral failure kinds that adapters map their errors to.

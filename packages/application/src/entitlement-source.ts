@@ -38,9 +38,21 @@ export type SourceSubscription =
     };
 
 /**
+ * Which subscription a checkout claim's transaction created (decision 0016 § Checkout
+ * references): `pending` while the source has not set it yet, `not_found` when the source does not
+ * know the transaction.
+ */
+export type CheckoutTransactionOwner =
+  | { readonly kind: "subscription"; readonly externalSubscriptionId: string }
+  | { readonly kind: "pending" }
+  | { readonly kind: "not_found" };
+
+/**
  * What path 1 of the claim flow needs from a source that reports checkout references (decision
- * 0012): the key that verifies them, and every subscription the source holds for a customer, so
- * a customer is linked only when all of its purchases came through the checkout.
+ * 0012): the key that verifies them, the subscription a claim's checkout created, so a reference
+ * that reached another subscription uses no claim (decision 0016), and every subscription the
+ * source holds for a customer, so a customer is linked only when all of its purchases came
+ * through the checkout.
  */
 export interface CheckoutClaimSupport {
   /**
@@ -57,6 +69,14 @@ export interface CheckoutClaimSupport {
     readonly workspaceId: string;
     readonly externalCustomerId: string;
   }): Promise<CustomerPurchases>;
+  /**
+   * The subscription the checkout transaction ShareRepo created (`checkout_claims.transaction_id`)
+   * belongs to. Fails (and is worth retrying) when the source cannot be read now.
+   */
+  checkoutTransactionOwner(ref: {
+    readonly workspaceId: string;
+    readonly transactionId: string;
+  }): Promise<CheckoutTransactionOwner>;
 }
 
 /** Reads the current commercial facts of one subscription from where they originate. */

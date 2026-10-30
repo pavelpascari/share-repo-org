@@ -108,11 +108,28 @@ const REFRESH_HAND_OFF_LIMIT = 50;
  * link without waiting for the outbox drain, which remains the safety net.
  */
 export function enqueueRefreshesSince(context: Context, workspaceId: string, since: number): void {
+  enqueueWorkSince(context, workspaceId, since, OutboxKind.RefreshSubscription);
+}
+
+/**
+ * Hands the reconciliations a manual access change requested in the workspace since `since` to
+ * the queue (decision 0016), the same way: best effort, the outbox drain is the safety net.
+ */
+export function enqueueReconcilesSince(context: Context, workspaceId: string, since: number): void {
+  enqueueWorkSince(context, workspaceId, since, OutboxKind.ReconcileResource);
+}
+
+function enqueueWorkSince(
+  context: Context,
+  workspaceId: string,
+  since: number,
+  kind: typeof OutboxKind.RefreshSubscription | typeof OutboxKind.ReconcileResource,
+): void {
   const { env, ctx, logger } = context.get(cloudflareContext);
   const { db, clock } = servicesFor(context);
   ctx.waitUntil(
     pendingOutboxSince(db, {
-      kinds: [OutboxKind.RefreshSubscription],
+      kinds: [kind],
       since,
       now: clock.now(),
       limit: REFRESH_HAND_OFF_LIMIT,

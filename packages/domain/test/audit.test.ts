@@ -139,6 +139,26 @@ const VALID_DETAILS = {
   "claim.conflict": { path: "checkout", claimId: "cc1", subjectId: "s1", userId: "u2" },
   "customer.relinked": { path: "email", previousSubjectId: "s1", subjectId: "s2" },
   "customer.linked_manually": { previousSubjectId: null, subjectId: "s1" },
+  "customer.unlinked_manually": { previousSubjectId: "s1" },
+  "access.granted_manually": {
+    offerId: "o1",
+    subjectId: "s1",
+    externalSubjectId: "583231",
+    endsAt: 1_702_592_000_000,
+  },
+  "access.updated_manually": {
+    offerId: "o1",
+    subjectId: "s1",
+    externalSubjectId: "583231",
+    endsAt: { from: null, to: 1_702_592_000_000 },
+  },
+  "access.revoked_manually": {
+    offerId: "o1",
+    subjectId: "s1",
+    externalSubjectId: "583231",
+    cause: "owner",
+  },
+  "manual_access.evaluated": { nextEvaluationAt: 1_702_592_000_000 },
   "job.failed": {
     kind: "reconcile_resource",
     subjectId: "w1:r1",
@@ -222,6 +242,11 @@ describe("audit action catalog", () => {
     ["claim.conflict", "workspace", "customer"],
     ["customer.relinked", "workspace", "customer"],
     ["customer.linked_manually", "workspace", "customer"],
+    ["customer.unlinked_manually", "workspace", "customer"],
+    ["access.granted_manually", "workspace", "manual_access"],
+    ["access.updated_manually", "workspace", "manual_access"],
+    ["access.revoked_manually", "workspace", "manual_access"],
+    ["manual_access.evaluated", "workspace", "manual_access"],
     ["job.failed", "either", "outbox"],
     ["job.retried", "either", "outbox"],
     ["job.dismissed", "either", "outbox"],
@@ -397,6 +422,17 @@ describe("audit action catalog", () => {
     ["customer.linked_manually", "subjectId", null],
     ["customer.linked_manually", "previousSubjectId", ""],
     ["customer.linked_manually", "previousSubjectId", "s1"],
+    ["customer.unlinked_manually", "previousSubjectId", null],
+    ["access.granted_manually", "endsAt", -1],
+    ["access.granted_manually", "endsAt", 1.5],
+    ["access.updated_manually", "endsAt", { from: null, to: null }],
+    ["access.updated_manually", "endsAt", { from: 5, to: 5 }],
+    ["access.updated_manually", "endsAt", { from: null }],
+    ["access.updated_manually", "endsAt", { from: null, to: 1, login: "x" }],
+    ["access.revoked_manually", "cause", "expired"],
+    ["manual_access.evaluated", "nextEvaluationAt", -1],
+    ["entitlement.created", "manualAccessId", "ma1"],
+    ["entitlement.created", "manualAccessId", ""],
     ["job.failed", "kind", "send_email"],
     ["job.failed", "attempts", -1],
     ["job.failed", "attempts", 1.5],
@@ -485,8 +521,29 @@ describe("offer, commerce and entitlement details", () => {
       { ...VALID_DETAILS["entitlement.updated"], validUntil: { from: 5, to: null } },
     ],
     ["entitlement.ended", { state: "revoked", reason: "paused" }],
+    ["entitlement.ended", { state: "expired", reason: "manual_ended" }],
+    ["manual_access.evaluated", { nextEvaluationAt: null }],
+    ["access.granted_manually", { ...VALID_DETAILS["access.granted_manually"], endsAt: null }],
+    [
+      "access.updated_manually",
+      { ...VALID_DETAILS["access.updated_manually"], endsAt: { from: 5, to: null } },
+    ],
+    [
+      "access.revoked_manually",
+      { ...VALID_DETAILS["access.revoked_manually"], cause: "account_deleted" },
+    ],
   ] as const)("%s accepts %j", (action, details) => {
     expect(AUDIT_ACTIONS[action].details.parse(details)).toEqual(details);
+  });
+
+  it("entitlement.created names a manual access as its source instead of a subscription", () => {
+    const { subscriptionId: _subscription, ...rest } = VALID_DETAILS["entitlement.created"];
+    const details = { ...rest, manualAccessId: "ma1", reason: "manual" };
+    const schema = AUDIT_ACTIONS["entitlement.created"].details;
+    expect(schema.parse(details)).toEqual(details);
+    expect(schema.safeParse(rest).error?.issues.map((issue) => issue.path)).toEqual([
+      ["manualAccessId"],
+    ]);
   });
 
   it("customer.linked refuses an unchanged link, unlinked included", () => {

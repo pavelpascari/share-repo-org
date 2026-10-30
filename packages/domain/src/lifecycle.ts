@@ -148,5 +148,9 @@ export function workspacesBlockingAccountDeletion<
 
 // Export ---------------------------------------------------------------------------------------
 
-/** The version of the workspace export's JSON shape, recorded in `workspace.exported`. */
-export const WORKSPACE_EXPORT_FORMAT_VERSION = 1;
+/**
+ * The version of the workspace export's JSON shape, recorded in `workspace.exported`. 2 (decision
+ * 0016): `manualAccesses`, and each entitlement's `sourceType` and `manualAccessId`; an
+ * entitlement's `subscriptionId` is null when a manual access is its source.
+ */
+export const WORKSPACE_EXPORT_FORMAT_VERSION = 2;

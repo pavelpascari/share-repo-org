@@ -1,12 +1,16 @@
 import type {
   CatalogPrice,
   ConnectPaddleResult,
+  GrantManualAccessError,
   ManualLinkError,
+  ManualUnlinkResult,
   ReconnectPaddleResult,
   StartCheckoutResult,
+  UpdateManualAccessResult,
   ViewClaimResult,
 } from "@sharerepo/application";
-import type { EntitlementState, GrantState } from "@sharerepo/domain";
+import type { CustomerLinkVia } from "@sharerepo/db";
+import type { EntitlementState, GrantState, ManualAccessStatus } from "@sharerepo/domain";
 
 // User-facing copy for the billing, customers, checkout, claim and "My access" pages. Every map
 // is total over its codes, so a raw code is never shown alone. The words are "repository",
@@ -79,6 +83,56 @@ export const MANUAL_LINK_ERRORS: Record<ManualLinkError, string> = {
   connection_missing: "Connect GitHub first: ShareRepo looks up GitHub accounts through it.",
   login_not_found: "GitHub has no account with that login.",
   account_not_user: "That login is an organization or bot. Subscribers must be personal accounts.",
+};
+
+/** Why removing a customer's link was refused (decision 0016). */
+export const MANUAL_UNLINK_ERRORS: Record<
+  Extract<ManualUnlinkResult, { ok: false }>["error"],
+  string
+> = {
+  reason_required: "Enter a reason of at most 500 characters.",
+};
+
+/** How a customer's link was made, from the audit trail (decision 0016). */
+export const LINK_VIA_LABELS: Record<CustomerLinkVia, string> = {
+  checkout: "ShareRepo checkout (claim reference)",
+  email: "emailed claim link",
+  manual: "linked by hand by an owner",
+  source: "the simulator",
+};
+
+/** Why granting manual access was refused (decision 0016). */
+export const MANUAL_ACCESS_ERRORS: Record<GrantManualAccessError, string> = {
+  note_too_long: "Keep the note to at most 500 characters.",
+  note_invalid_characters: "The note must be a single line.",
+  end_not_in_future: "Choose an end date after today, or leave it empty for no end.",
+  login_invalid: "Enter a valid GitHub login.",
+  connection_missing: "Connect GitHub first: ShareRepo looks up GitHub accounts through it.",
+  login_not_found: "GitHub has no account with that login.",
+  account_not_user:
+    "That login is an organization or bot. Access goes to personal GitHub accounts.",
+  offer_unavailable: "That offer is archived or sells no repositories.",
+  already_granted:
+    "That account already has manual access to this offer. Change its end date in the list instead.",
+  limit_reached:
+    "This workspace has 100 open manual grants, the most it can have. Revoke one you no longer need.",
+  rate_limited: "This workspace granted access by hand 50 times today. Try again tomorrow.",
+};
+
+/** Why changing a manual access's end date was refused. */
+export const MANUAL_ACCESS_UPDATE_ERRORS: Record<
+  Extract<UpdateManualAccessResult, { ok: false }>["error"],
+  string
+> = {
+  end_not_in_future: "Choose an end date after today, or leave it empty for no end.",
+  revoked: "This access was revoked; grant it again instead.",
+};
+
+/** A manual access's status, as the list shows it. */
+export const MANUAL_ACCESS_STATUS_LABELS: Record<ManualAccessStatus, string> = {
+  active: "Active",
+  ended: "Ended",
+  revoked: "Revoked",
 };
 
 type CheckoutError = Extract<StartCheckoutResult, { ok: false }>["reason"];

@@ -34,6 +34,7 @@ import {
   sendClaimEmail,
   startCheckout,
   type UserActor,
+  unlinkCustomerManually,
   viewClaim,
 } from "../src/index.ts";
 import { entitlementsOf, githubUser, live, memberOf, shop } from "./support/commerce.ts";
@@ -843,6 +844,215 @@ describe("claim/checkout-cannot-adopt-existing-customer", () => {
   });
 });
 
+// Decision 0016 § Checkout references (owner's decision, 2026-10-28): a reference that reached a
+// subscription other than the one its checkout created uses no claim (threats T11, T12).
+describe("claim/checkout-reference-from-other-subscription-rejected", () => {
+  async function started(s: PaddleShop) {
+    const buyer = await signedUp();
+    const result = await startCheckout(
+      serviceContext(),
+      { offerId: s.offer.id, priceId: s.price.id, user: buyer, ip: buyerIp() },
+      s.deps,
+    );
+    if (!result.ok) throw new Error(result.reason);
+    const transactionId = transactionOf(result.checkoutUrl);
+    const reference = s.paddle.transaction(transactionId).customData.sharerepo_claim as string;
+    return { buyer, claimId: result.checkoutClaimId, transactionId, reference };
+  }
+
+  const claimEvents = async (s: PaddleShop) => ({
+    rejected: (await auditOf(s.workspaceId, "claim.rejected")).map((event) => event.details),
+    completed: (await auditOf(s.workspaceId, "claim.completed")).length,
+    conflict: (await auditOf(s.workspaceId, "claim.conflict")).length,
+  });
+  const notThisCheckout = (claimId: string) => ({
+    path: "checkout",
+    claimId,
+    reason: "not_this_checkout",
+  });
+  const claimOf = (s: PaddleShop, id: string) =>
+    getCheckoutClaim(db, { workspaceId: s.workspaceId, id });
+  const transactionReads = (s: PaddleShop) =>
+    s.paddle.calls.filter((call) => call === "getTransaction").length;
+
+  it("links a genuine checkout: its transaction names the subscription", async () => {
+    const s = await paddleShop();
+    const user = await signedUp();
+    const { subscription, checkoutClaimId } = await purchase(s, user);
+    expect(await liveFor(s.workspaceId, user.profile.externalUserId)).toHaveLength(
+      s.resources.length,
+    );
+    expect(transactionReads(s)).toBe(1);
+    // A renewal of the used claim asks Paddle nothing more.
+    clock.advance(31 * DAY);
+    s.paddle.renew(subscription.id);
+    await deliverSubscription(s, "subscription.updated", subscription.id);
+    expect(transactionReads(s)).toBe(1);
+    expect(await claimEvents(s)).toEqual({ rejected: [], completed: 1, conflict: 0 });
+    expect(await claimOf(s, checkoutClaimId)).toMatchObject({ consumedAt: expect.any(Number) });
+  });
+
+  it("a seller's edit putting the reference on another subscription is rejected, and the buyer still links", async () => {
+    const s = await paddleShop();
+    const { buyer, claimId, transactionId, reference } = await started(s);
+    // The buyer pays; before ShareRepo processes it, the seller copies the reference onto
+    // another subscription (dashboard or API), whose refresh comes first.
+    const sub = s.paddle.completeCheckout(transactionId, { customerId: paddleCustomer(s).id });
+    const other = directSubscription(s, paddleCustomer(s).id);
+    await deliverSubscription(s, "subscription.created", other.id);
+    clock.advance(1_000);
+    s.paddle.updateCustomData(other.id, { sharerepo_claim: reference });
+    await deliverSubscription(s, "subscription.updated", other.id);
+    expect((await customerRow(s, other.customerId))?.subjectId).toBeNull();
+    expect(await liveFor(s.workspaceId, buyer.profile.externalUserId)).toEqual([]);
+    expect(await claimEvents(s)).toEqual({
+      rejected: [notThisCheckout(claimId)],
+      completed: 0,
+      conflict: 0,
+    });
+    expect(await claimOf(s, claimId)).toMatchObject({ consumedByCustomerId: null });
+
+    // The genuine subscription's refresh then links: the claim is still the buyer's.
+    await deliverSubscription(s, "subscription.created", sub.id);
+    expect(await liveFor(s.workspaceId, buyer.profile.externalUserId)).toHaveLength(
+      s.resources.length,
+    );
+    expect((await claimEvents(s)).completed).toBe(1);
+  });
+
+  it("a separate checkout carrying a copied reference is rejected", async () => {
+    const s = await paddleShop();
+    const { buyer, claimId, transactionId, reference } = await started(s);
+    // While ShareRepo's checkout is unpaid, Paddle names no subscription for it: a copy is
+    // neither linked nor rejected yet (it waits, as a genuine checkout's moment of delay does).
+    const early = s.paddle.createSubscription({
+      customerId: paddleCustomer(s).id,
+      priceIds: [s.price.id],
+      customData: { sharerepo_claim: reference },
+    });
+    await deliverSubscription(s, "subscription.created", early.id);
+    expect(await claimEvents(s)).toEqual({ rejected: [], completed: 0, conflict: 0 });
+    s.paddle.completeCheckout(transactionId, { customerId: paddleCustomer(s).id });
+    // A Paddle.js checkout with the reference as custom data: a subscription of its own.
+    const copied = s.paddle.createSubscription({
+      customerId: paddleCustomer(s).id,
+      priceIds: [s.price.id],
+      customData: { sharerepo_claim: reference },
+    });
+    await deliverSubscription(s, "subscription.created", copied.id);
+    expect((await customerRow(s, copied.customerId))?.subjectId).toBeNull();
+    expect(await liveFor(s.workspaceId, buyer.profile.externalUserId)).toEqual([]);
+    expect((await claimEvents(s)).rejected).toEqual([notThisCheckout(claimId)]);
+    expect(await claimOf(s, claimId)).toMatchObject({ consumedByCustomerId: null });
+    // Not asked whether the customer qualifies: rejected before any link decision.
+    expect(s.paddle.calls).not.toContain("listCustomerSubscriptions");
+  });
+
+  it("a reference copied onto a customer linked to someone else uses up nothing", async () => {
+    const s = await paddleShop();
+    const { customer, subscription } = await purchase(s, await signedUp());
+    const { claimId, transactionId, reference } = await started(s);
+    s.paddle.completeCheckout(transactionId, { customerId: paddleCustomer(s).id });
+    clock.advance(1_000);
+    s.paddle.updateCustomData(subscription.id, { sharerepo_claim: reference });
+    await deliverSubscription(s, "subscription.updated", subscription.id);
+    expect(await claimEvents(s)).toEqual({
+      rejected: [notThisCheckout(claimId)],
+      completed: 1,
+      conflict: 0,
+    });
+    expect(await claimOf(s, claimId)).toMatchObject({ consumedByCustomerId: null });
+    expect((await customerRow(s, customer.id))?.subjectId).not.toBeNull();
+  });
+
+  it("while Paddle has not named the transaction's subscription, nothing happens; a later refresh links", async () => {
+    const s = await paddleShop();
+    const { buyer, claimId, transactionId } = await started(s);
+    const sub = s.paddle.completeCheckout(transactionId, {
+      customerId: paddleCustomer(s).id,
+      transactionPending: true,
+    });
+    await deliverSubscription(s, "subscription.created", sub.id);
+    expect(await claimEvents(s)).toEqual({ rejected: [], completed: 0, conflict: 0 });
+    expect(await claimOf(s, claimId)).toMatchObject({ consumedByCustomerId: null });
+    expect(await liveFor(s.workspaceId, buyer.profile.externalUserId)).toEqual([]);
+
+    s.paddle.settleTransaction(transactionId);
+    await deliverSubscription(s, "subscription.updated", sub.id);
+    expect(await liveFor(s.workspaceId, buyer.profile.externalUserId)).toHaveLength(
+      s.resources.length,
+    );
+    expect(await claimEvents(s)).toEqual({ rejected: [], completed: 1, conflict: 0 });
+  });
+
+  it("a claim without a checkout transaction, or one Paddle does not know, is rejected", async () => {
+    const s = await paddleShop();
+    const { buyer, claimId, reference } = await started(s);
+    // A claim whose transaction was never recorded (Paddle's response was lost).
+    const setTransaction = (transactionId: string | null) =>
+      env.DB.prepare("UPDATE checkout_claims SET transaction_id = ? WHERE id = ?")
+        .bind(transactionId, claimId)
+        .run();
+    await setTransaction(null);
+    const first = s.paddle.createSubscription({
+      customerId: paddleCustomer(s).id,
+      priceIds: [s.price.id],
+      customData: { sharerepo_claim: reference },
+    });
+    await deliverSubscription(s, "subscription.created", first.id);
+    expect(transactionReads(s)).toBe(0);
+
+    // A transaction ID Paddle does not know.
+    await setTransaction(`txn_${"7".repeat(26)}`);
+    const second = s.paddle.createSubscription({
+      customerId: paddleCustomer(s).id,
+      priceIds: [s.price.id],
+      customData: { sharerepo_claim: reference },
+    });
+    await deliverSubscription(s, "subscription.created", second.id);
+    expect(transactionReads(s)).toBe(1);
+    expect((await claimEvents(s)).rejected).toEqual([
+      notThisCheckout(claimId),
+      notThisCheckout(claimId),
+    ]);
+    expect(await claimOf(s, claimId)).toMatchObject({ consumedByCustomerId: null });
+    expect(await liveFor(s.workspaceId, buyer.profile.externalUserId)).toEqual([]);
+  });
+
+  it("while Paddle cannot read the transaction, nothing is linked or rejected; the retry links", async () => {
+    const s = await paddleShop();
+    const { buyer, claimId, transactionId } = await started(s);
+    const sub = s.paddle.completeCheckout(transactionId, { customerId: paddleCustomer(s).id });
+    s.paddle.failNext("getTransaction", "transient");
+    await expect(deliverSubscription(s, "subscription.created", sub.id)).rejects.toMatchObject({
+      kind: "transient",
+    });
+    expect(await claimEvents(s)).toEqual({ rejected: [], completed: 0, conflict: 0 });
+    expect(await claimOf(s, claimId)).toMatchObject({ consumedByCustomerId: null });
+    await drainPaddle(s);
+    expect(await liveFor(s.workspaceId, buyer.profile.externalUserId)).toHaveLength(
+      s.resources.length,
+    );
+  });
+
+  it("isolation/cross-workspace-mutation-denied: another workspace's reference never reads this workspace's transaction", async () => {
+    const a = await paddleShop();
+    const b = await paddleShop();
+    const { claimId, reference } = await started(a);
+    const copied = b.paddle.createSubscription({
+      customerId: paddleCustomer(b).id,
+      priceIds: [b.price.id],
+      customData: { sharerepo_claim: reference },
+    });
+    await deliverSubscription(b, "subscription.created", copied.id);
+    expect((await claimEvents(b)).rejected).toEqual([
+      { path: "checkout", claimId: null, reason: "unknown_claim" },
+    ]);
+    expect(transactionReads(a) + transactionReads(b)).toBe(0);
+    expect(await claimOf(a, claimId)).toMatchObject({ consumedByCustomerId: null });
+  });
+});
+
 describe("claims in a suspended workspace", () => {
   const suspend = (s: PaddleShop, status: "suspended" | "active" = "suspended") =>
     env.DB.prepare("UPDATE workspaces SET status = ? WHERE id = ?")
@@ -1578,6 +1788,8 @@ describe("listCustomers and myAccess", () => {
             subjectId: linked?.subjectId,
             login: user.profile.username,
             externalSubjectId: user.profile.externalUserId,
+            // Linked by its checkout reference (path 1), as its audit trail says.
+            via: "checkout",
           },
           subscriptions: [
             expect.objectContaining({ externalSubscriptionId: subscription.id, state: "active" }),
@@ -1656,5 +1868,108 @@ describe("isolation/cross-workspace-mutation-denied (claims)", () => {
       workspaceSlug: a.slug,
     });
     expect(await listCustomersWithLinks(db, { workspaceId: b.workspaceId })).toEqual([]);
+  });
+});
+
+// Decision 0016: whichever path made a link (a creator's checkout reference included, threat
+// T12), the owner sees how it was made and can remove it; the payer can claim by email.
+describe("claim/owner-unlink-removes-access", () => {
+  it("claim/owner-unlink-removes-access: the owner removes a checkout link; its reference never links the customer again", async () => {
+    const s = await paddleShop();
+    const user = await signedUp();
+    const { customer, subscription } = await purchase(s, user);
+    await drainPaddle(s);
+    expect(await liveFor(s.workspaceId, user.profile.externalUserId)).toHaveLength(1);
+    const linked = (await customerRow(s, customer.id)) as { id: string; subjectId: string };
+    const ctx = serviceContext();
+    await expect(
+      unlinkCustomerManually(ctx, s, s.slug, { customerId: linked.id, reason: " not this buyer " }),
+    ).resolves.toEqual({ ok: true, outcome: "unlinked" });
+    await drainPaddle(s);
+    expect(await liveFor(s.workspaceId, user.profile.externalUserId)).toEqual([]);
+    expect(await auditOf(s.workspaceId, "customer.unlinked_manually")).toEqual([
+      {
+        actor_type: "user",
+        actor_id: s.userId,
+        target_id: linked.id,
+        reason: "not this buyer",
+        details: { previousSubjectId: linked.subjectId },
+      },
+    ]);
+    // A later event re-reads the subscription, which still carries the reference: nothing links.
+    const claims = (await auditOf(s.workspaceId, "claim.completed")).length;
+    await deliverSubscription(s, "subscription.updated", subscription.id);
+    await drainPaddle(s);
+    expect(await customerRow(s, customer.id)).toMatchObject({ subjectId: null });
+    expect(await auditOf(s.workspaceId, "claim.completed")).toHaveLength(claims);
+    expect(await auditOf(s.workspaceId, "claim.rejected")).toEqual([]);
+    const [summary] = (await listCustomers(serviceContext(), s, s.slug)).filter(
+      (c) => c.id === linked.id,
+    );
+    expect(summary?.linked).toBeNull();
+    // Unlinking again is a no-op.
+    await expect(
+      unlinkCustomerManually(serviceContext(), s, s.slug, { customerId: linked.id, reason: "r" }),
+    ).resolves.toEqual({ ok: true, outcome: "already_unlinked" });
+  });
+
+  it("says the link's path is unknown when the audit trail does not name it", async () => {
+    const s = await paddleShop();
+    const user = await signedUp();
+    const { customer } = await purchase(s, user);
+    const linked = (await customerRow(s, customer.id)) as { subjectId: string };
+    const { customer: other } = await unclaimed(s);
+    // Linked outside every service (as before the trail existed): no event says how.
+    await env.DB.prepare(
+      "UPDATE customers SET subject_id = ? WHERE workspace_id = ? AND external_customer_id = ?",
+    )
+      .bind(linked.subjectId, s.workspaceId, other.id)
+      .run();
+    const listed = await listCustomers(serviceContext(), s, s.slug);
+    expect(listed.find((c) => c.externalCustomerId === other.id)?.linked?.via).toBeNull();
+  });
+
+  it("requires a reason and the owner role, within the workspace", async () => {
+    const s = await paddleShop();
+    const other = await paddleShop();
+    const user = await signedUp();
+    const { customer } = await purchase(other, user);
+    const theirs = (await customerRow(other, customer.id)) as { id: string };
+    await expect(
+      unlinkCustomerManually(serviceContext(), s, s.slug, { customerId: theirs.id, reason: " " }),
+    ).resolves.toEqual({ ok: false, error: "reason_required" });
+    await expect(
+      unlinkCustomerManually(serviceContext(), s, s.slug, {
+        customerId: theirs.id,
+        reason: "x".repeat(501),
+      }),
+    ).resolves.toEqual({ ok: false, error: "reason_required" });
+    // isolation/cross-workspace-mutation-denied: another workspace's customer is not found.
+    await expect(
+      unlinkCustomerManually(serviceContext(), s, s.slug, { customerId: theirs.id, reason: "r" }),
+    ).rejects.toBeInstanceOf(NotFoundError);
+    const member = await memberOf(other);
+    await expect(
+      unlinkCustomerManually(serviceContext(), member, other.slug, {
+        customerId: theirs.id,
+        reason: "r",
+      }),
+    ).rejects.toBeInstanceOf(ForbiddenError);
+  });
+
+  it("is a conflict when the link changed while it was being removed", async () => {
+    const s = await paddleShop();
+    const user = await signedUp();
+    const { customer } = await purchase(s, user);
+    const linked = (await customerRow(s, customer.id)) as { id: string };
+    const racing = beforeFirstBatch(() =>
+      env.DB.prepare("UPDATE customers SET subject_id = NULL WHERE id = ?").bind(linked.id).run(),
+    );
+    await expect(
+      unlinkCustomerManually(racing, s, s.slug, {
+        customerId: linked.id,
+        reason: "r",
+      }),
+    ).rejects.toBeInstanceOf(ConflictError);
   });
 });
